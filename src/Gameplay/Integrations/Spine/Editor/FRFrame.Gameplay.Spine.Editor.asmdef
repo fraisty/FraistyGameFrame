@@ -1,0 +1,7 @@
+{
+  "name": "FRFrame.Gameplay.Spine.Editor",
+  "rootNamespace": "FRFrame.Gameplay.Spine.Editor",
+  "references": ["FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Editor", "FRFrame.Gameplay.Spine", "FRFrame.Gameplay.Unity", "spine-unity", "spine-csharp"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": false
+}

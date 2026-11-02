@@ -1,0 +1,23 @@
+{
+    "name": "FRFrame.UIExtensions.PlayMode.Tests",
+    "rootNamespace": "FRFrame.Tests.UIExtensions",
+    "references": [
+        "FRFrame.Core"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false,
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ]
+}

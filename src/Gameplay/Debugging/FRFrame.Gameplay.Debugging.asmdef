@@ -1,0 +1,8 @@
+{
+    "name": "FRFrame.Gameplay.Debugging",
+    "rootNamespace": "FRFrame.Gameplay.Debugging",
+    "references": ["FRFrame.Gameplay"],
+    "includePlatforms": [],
+    "autoReferenced": false,
+    "noEngineReferences": true
+}

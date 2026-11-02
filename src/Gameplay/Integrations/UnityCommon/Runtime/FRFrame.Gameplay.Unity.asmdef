@@ -1,0 +1,6 @@
+{
+  "name": "FRFrame.Gameplay.Unity",
+  "rootNamespace": "FRFrame.Gameplay.Unity",
+  "references": ["FRFrame.Core", "FRFrame.Gameplay", "FRFrame.Gameplay.Standard", "FRFrame.Gameplay.Extensions", "FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Debugging", "Unity.TextMeshPro", "Unity.ugui"],
+  "autoReferenced": false
+}

@@ -1,0 +1,238 @@
+<ui:UXML
+    xmlns:ui="UnityEngine.UIElements"
+    xmlns:uie="UnityEditor.UIElements">
+
+    <ui:VisualElement class="page-root">
+
+        <!-- Header -->
+        <ui:VisualElement class="window-header">
+            <ui:Label text="UI 配置编辑器" class="window-title" />
+            <ui:Label text="管理 UIConfigGroup、UIForm 配置、逻辑脚本、预制体路径以及运行时打开策略。" class="window-subtitle" />
+        </ui:VisualElement>
+
+        <!-- Top Action Bar -->
+        <uie:Toolbar class="topbar">
+            <uie:ToolbarButton name="btn-refresh" text="刷新全部" class="topbar-btn" />
+            <uie:ToolbarButton name="btn-save-current" text="保存当前" class="topbar-btn primary-btn" />
+            <uie:ToolbarButton name="btn-revert-current" text="放弃修改" class="topbar-btn" />
+            <uie:ToolbarButton name="btn-validate-current" text="校验当前" class="topbar-btn" />
+            <uie:ToolbarButton name="btn-validate-all" text="校验全部" class="topbar-btn" />
+            <ui:VisualElement class="topbar-spacer" />
+            <uie:ToolbarButton name="btn-ping-folder" text="定位默认目录" class="topbar-btn" />
+        </uie:Toolbar>
+
+        <!-- Main Content: Three Pane SplitView -->
+        <ui:TwoPaneSplitView class="content-root"
+                             fixed-pane-index="0"
+                             fixed-pane-initial-dimension="310"
+                             orientation="Horizontal">
+
+            <!-- Left: Group Panel -->
+            <ui:VisualElement class="panel panel-left">
+                <ui:Label text="UIConfigGroup 资源" class="panel-title" />
+                <ui:Label text="扫描、创建、定位和删除 UIConfigGroup 配置资源。" class="hint-label" />
+
+                <uie:ToolbarSearchField name="group-search-field" class="compact-search-field" />
+
+                <ui:VisualElement class="row">
+                    <ui:Button name="btn-scan-groups" text="扫描" class="mini-btn" />
+                    <ui:Button name="btn-ping-group" text="定位" class="mini-btn" />
+                    <ui:Button name="btn-delete-group" text="删除" class="mini-btn danger-btn" />
+                </ui:VisualElement>
+
+                <ui:ListView name="group-list-view" class="list-view flex-grow" />
+
+                <ui:VisualElement class="section">
+                    <ui:Label text="创建新 Group" class="section-title" />
+
+                    <ui:TextField name="new-group-asset-name-field" label="Asset Name" />
+                    <ui:TextField name="new-group-display-name-field" label="Group Name" />
+                    <ui:TextField name="create-folder-field" label="Folder" />
+
+                    <ui:VisualElement class="row">
+                        <ui:Button name="btn-select-folder" text="选择目录" class="mini-btn" />
+                        <ui:Button name="btn-create-group" text="创建 Group" class="mini-btn primary-btn" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+            </ui:VisualElement>
+
+            <!-- Center + Right Split -->
+            <ui:TwoPaneSplitView class="content-right-split"
+                                 fixed-pane-index="1"
+                                 fixed-pane-initial-dimension="480"
+                                 orientation="Horizontal">
+
+                <!-- Center: Group + Form List -->
+                <ui:VisualElement class="panel panel-center">
+                    <ui:Label name="group-header-label" text="当前 Group: (未选择)" class="panel-title" />
+                    <ui:Label name="group-path-label" text="" class="muted-label" />
+                    <ui:Label text="编辑当前 Group 的草稿配置。修改不会立即写入资源，需要点击保存。" class="hint-label" />
+
+                    <ui:VisualElement class="section">
+                        <ui:Label text="当前 Group 草稿" class="section-title" />
+                        <ui:TextField name="draft-group-name-field" label="Group Name" />
+                        <ui:TextField name="draft-default-package-name-field" label="Default Package" />
+                        <ui:Toggle name="draft-load-on-initialize-toggle" label="启动时加载" />
+
+                        <ui:VisualElement class="row wrap">
+                            <ui:Button name="btn-use-asset-name" text="使用资源名作为 Group Name" class="mini-btn" />
+                            <ui:Button name="btn-copy-group-path" text="复制路径" class="mini-btn" />
+                            <ui:Button name="btn-ping-group-right" text="定位资源" class="mini-btn" />
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+
+                    <ui:VisualElement name="form-list-panel" class="section form-list-panel">
+                        <ui:Label text="Form 配置列表" class="section-title" />
+                        <ui:Label text="可拖入 Prefab 或 MonoScript；双击行会优先定位 Prefab，其次定位脚本。" class="hint-label" />
+
+                        <uie:ToolbarSearchField name="form-search-field" class="compact-search-field" />
+
+                        <ui:VisualElement class="row wrap">
+                            <ui:Button name="btn-add-empty-form" text="添加空配置" class="mini-btn" />
+                            <ui:Button name="btn-add-from-selection" text="从选择添加" class="mini-btn" />
+                            <ui:Button name="btn-duplicate-selected-forms" text="复制选中" class="mini-btn" />
+                            <ui:Button name="btn-delete-selected-forms" text="删除选中" class="mini-btn danger-btn" />
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="row wrap">
+                            <ui:Button name="btn-move-up" text="上移" class="mini-btn" />
+                            <ui:Button name="btn-move-down" text="下移" class="mini-btn" />
+                            <ui:Button name="btn-auto-fix-selected" text="自动修复选中" class="mini-btn" />
+                            <ui:Button name="btn-sort-forms" text="排序当前列表" class="mini-btn" />
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="row wrap">
+                            <ui:Toggle name="toggle-show-only-invalid" label="仅显示异常" />
+                        </ui:VisualElement>
+
+                        <ui:Label name="form-list-summary-label" text="显示 0 项" class="muted-label" />
+                        <ui:ListView name="form-list-view" class="list-view flex-grow" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+
+                <!-- Right: Detail + Validation + Unconfigured -->
+                <ui:VisualElement class="panel panel-right">
+                    <ui:ScrollView name="right-scroll-view" class="right-scroll-view">
+
+                        <ui:VisualElement class="section section-first">
+                            <ui:Label name="detail-title-label" text="未选中 Form" class="panel-title" />
+                            <ui:Label text="编辑选中 Form 的运行时配置。字段名保持英文，方便和代码结构对应。" class="hint-label" />
+
+                            <ui:TextField name="field-form-id" label="Form ID" />
+                            <ui:TextField name="field-logic-type" label="Logic Type" />
+                            <ui:TextField name="field-asset-path" label="Asset Path" />
+                            <ui:TextField name="field-config-group" label="Config Group" />
+                            <ui:TextField name="field-package-name" label="Package Name" />
+
+                            <ui:EnumField name="field-layer" label="Layer" />
+                            <ui:Toggle name="field-allow-multi-instance" label="Allow Multi Instance" />
+                            <ui:Toggle name="field-full-screen" label="Full Screen" />
+                            <ui:Toggle name="field-pause-covered" label="Pause Covered" />
+                            <ui:EnumField name="field-blocking-mode" label="Blocking Mode" />
+                            <ui:Toggle name="field-disable-game-object-when-hidden" label="Disable GameObject When Hidden" />
+                            <ui:EnumField name="field-close-mode" label="Close Mode" />
+                            <ui:EnumField name="field-cover-visual-mode" label="Cover Visual Mode" />
+                            <ui:Toggle name="field-resident" label="Resident" />
+                            <ui:Toggle name="field-bring-top" label="Bring To Front On Open" />
+                            <ui:Toggle name="field-allow-back-close" label="Allow Back Close" />
+
+                            <ui:Label text="Mask" class="section-title" />
+                            <ui:Toggle name="field-use-mask" label="Use Mask" />
+                            <ui:Toggle name="field-close-on-mask-click" label="Close On Mask Click" />
+                            <ui:EnumField name="field-mask-mode" label="Mask Mode" />
+                            <uie:ColorField name="field-mask-color" label="Mask Color" />
+
+                            <ui:Label text="Animation" class="section-title" />
+                            <ui:EnumField name="field-open-animation" label="Open Animation" />
+                            <ui:EnumField name="field-close-animation" label="Close Animation" />
+                            <uie:FloatField name="field-open-animation-duration" label="Open Duration" />
+                            <uie:FloatField name="field-close-animation-duration" label="Close Duration" />
+                            <ui:EnumField name="field-open-animation-ease" label="Open Ease" />
+                            <ui:EnumField name="field-close-animation-ease" label="Close Ease" />
+
+                            <ui:VisualElement class="row wrap">
+                                <ui:Button name="btn-pick-script" text="选择脚本" class="mini-btn" />
+                                <ui:Button name="btn-pick-prefab" text="选择预制体" class="mini-btn" />
+                                <ui:Button name="btn-auto-fix-current" text="自动修复" class="mini-btn" />
+                                <ui:Button name="btn-duplicate-current" text="复制" class="mini-btn" />
+                                <ui:Button name="btn-delete-current" text="删除" class="mini-btn danger-btn" />
+                            </ui:VisualElement>
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="section">
+                            <ui:Label text="排序 / 批量应用" class="section-title" />
+                            <ui:Label text="对当前列表排序，或把右侧批量参数应用到选中的 Form。" class="hint-label" />
+
+                            <ui:EnumField name="sort-field-enum" label="Sort Field" />
+                            <ui:Toggle name="toggle-sort-ascending" label="升序" />
+
+                            <ui:EnumField name="batch-layer-field" label="Batch Layer" />
+                            <ui:Button name="btn-apply-batch-layer" text="应用 Layer 到选中项" class="mini-btn" />
+
+                            <ui:TextField name="batch-package-name-field" label="Batch Package Name" />
+                            <ui:Button name="btn-apply-batch-package-name" text="应用 Package 到选中项" class="mini-btn" />
+
+                            <ui:EnumField name="batch-blocking-mode-field" label="Batch Blocking Mode" />
+                            <ui:Button name="btn-apply-batch-blocking-mode" text="应用 BlockingMode 到选中项" class="mini-btn" />
+
+                            <ui:EnumField name="batch-close-mode-field" label="Batch Close Mode" />
+                            <ui:Button name="btn-apply-batch-close-mode" text="应用 CloseMode 到选中项" class="mini-btn" />
+
+                            <ui:EnumField name="batch-cover-visual-mode-field" label="Batch Cover Visual" />
+                            <ui:Button name="btn-apply-batch-cover-visual" text="应用 CoverVisual 到选中项" class="mini-btn" />
+
+                            <ui:Toggle name="batch-allow-multi-instance-toggle" label="Allow Multi Instance" />
+                            <ui:Toggle name="batch-full-screen-toggle" label="Full Screen" />
+                            <ui:Toggle name="batch-pause-covered-toggle" label="Pause Covered" />
+                            <ui:Toggle name="batch-disable-game-object-when-hidden-toggle" label="Disable GameObject When Hidden" />
+                            <ui:Toggle name="batch-resident-toggle" label="Resident" />
+                            <ui:Toggle name="batch-bring-top-toggle" label="Bring To Front On Open" />
+                            <ui:Toggle name="batch-allow-back-close-toggle" label="Allow Back Close" />
+                            <ui:Toggle name="batch-use-mask-toggle" label="Use Mask" />
+                            <ui:Toggle name="batch-close-on-mask-click-toggle" label="Close On Mask Click" />
+
+                            <ui:EnumField name="batch-mask-mode-field" label="Batch Mask Mode" />
+                            <ui:Button name="btn-apply-batch-mask" text="应用 Mask 到选中项" class="mini-btn" />
+
+                            <ui:EnumField name="batch-open-animation-field" label="Batch Open Animation" />
+                            <ui:EnumField name="batch-close-animation-field" label="Batch Close Animation" />
+                            <ui:Button name="btn-apply-batch-animation" text="应用动画到选中项" class="mini-btn" />
+
+                            <ui:VisualElement class="row wrap">
+                                <ui:Button name="btn-apply-batch-bools" text="应用布尔选项到选中项" class="mini-btn" />
+                                <ui:Button name="btn-apply-config-group-current" text="应用当前 GroupName 到选中项" class="mini-btn" />
+                            </ui:VisualElement>
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="section validation-section">
+                            <ui:Label text="校验结果" class="section-title" />
+                            <ui:Label text="点击校验项可以尝试定位到对应 Form。" class="hint-label" />
+                            <ui:ListView name="validation-list-view" class="list-view validation-list" />
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="section unconfigured-section">
+                            <ui:Label text="未配置的 UI 类型" class="section-title" />
+                            <ui:Label text="扫描继承 UIForm / UIWidget / UIItem，但尚未加入配置表的类型。" class="hint-label" />
+
+                            <uie:ToolbarSearchField name="unconfigured-search-field" class="compact-search-field" />
+
+                            <ui:VisualElement class="row wrap">
+                                <ui:Button name="btn-scan-unconfigured" text="扫描类型" class="mini-btn" />
+                                <ui:Button name="btn-add-all-unconfigured" text="将可见项加入当前 Group" class="mini-btn primary-btn" />
+                            </ui:VisualElement>
+
+                            <ui:ListView name="unconfigured-list-view" class="list-view unconfigured-list" />
+                        </ui:VisualElement>
+
+                    </ui:ScrollView>
+                </ui:VisualElement>
+
+            </ui:TwoPaneSplitView>
+        </ui:TwoPaneSplitView>
+
+        <!-- Bottom Status -->
+        <ui:VisualElement class="statusbar">
+            <ui:Label name="status-label" text="就绪" class="status-label" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

@@ -1,0 +1,12 @@
+{
+    "name": "FRFrame.Gameplay.Editor.Tests",
+    "rootNamespace": "FRFrame.Tests.Gameplay.Editor",
+    "references": ["FRFrame.Gameplay", "FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Editor"],
+    "includePlatforms": ["Editor"],
+    "overrideReferences": true,
+    "precompiledReferences": ["nunit.framework.dll"],
+    "autoReferenced": false,
+    "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+    "noEngineReferences": false,
+    "optionalUnityReferences": ["TestAssemblies"]
+}

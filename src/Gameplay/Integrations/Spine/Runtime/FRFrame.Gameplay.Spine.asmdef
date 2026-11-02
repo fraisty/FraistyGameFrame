@@ -1,0 +1,6 @@
+{
+  "name": "FRFrame.Gameplay.Spine",
+  "rootNamespace": "FRFrame.Gameplay.Spine",
+  "references": ["FRFrame.Gameplay", "FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Unity", "spine-unity", "spine-csharp"],
+  "autoReferenced": false
+}

@@ -1,0 +1,50 @@
+using System;
+using FRFrame.Gameplay;
+using FRFrame.Gameplay.Standard;
+using NUnit.Framework;
+
+namespace FRFrame.Tests.Gameplay
+{
+    public sealed class GameplayShieldContributionTests
+    {
+        /// <summary>Prevents expired/cancelled shields from subtracting later or unowned capacity;
+        /// a failing hit must leave both actual balance and per-source remaining amounts intact.</summary>
+        [Test]
+        public void ConsumedShieldExpiryAndExactCleanupPreserveOtherCapacity()
+        {
+            using(var world=new GameplayStandardWorld())
+            {
+                var caster=world.CreateActor(default);var target=world.CreateActor(default);
+                var hp=new GameplayAttributeId("Health");var max=new GameplayAttributeId("MaxHealth");var shield=new GameplayAttributeId("Shield");
+                target.Attributes.Register(hp,100);target.Attributes.Register(max,100);target.Attributes.Register(shield,20);
+                target.CombatAttributes=new GameplayCombatAttributeMap(hp,max,shield,default);
+                var callerKey=new GameplayTag("Data.Test.Shield.Amount");
+                var context=new GameplayContext(caster.Id,new GameplayTargetData(target.Id),abilityLevel:5,values:GameplayContextValues.Empty.WithValue(callerKey,50));
+                new GameplayGrantTimedShieldAction(new GameplaySetByCallerFloatValue(callerKey),N(2)).Execute(context,default,caster);
+                new GameplayGrantTimedShieldAction(N(60),N(4)).Execute(context,default,caster);
+                var entries=target.Shields.Snapshot();Assert.That(entries.Count,Is.EqualTo(2));
+                var application=new GameplayEffectApplicationContext(context,target,GameplaySetByCallerValues.Empty,caster.Attributes,caster.Id,instigatorTarget:caster);
+                var absorption=new GameplayDamageStage(GameplayDamageStageKind.Shield);
+                new GameplayDamageExecution(N(70),new[]{absorption}).Execute(application);
+                Assert.That(entries[0].Remaining,Is.Zero);Assert.That(entries[1].Remaining,Is.EqualTo(40));
+                Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(60));
+                var invalid=new GameplayDamageStage(GameplayDamageStageKind.Scale,GameplayFormula.Compile("Context.Missing"));
+                Assert.Throws<System.Collections.Generic.KeyNotFoundException>(()=>new GameplayDamageExecution(N(10),new[]{absorption,invalid}).Execute(application));
+                Assert.That(entries[1].Remaining,Is.EqualTo(40));Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(60));
+                world.Advance(2);Assert.That(entries[0].IsDisposed,Is.True);Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(60));
+                entries[1].Dispose();entries[1].Dispose();Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(20));
+                Assert.That(target.Shields.Snapshot().Count,Is.Zero);Assert.That(target.Effects.GetActiveEntriesSnapshot().Count,Is.Zero);
+                var grant=caster.Abilities.Grant(new GameplayAbilityDefinition(Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>()));
+                Assert.That(caster.Abilities.TryActivate(grant),Is.True);
+                caster.Abilities.TryCreateExecutionContext(grant,new GameplayTargetData(target.Id),out var cast);
+                new GameplayGrantTimedShieldAction(N(30),N(1),true).Execute(cast,default,caster);
+                world.Advance(1);Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(20));
+                Assert.That(caster.Abilities.GetGrantedEntriesSnapshot()[0].OwnedLifetimesCount,Is.Zero,"Expiry must release the completed relation from the still-active cast.");
+                new GameplayGrantTimedShieldAction(N(50),N(10),true).Execute(cast,default,caster);
+                caster.Abilities.Cancel(grant);Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(20));
+                Assert.That(target.Shields.Snapshot().Count,Is.Zero);
+            }
+        }
+        private static IGameplayFloatValue N(float value)=>new GameplayConstantFloatValue(value);
+    }
+}

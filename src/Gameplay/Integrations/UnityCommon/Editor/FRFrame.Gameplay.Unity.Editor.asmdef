@@ -1,0 +1,6 @@
+{
+  "name": "FRFrame.Gameplay.Unity.Editor",
+  "references": ["FRFrame.Core", "FRFrame.Gameplay", "FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Editor", "FRFrame.Gameplay.Unity"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": false
+}

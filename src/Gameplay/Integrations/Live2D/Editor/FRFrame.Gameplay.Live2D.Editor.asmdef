@@ -1,0 +1,6 @@
+{
+  "name": "FRFrame.Gameplay.Live2D.Editor",
+  "references": ["FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Editor", "FRFrame.Gameplay.Live2D", "FRFrame.Gameplay.Unity"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": false
+}

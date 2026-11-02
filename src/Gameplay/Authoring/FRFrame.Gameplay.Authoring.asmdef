@@ -1,0 +1,7 @@
+{
+    "name": "FRFrame.Gameplay.Authoring",
+    "rootNamespace": "FRFrame.Gameplay.Authoring",
+    "references": ["FRFrame.Gameplay", "FRFrame.Gameplay.Standard", "FRFrame.Gameplay.Extensions"],
+    "autoReferenced": false,
+    "noEngineReferences": false
+}

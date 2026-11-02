@@ -1,0 +1,7 @@
+{
+  "name": "FRFrame.Gameplay.Unity.Tests",
+  "references": ["FRFrame.Core", "FRFrame.Gameplay", "FRFrame.Gameplay.Standard", "FRFrame.Gameplay.Extensions", "FRFrame.Gameplay.Unity", "FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Editor", "FRFrame.Gameplay.Unity.Editor", "Unity.TextMeshPro"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false
+}

@@ -1,0 +1,8 @@
+{
+    "name": "FRFrame.Gameplay.Editor",
+    "rootNamespace": "FRFrame.Gameplay.Editor",
+    "references": ["FRFrame.Gameplay", "FRFrame.Gameplay.Standard", "FRFrame.Gameplay.Extensions", "FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Debugging"],
+    "includePlatforms": ["Editor"],
+    "autoReferenced": false,
+    "noEngineReferences": false
+}

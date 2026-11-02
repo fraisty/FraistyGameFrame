@@ -1,0 +1,26 @@
+{
+    "name": "FRFrame.Editor",
+    "rootNamespace": "",
+    "references": [
+        "GUID:e34a5702dd353724aa315fb8011f08c3",
+        "GUID:b2a929f8b839db54d9426d52aef2192f",
+        "GUID:2373f786d14518f44b0f475db77ba4de",
+        "GUID:f4393b9bda675b24fa13015b92efb4b0",
+        "GUID:6055be8ebefd69e48b49212b09b47b2f",
+        "GUID:4d1926c9df5b052469a1c63448b7609a",
+        "GUID:8c1b5e158961445498f8a66188fbb2e3",
+        "GUID:ca81e7ba196c7404badee10966f8ad95",
+        "GUID:f51ebe6a0ceec4240a699833d6309b23"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

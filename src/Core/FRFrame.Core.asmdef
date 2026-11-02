@@ -1,0 +1,29 @@
+{
+    "name": "FRFrame.Core",
+    "rootNamespace": "",
+    "references": [
+        "GUID:e34a5702dd353724aa315fb8011f08c3",
+        "GUID:f51ebe6a0ceec4240a699833d6309b23",
+        "GUID:1278a46ce459c5a46b4eaeda148684ef",
+        "GUID:15fc0a57446b3144c949da3e2b9737a9",
+        "GUID:d8b516b6fd6cf3a4490bb47840eaa73a",
+        "GUID:6055be8ebefd69e48b49212b09b47b2f",
+        "GUID:8c1b5e158961445498f8a66188fbb2e3",
+        "GUID:75469ad4d38634e559750d17036d5f7c"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.render-pipelines.universal",
+            "expression": "7.0.0",
+            "define": "FRFRAME_URP_AVAILABLE"
+        }
+    ],
+    "noEngineReferences": false
+}

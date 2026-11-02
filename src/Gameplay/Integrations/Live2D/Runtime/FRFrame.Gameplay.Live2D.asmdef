@@ -1,0 +1,5 @@
+{
+  "name": "FRFrame.Gameplay.Live2D",
+  "references": ["FRFrame.Gameplay", "FRFrame.Gameplay.Authoring", "FRFrame.Gameplay.Unity", "Live2D.Cubism"],
+  "autoReferenced": false
+}
