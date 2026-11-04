@@ -63,7 +63,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             using(var serialized=new SerializedObject(document))return Describe(document,nodeId,serialized);
         }
-        internal static List<Binding> Describe(GameplaySkillDocumentAsset document,string nodeId,SerializedObject so)
+        internal static List<Binding> Describe(GameplaySkillDocumentAsset document,string nodeId,SerializedObject so,bool animationHeader=false)
         {
             var result = new List<Binding>();
             var graph = document.AuthoringGraph;
@@ -124,7 +124,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 void Values(object values, string prefix)
                 {
                     foreach (var field in CoreFields(values).Concat(Providers.SelectMany(p => p.CardFields(values))))
+                    {
+                        if(animationHeader&&(field.Path=="SkinNames"||field.Path=="TrackIndex"||field.Path=="Channel"))continue;
                         Add(prefix + "." + field.Path, field.Label, field.FloatValue,field.Choices);
+                    }
                 }
             }
             return result;
@@ -271,6 +274,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private HelpBox _error;
         private bool _current=true;
         private readonly bool _compact;
+        private VisualElement _resourceRow,_playbackRow;
         private static readonly IGameplaySkillFieldControlProvider[] ControlProviders=TypeCache.GetTypesDerivedFrom<IGameplaySkillFieldControlProvider>().Where(t=>!t.IsAbstract&&t.GetConstructor(Type.EmptyTypes)!=null).OrderBy(t=>t.FullName).Select(t=>(IGameplaySkillFieldControlProvider)Activator.CreateInstance(t)).ToArray();
         private static readonly Dictionary<string,Type> ObjectTypes=new Dictionary<string,Type>();
         internal bool HasFields=>_fields.Count>0;
@@ -280,7 +284,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal GameplaySkillCardEditor(GameplaySkillDocumentAsset document,string nodeId,SerializedObject serialized,bool compact=false,string policyRole=null)
         {
             _document=document;_nodeId=nodeId;_serialized=serialized;_compact=compact;_policyRole=policyRole;name="CardQuickFields";
-            if(compact){style.flexDirection=FlexDirection.Row;style.flexWrap=Wrap.Wrap;style.alignItems=Align.FlexStart;}
+            if(compact)style.flexDirection=FlexDirection.Column;
             style.marginLeft=10;style.marginRight=10;style.marginBottom=8;style.fontSize=12;
             RegisterCallback<PointerDownEvent>(_=>Selecting?.Invoke(),TrickleDown.TrickleDown);
             RegisterCallback<PointerDownEvent>(e=>e.StopPropagation());
@@ -297,10 +301,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal void Refresh()
         {
             _serialized.UpdateIfRequiredOrScript();
-            _fields=_policyRole==null?GameplaySkillCardFields.Describe(_document,_nodeId,_serialized):GameplaySkillCardFields.DescribePolicy(_document,_nodeId,_policyRole);
+            _fields=_policyRole==null?GameplaySkillCardFields.Describe(_document,_nodeId,_serialized,_compact):GameplaySkillCardFields.DescribePolicy(_document,_nodeId,_policyRole);
             string signature=string.Join("|",_fields.Select(f=>f.Path+":"+f.Label+":"+f.Editable+":"+string.Join(",",f.Choices??Array.Empty<string>())));
-            if(signature==_signature){foreach(var sync in _sync)sync();return;}
+            if(signature==_signature){_current=true;SetEnabled(!EditorApplication.isPlayingOrWillChangePlaymode&&!GameplaySkillAuthoringCommands.IsReadOnly(_document));foreach(var sync in _sync)sync();return;}
             _signature=signature;Invalidate();Clear();_sync.Clear();
+            if(_compact){
+                _resourceRow=new VisualElement{name="AnimationResourceRow",style={flexDirection=FlexDirection.Row,alignItems=Align.Center,flexWrap=Wrap.Wrap}};
+                _playbackRow=new VisualElement{name="AnimationPlaybackRow",style={flexDirection=FlexDirection.Row,alignItems=Align.Center,flexWrap=Wrap.Wrap}};
+                Add(_resourceRow);Add(_playbackRow);
+            }
             for(int i=0;i<_fields.Count;i++)
             {
                 int slot=i;var field=_fields[i];
@@ -313,7 +322,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 var p=_serialized.FindProperty(field.Path);string path=field.Path;
                 var provider=ControlProviders.FirstOrDefault(editor=>editor.SupportsControl(p));
-                if(provider!=null){var control=provider.CreateControl(p,field.Label,()=>_current&&panel!=null&&!GameplaySkillAuthoringCommands.IsReadOnly(_document)&&(field.SourceGuard==null||field.SourceGuard()),out var refresh);control.name=path;control.style.fontSize=12;if(_compact){control.style.width=Length.Percent(100);control.style.flexShrink=0;control.style.marginRight=6;}Add(control);_sync.Add(refresh);continue;}
+                if(provider!=null){var control=provider.CreateControl(p,field.Label,()=>_current&&panel!=null&&!GameplaySkillAuthoringCommands.IsReadOnly(_document)&&(field.SourceGuard==null||field.SourceGuard()),out var refresh);control.name=path;control.style.fontSize=12;
+                    if(_compact){control.style.flexGrow=1;control.style.flexShrink=1;control.style.minWidth=200;control.style.marginRight=6;(p.propertyType==SerializedPropertyType.ObjectReference?_resourceRow:_playbackRow).Add(control);}else Add(control);
+                    _sync.Add(refresh);continue;}
                 switch(p.propertyType)
                 {
                     case SerializedPropertyType.Float:
@@ -347,20 +358,25 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         break;
                 }
             }
-            if(_fields.Any(f=>f.SourcePath!=null||!f.Editable))Add(new Button(()=>{var menu=new GenericMenu();foreach(var source in _fields.Where(f=>f.SourcePath!=null||!f.Editable)){string path=source.SourcePath??source.Path;menu.AddItem(new GUIContent(source.Label+" / 数值来源与高级"),false,()=>Advanced?.Invoke(path));}menu.ShowAsContext();}){text="数值来源 / 高级参数",tooltip="显式切换常量、Formula、Caller或属性来源；保留验证及 Undo"});
+            if(_compact){
+                _resourceRow.Add(new Button(()=>Advanced?.Invoke(null)){name="MainAnimationSettings",text="动画设置…",tooltip="在右侧编辑轨道、通道、皮肤、变体与主动画调度",style={width=92}});
+                var duration=new Label{name="MainAnimationDuration",style={fontSize=11,marginLeft=6}};_playbackRow.Add(duration);
+                _sync.Add(()=>{var timeline=_document.AuthoringGraph.Timelines.FirstOrDefault(t=>t.Events.Any(e=>e.EntryNodeId==_nodeId));duration.text=GameplaySkillFieldSchema.TryDuration(_document.AuthoringGraph,_nodeId,out _,out _,out float seconds)?seconds.ToString("0.###")+"s / 编排 "+timeline?.DurationSeconds.ToString("0.###")+"s":"";});
+            }
+            else if(_fields.Any(f=>f.SourcePath!=null||!f.Editable))Add(new Button(()=>{var menu=new GenericMenu();foreach(var source in _fields.Where(f=>f.SourcePath!=null||!f.Editable)){string path=source.SourcePath??source.Path;menu.AddItem(new GUIContent(source.Label+" / 数值来源与高级"),false,()=>Advanced?.Invoke(path));}menu.ShowAsContext();}){text="数值来源 / 高级参数",tooltip="显式切换常量、Formula、Caller或属性来源；保留验证及 Undo"});
             _error=new HelpBox("",HelpBoxMessageType.Error);_error.style.display=DisplayStyle.None;Add(_error);
             _current=true;SetEnabled(!EditorApplication.isPlayingOrWillChangePlaymode&&!GameplaySkillAuthoringCommands.IsReadOnly(_document));
             foreach(var sync in _sync)sync();
         }
-        // A structural command replaces the indexed view. Disabling its old controls first
-        // prevents delayed numeric FocusOut from committing through a retired property path.
-        internal void Invalidate(){_current=false;SetEnabled(false);}
+        // Reject stale FocusOut writes while bindings are being resolved again. Keep the
+        // rendered appearance intact; a pending structural refresh must not grey the canvas.
+        internal void Invalidate(){_current=false;}
         private void Bind<T>(BaseField<T> control,string path,Func<SerializedProperty,T> read,Action<SerializedProperty,T> write)
         {
             control.name=path;var source=_serialized.FindProperty(path);control.tooltip=source.propertyType==SerializedPropertyType.Enum?string.Join(" / ",source.enumNames)+"\n"+path:path;control.style.fontSize=12;
-            control.labelElement.style.minWidth=_compact?70:92;control.labelElement.style.maxWidth=_compact?70:92;
-            if(_compact){control.style.width=194;control.style.marginRight=6;control.style.flexShrink=0;}
-            Add(control);
+            float labelWidth=_compact?(control is Toggle?35:70):92;
+            control.labelElement.style.minWidth=labelWidth;control.labelElement.style.maxWidth=labelWidth;
+            if(_compact){control.style.width=control is Toggle?75:155;control.style.marginRight=6;control.style.flexShrink=0;_playbackRow.Add(control);}else Add(control);
             _sync.Add(()=>{var p=_serialized.FindProperty(path);if(p==null)return;var value=read(p);if(!EqualityComparer<T>.Default.Equals(control.value,value))control.SetValueWithoutNotify(value);});
             var sourceGuard=_fields.First(f=>f.Path==path||path.StartsWith(f.Path+".",StringComparison.Ordinal)).SourceGuard;
             control.RegisterValueChangedCallback(e=>{

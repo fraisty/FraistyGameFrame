@@ -93,6 +93,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(documents.Count==0)menu.AddDisabledItem(new GUIContent("尚无技能，请先新建"));
             menu.ShowAsContext();
         }
+        private void ShowRecentDocumentMenu()
+        {
+            LoadRecent();
+            var menu=new GenericMenu();
+            foreach(var entry in _recent.Items)
+                menu.AddItem(new GUIContent(entry.Title+" · "+System.IO.Path.GetFileName(entry.Path),entry.Path),
+                    entry.Document==_document,()=>OpenRecent(entry));
+            if(_recent.Items.Count==0)
+                menu.AddDisabledItem(new GUIContent("暂无记录，打开技能后会出现在这里"));
+            menu.ShowAsContext();
+        }
         private void DrawWelcome()
         {
             LoadRecent();_welcomeScroll=EditorGUILayout.BeginScrollView(_welcomeScroll);

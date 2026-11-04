@@ -1,10 +1,10 @@
 #if UNITY_EDITOR
+using HybridCLR;
+using HybridCLR.Commands;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using HybridCLR.Editor;
-using HybridCLR.Editor.Commands;
 using UnityEditor;
 using UnityEngine;
 
@@ -280,11 +280,19 @@ public static class HybridCLRBuildHelper
                 $"[HotFix] HotUpdate source dir not found: {hotSrcDir}\n请先执行 HybridCLR → Generate → All");
         }
 
-        List<string> aotAssemblyNames = SettingsUtil.AOTAssemblyNames;
-        if (aotAssemblyNames == null || aotAssemblyNames.Count == 0)
+        // HybridCLR 9 no longer stores the supplementary AOT list in its settings.
+        List<string> aotAssemblyNames = new List<string>
         {
-            throw new Exception("[HotFix] SettingsUtil.AOTAssemblyNames 为空！");
-        }
+            "DOTween",
+            "System.Core",
+            "UniTask",
+            "Unity.InputSystem",
+            "UnityEngine.CoreModule",
+            "UnityEngine.JSONSerializeModule",
+            "YooAsset",
+            "mscorlib",
+            "System",
+        };
 
         List<string> hotUpdateDlls = SettingsUtil.HotUpdateAssemblyFilesExcludePreserved;
         if (hotUpdateDlls == null || hotUpdateDlls.Count == 0)

@@ -48471,7 +48471,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
-using HybridCLR.Editor;
+using HybridCLR;
 using UnityEditor;
 using UnityEngine;
 using Unity.SharpZipLib.Utils;
@@ -49127,12 +49127,12 @@ namespace FRFrame.Editor
 
 <file path="Editor/BuildTools/HybridCLRBuildHelper.cs">
 #if UNITY_EDITOR
+using HybridCLR;
+using HybridCLR.Commands;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using HybridCLR.Editor;
-using HybridCLR.Editor.Commands;
 using UnityEditor;
 using UnityEngine;
 
@@ -49408,11 +49408,19 @@ public static class HybridCLRBuildHelper
                 $"[HotFix] HotUpdate source dir not found: {hotSrcDir}\n请先执行 HybridCLR → Generate → All");
         }
 
-        List<string> aotAssemblyNames = SettingsUtil.AOTAssemblyNames;
-        if (aotAssemblyNames == null || aotAssemblyNames.Count == 0)
+        // HybridCLR 9 no longer stores the supplementary AOT list in its settings.
+        List<string> aotAssemblyNames = new List<string>
         {
-            throw new Exception("[HotFix] SettingsUtil.AOTAssemblyNames 为空！");
-        }
+            "DOTween",
+            "System.Core",
+            "UniTask",
+            "Unity.InputSystem",
+            "UnityEngine.CoreModule",
+            "UnityEngine.JSONSerializeModule",
+            "YooAsset",
+            "mscorlib",
+            "System",
+        };
 
         List<string> hotUpdateDlls = SettingsUtil.HotUpdateAssemblyFilesExcludePreserved;
         if (hotUpdateDlls == null || hotUpdateDlls.Count == 0)
@@ -64226,6 +64234,7 @@ namespace FRFrame.Gameplay.Editor
                         // fields actually present on this source belong to its Inspector.
                         var p=so.FindProperty(path);if(p==null)continue;
                         int dot=path.LastIndexOf('.');var owner=Value(group.Source,dot<0?"":path.Substring(0,dot));
+                        if(!GameplaySkillFieldSchema.IsValueFieldVisible(owner,p.name))continue;
                         if(!Visible(owner,p.name)){inactive.Add((group.Source,path));continue;}
                         if(owner is GameplayAbilityDefinitionAsset&&p.name=="Charge"){
                             bool enabled=p.managedReferenceValue!=null;
@@ -64313,6 +64322,7 @@ namespace FRFrame.Gameplay.Editor
         };
         static GameplayAuthoringInspector(){
             Labels["definitionId"]="定义标识";
+            Labels["RecycleWhenParticlesFinish"]="播完回收";
             Labels["ActivationOwnedTags"]="激活期间拥有的标签";
             Labels["CancelAbilitiesWithTags"]="取消具有这些标签的技能";
             Labels["Cost"]="资源消耗";Labels["Charge"]="充能";
@@ -67089,11 +67099,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         // The canvas owns this buffer through Load/Detach; the adjacent Inspector borrows it.
         internal SerializedObject SerializedSource => _cardSerialized;
         private readonly Dictionary<string, Node> _nodes = new Dictionary<string, Node>();
+        // View signatures retain unchanged controls across structural commands. They are not authoring data.
+        private readonly Dictionary<string,string> _cardShapes = new Dictionary<string,string>();
         private readonly Dictionary<string, Port> _outputs = new Dictionary<string, Port>();
         private readonly Dictionary<string, Port> _inputs = new Dictionary<string, Port>();
         private readonly Dictionary<string,GameplaySkillTimeline.ViewState> _timelineStates=new Dictionary<string,GameplaySkillTimeline.ViewState>();
         private bool _loading;
-        public bool ShowDrafts { get; set; }
         public Action<string> Selected;
         public Action<string> Feedback;
         public Action<string, float> AddTimed;
@@ -67110,8 +67121,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private string _inlinePreview;
         public bool HasInlinePreview(string owner)=>owner!=null&&_inlineViews.ContainsKey(owner);
         public float PreviewWidth(string owner)=>_inlineViews.TryGetValue(owner,out var view)&&view.layout.width>0?view.layout.width:200;
+        /// <summary>Session-only viewport height, independent of card width and authoring data.</summary>
+        public float PreviewHeight(string owner)=>_inlineViews.TryGetValue(owner,out var view)?view.style.height.value.value:320;
         private readonly Dictionary<string,IMGUIContainer> _inlineViews=new Dictionary<string,IMGUIContainer>();
         public Vector2 CreationPosition { get; private set; } = new Vector2(340, 80);
+        internal Vector2 CreationCenter=>contentViewContainer.WorldToLocal(worldBound.center);
         public int RefreshCount { get; private set; }
         /// <summary>Actual editor refresh work, exposed to the bounded in-memory UX probe.</summary>
         public int ContextAnalysisCount {get;private set;}
@@ -67126,11 +67140,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             Insert(0, new GridBackground());
             this.AddManipulator(new ContentDragger()); this.AddManipulator(new SelectionDragger()); this.AddManipulator(new RectangleSelector());
             graphViewChanged = Change;
-            RegisterCallback<GeometryChangedEvent>(_=>{if(!_document||_loading)return;foreach(var data in _document.AuthoringGraph.Nodes.Where(HasTimeline))if(_nodes.TryGetValue(data.Id,out var card)){float width=TimelineWidth(data);if(Mathf.Abs(card.resolvedStyle.width-width)>.5f){card.style.width=width;card.style.minWidth=width;card.style.maxWidth=width;if(selection.Contains(card)||_readableFocusId==data.Id)schedule.Execute(()=>{if(card.panel!=null&&(selection.Contains(card)||_readableFocusId==data.Id))FocusReadable(card);});}}});
+            RegisterCallback<GeometryChangedEvent>(_=>{if(!_document||_loading)return;foreach(var data in _document.AuthoringGraph.Nodes.Where(HasTimeline))if(_nodes.TryGetValue(data.Id,out var card)){float width=TimelineWidth(data);if(Mathf.Abs(card.resolvedStyle.width-width)>.5f){card.style.width=width;card.style.minWidth=width;card.style.maxWidth=width;}}});
             serializeGraphElements = elements => { GameplaySkillAuthoringCommands.Copy(_document, SelectedBehaviorIds(elements.OfType<Node>())); return "FRFrame.SkillAuthoring.Clipboard.Schema2"; };
             canPasteSerializedData = data => data == "FRFrame.SkillAuthoring.Clipboard.Schema2";
             unserializeAndPaste = (_, data) => {
-                if(GameplaySkillAuthoringCommands.ClipboardHasRules){var menu=new GenericMenu();menu.AddItem(new GUIContent("粘贴为正式附加规则"),false,()=>Paste(true));menu.AddItem(new GUIContent("粘贴为待安排草稿"),false,()=>Paste(false));menu.ShowAsContext();}
+                if(GameplaySkillAuthoringCommands.ClipboardHasRules){var menu=new GenericMenu();menu.AddItem(new GUIContent("粘贴为正式附加规则"),false,()=>Paste(true));menu.AddItem(new GUIContent("粘贴为未启用规则"),false,()=>Paste(false));menu.ShowAsContext();}
                 else Paste(false);
             };
             deleteSelection = (_, __) => {if(!EditingText())RemoveSelected();};
@@ -67142,7 +67156,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             });
         }
         private void Paste(bool active)=>Try(()=>{
-            ShowDrafts=true;var source=_document;
+            var source=_document;
             var ids=GameplaySkillAuthoringCommands.Paste(source,new Vector2(50,50),active);
             // The source notification queues the topology rebuild first. Select only its new
             // identities afterwards, so Delete acts on the paste rather than the original.
@@ -67157,24 +67171,69 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             this.Q<VisualElement>("canvas-action-menu")?.RemoveFromHierarchy();
             bool switched=_document!=document;SaveViewState();
-            if(switched){_policyDrafts.Clear();_selectedInlineAction=null;SelectedEventId=null;_focusAfterLayout=null;_readableFocusId=null;}
-            InvalidateFields();_layoutPreview=null;_document = document; _cardSerialized?.Dispose();_cardSerialized=document?new SerializedObject(document):null;_loading = true; RefreshCount++;
+            if(switched){Undo.ClearUndo(ConfigurationOwner);_policyDrafts.Clear();_selectedInlineAction=null;SelectedEventId=null;_focusAfterLayout=null;_readableFocusId=null;}
+            bool reset=switched||_cardSerialized==null;
+            InvalidateFields();_layoutPreview=null;_document = document;
+            if(reset){_cardSerialized?.Dispose();_cardSerialized=document?new SerializedObject(document):null;}
+            _cardSerialized?.UpdateIfRequiredOrScript();_loading = true; RefreshCount++;
             try
             {
-                DeleteElements(graphElements.ToList()); _nodes.Clear();_policyCards.Clear(); _inputs.Clear(); _outputs.Clear();_inlineViews.Clear();
+                if(reset||!document){
+                    DeleteElements(graphElements.ToList());_nodes.Clear();_cardShapes.Clear();_policyCards.Clear();_inputs.Clear();_outputs.Clear();_inlineViews.Clear();_portsByCard.Clear();_contextContracts.Clear();
+                }
                 _compactOwners.Clear();_inlineOwners.Clear();if (!document || document.AuthoringGraph == null) return;
-                var graph = document.AuthoringGraph;IndexPresentation();_portsByCard.Clear();_contextContracts.Clear(); var active = Reachable(graph);BuildTimelinePresentation(graph);
-                // A displaced End is still a real authoring choice. Keep it visible across
-                // save/reopen while a spatial start needs an explicit ending strategy.
-                bool spatial=graph.Nodes.Any(n=>active.Contains(n.Id)&&GameplaySkillAuthoringCommands.StartsSpatialLifetime(n));
-                foreach (var data in graph.Nodes.Where(n => (ShowDrafts || active.Contains(n.Id)||spatial&&(n.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring)&&!IsTimelineInline(n.Id)&&!(n.Id==graph.PrimaryRuleNodeId&&InlinePrimaryRule(document)))) AddCard(data, active.Contains(data.Id));
+                var graph = document.AuthoringGraph;IndexPresentation();var active = Reachable(graph);BuildTimelinePresentation(graph);
+                // Reachability describes execution, never whether an authored business card exists.
+                // The primary rule and eligible animation retain their existing inline presentation.
+                var visible=graph.Nodes.Where(n=>!IsTimelineInline(n.Id)&&!(n.Id==graph.PrimaryRuleNodeId&&InlinePrimaryRule(document))).ToArray();
+                var scheduledCueLeaves=visible.Where(n=>(n.Payload as GameplayActionNodePayload)?.Action is GameplaySkillActionAuthoring action
+                    &&GameplaySkillNodeDescriptors.Get(action.GetType()).IsPresentationCue
+                    &&graph.Timelines.Any(t=>t.Events.Any(e=>e.EntryNodeId==n.Id))
+                    &&!graph.Connections.Any(e=>e.FromNodeId==n.Id||e.ToNodeId==n.Id))
+                    .Select(n=>n.Id).ToHashSet();
+                var shapes=new Dictionary<string,string>();
+                foreach(var data in visible){
+                    var owners=_consumerCards.Where(p=>p.Value.Contains(data.Id)).Select(p=>p.Key).ToHashSet();
+                    owners.Add(data.Id);
+                    string shape=document.Mode+":"+graph.Scope+":"+JsonUtility.ToJson(data)+"|"+
+                        string.Join("|",graph.Nodes.Where(n=>n.Id!=data.Id&&owners.Contains(n.Id)).Select(n=>JsonUtility.ToJson(n)))+"|"+
+                        string.Join("|",graph.LocalDefinitions.Where(d=>owners.Contains(d.Id)).Select(d=>JsonUtility.ToJson(d)))+"|"+
+                        string.Join("|",graph.Timelines.Where(t=>owners.Contains(t.Id)).Select(t=>JsonUtility.ToJson(t)))+"|"+
+                        string.Join("|",graph.Connections.Where(e=>owners.Contains(e.FromNodeId)||owners.Contains(e.ToNodeId)).Select(e=>JsonUtility.ToJson(e)))+"|"+
+                        string.Join("|",owners.Select(id=>id+":"+IsTimelineInline(id)+":"+(_consumerCards.TryGetValue(id,out var consumers)?string.Join(",",consumers):"")));
+                    if(data.Payload is GameplayAbilityNodePayload)shape+="|"+InlinePrimaryRule(document)+":"+_policyDrafts.Any(p=>p.Key==PolicyKey("Cost"))+":"+_policyDrafts.Any(p=>p.Key==PolicyKey("Recharge"));
+                    if(data.Payload is GameplayRuleNodePayload)shape+="|"+(graph.PrimaryRuleNodeId==data.Id||graph.AdditionalRuleNodeIds.Contains(data.Id));
+                    if(scheduledCueLeaves.Contains(data.Id))shape+="|scheduledCueLeaf";
+                    if(GameplaySkillAuthoringCommands.StartsSpatialLifetime(data))shape+="|"+string.Join(",",graph.Nodes.Where(n=>(n.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring).Select(n=>n.Id+":"+active.Contains(n.Id)));
+                    shapes[data.Id]=shape;
+                }
+                var retired=_nodes.Where(p=>!shapes.TryGetValue(p.Key,out var shape)||!_cardShapes.TryGetValue(p.Key,out var old)||shape!=old).Select(p=>p.Value).ToHashSet();
+                var positions=retired.ToDictionary(n=>n.viewDataKey,n=>n.GetPosition());
+                if(retired.Any(n=>n.viewDataKey==graph.AbilityNodeId)){retired.UnionWith(_policyCards.Values);_policyCards.Clear();}
+                var connectionIds=graph.Connections.Select(e=>e.Id).ToHashSet();var eventIds=graph.Timelines.SelectMany(t=>t.Events).Select(e=>e.Id).ToHashSet();
+                foreach(var wire in edges.ToArray()){
+                    var socket=wire.userData as Socket;
+                    if(retired.Contains(wire.input?.node)||retired.Contains(wire.output?.node)||socket?.Config==null&&socket!=null&&!(socket.Scheduled?eventIds:connectionIds).Contains(socket.Owner)){
+                        wire.input?.Disconnect(wire);wire.output?.Disconnect(wire);RemoveElement(wire);
+                    }
+                }
+                foreach(var key in _inputs.Where(p=>retired.Contains(p.Value.node)).Select(p=>p.Key).ToArray())_inputs.Remove(key);
+                foreach(var key in _outputs.Where(p=>retired.Contains(p.Value.node)).Select(p=>p.Key).ToArray())_outputs.Remove(key);
+                foreach(var card in retired){_nodes.Remove(card.viewDataKey);_portsByCard.Remove(card.viewDataKey);_inlineViews.Remove(card.viewDataKey);RemoveElement(card);}
+                foreach(var data in visible)if(!_nodes.ContainsKey(data.Id)){
+                    AddCard(data,active.Contains(data.Id),scheduledCueLeaves.Contains(data.Id));
+                    // New UI controls need one geometry pass. Preserve an existing card's reading
+                    // position immediately instead of briefly drawing it at its source coordinates.
+                    if(BusinessReading&&positions.TryGetValue(data.Id,out var rect))_nodes[data.Id].SetPosition(rect);
+                }
+                _cardShapes.Clear();foreach(var pair in shapes)_cardShapes.Add(pair.Key,pair.Value);
                 foreach (var edge in graph.Connections)
                     if (_outputs.TryGetValue(Key(edge.FromNodeId, edge.OutputPortKey), out var output) && _inputs.TryGetValue(edge.InputPortKey==GameplayGraphEffectCallbacks.Input?Key(edge.ToNodeId,GameplayGraphEffectCallbacks.Input):edge.ToNodeId, out var input)) AddWire(output, input, edge.Id, false);
                 foreach (var timeline in graph.Timelines)
                     foreach (var entry in timeline.Events)
                         if (_outputs.TryGetValue(Key(entry.Id, "Schedule"), out var output) && _inputs.TryGetValue(entry.EntryNodeId ?? "", out var input)) AddWire(output, input, entry.Id, true);
             }
-            finally { _loading = false;if(document){RefreshPortPolicy();RefreshContextContracts(true);SetInlinePreview(_inlineViews.Keys.FirstOrDefault());RestoreViewMode(switched);} }
+            finally { _loading = false;if(document){RefreshPresentation(null);RefreshPortPolicy();RefreshContextContracts(true);SetInlinePreview(_inlineViews.Keys.FirstOrDefault());RestoreViewMode(switched);} }
         }
         public static HashSet<string> Reachable(GameplayAuthoringGraph graph)
         { return GameplayGraphContextPolicy.Reachable(graph); }
@@ -67183,7 +67242,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var rule=document.AuthoringGraph.Nodes.Find(n=>n.Id==document.AuthoringGraph.PrimaryRuleNodeId)?.Payload as GameplayRuleNodePayload;
             return document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active&&rule?.Trigger is GameplaySkillEventTriggerAuthoring trigger&&trigger.EventTag.Name==document.CastEvent.Name&&!rule.Once&&(rule.Conditions?.Length??0)==0;
         }
-        private void AddCard(GameplayAuthoringNode data, bool active)
+        private void AddCard(GameplayAuthoringNode data, bool active, bool scheduledCueLeaf)
         {
             var card = new Node { title = GameplaySkillNodeDisplay.Name(data,_document.AuthoringGraph), viewDataKey = data.Id, userData = data.Id,layer=-100 };
             card.style.width = data.Payload is GameplayAbilityNodePayload ? 330 : HasTimeline(data) ? TimelineWidth(data) : 360;
@@ -67198,18 +67257,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             card.style.fontSize=12;
             card.inputContainer.style.paddingLeft = 13; card.inputContainer.style.paddingRight = 12;
             card.outputContainer.style.paddingLeft = 12; card.outputContainer.style.paddingRight = 13;
-            var info = new Label((active ? "正式执行" : "未安排草稿 · 尚不执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地")); info.style.fontSize = 12; info.style.paddingLeft = 10; info.style.whiteSpace=WhiteSpace.Normal; card.extensionContainer.Add(info);
+            var info = new Label((active ? "正式执行" : "未接入执行流程 · 不参与执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地")){name="ExecutionStatus"}; info.style.fontSize = 12; info.style.paddingLeft = 10; info.style.whiteSpace=WhiteSpace.Normal; card.extensionContainer.Add(info);
             if (data.Payload is GameplayActionNodePayload)
             {
                 var input = card.InstantiatePort(Orientation.Horizontal, Direction.Input, Port.Capacity.Multi, typeof(GameplaySkillActionAuthoring));
                 input.portName = "执行入口"; input.tooltip="从此入口执行该行为及其后续链；左侧接收，右侧输出。";input.userData = new Socket { Owner = data.Id, Port = "Execute" }; card.inputContainer.Add(input); _inputs[data.Id] = input;
                 if(GameplayGraphEffectCallbacks.EffectBinding(data)!=null){var effectInput=card.InstantiatePort(Orientation.Horizontal,Direction.Input,Port.Capacity.Multi,typeof(GameplayEffectDefinitionAsset));effectInput.portName="作为后续效果";effectInput.tooltip="只消费此 Effect 定义；不会执行该卡的 Then 动作链。";effectInput.userData=new Socket{Owner=data.Id,Port=GameplayGraphEffectCallbacks.Input};card.inputContainer.Add(effectInput);_inputs[Key(data.Id,GameplayGraphEffectCallbacks.Input)]=effectInput;}
             }
-            foreach (var output in GameplayGraphFields.OutputPorts(data).Where(key=>key!="Then"||!((data.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring))) AddPort(card, data.Id, output);
+            bool hideThen=scheduledCueLeaf||(data.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring;
+            foreach (var output in GameplayGraphFields.OutputPorts(data).Where(key=>key!="Then"||!hideThen)) AddPort(card, data.Id, output);
             if(data.Payload is GameplayAbilityNodePayload&&InlinePrimaryRule(_document)){
                 var output=AddPort(card,_document.AuthoringGraph.PrimaryRuleNodeId,"Actions");output.portName="施放执行";
             }
-            var fields=new GameplaySkillCardEditor(_document,data.Id,_cardSerialized){Selecting=()=>{SelectedEventId=null;SelectNodeWithoutCamera(data.Id);Selected?.Invoke(data.Id);},Advanced=path=>{Selected?.Invoke(data.Id);if(path!=null)GameplaySkillFieldSchema.RevealField(_document,path);}};
+            var fields=new GameplaySkillCardEditor(_document,data.Id,_cardSerialized){Selecting=()=>{SelectedEventId=null;SelectNodeWithoutCamera(data.Id);Selected?.Invoke(data.Id);},Advanced=path=>{Selected?.Invoke(data.Id);if(path!=null)GameplaySkillFieldSchema.RevealField(_document,path);ConfigurationOwner?.OpenDetails();}};
             var summary=new Label(GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,fields.HasFields)){name="BusinessSummary"};
             summary.style.whiteSpace=WhiteSpace.Normal;summary.style.paddingLeft=10;summary.style.paddingRight=10;summary.style.paddingTop=7;summary.style.paddingBottom=7;
             summary.style.display=string.IsNullOrEmpty(summary.text)?DisplayStyle.None:DisplayStyle.Flex;card.extensionContainer.Add(summary);
@@ -67236,28 +67296,37 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     view.IsMainAnimation=IsTimelineInline;view.InvalidatePresentation();
                     view.HasAnimation=animationNodes.Length>0;
                     AddMainAnimationControls(card,data.Id,timeline);
-                    var animationHeader=new VisualElement{name="AnimationHeader",style={flexDirection=FlexDirection.Row,alignItems=Align.FlexStart}};
-                    var animationConfig=new VisualElement{name="AnimationConfiguration",style={flexGrow=1,flexShrink=1,minWidth=180}};
+                    var animationHeader=new VisualElement{name="AnimationHeader",style={flexDirection=FlexDirection.Column,alignItems=Align.Stretch}};
+                    var animationConfig=new VisualElement{name="AnimationConfiguration",style={minWidth=0}};
                     animationHeader.Add(animationConfig);
                     foreach(var source in animationNodes){
                         string actionId=source.Id;bool inline=IsTimelineInline(actionId);
                         object values=GameplaySkillNodeDisplay.AnimationValues(source,_document.AuthoringGraph);
                         var label=new Label(inline?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(source.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):
                             GameplaySkillNodeDisplay.EventLabel(source,_document.AuthoringGraph)+" · 参数在独立动画卡"){name="AnimationSource-"+actionId,userData=actionId};
-                        label.AddToClassList("animation-source");label.style.whiteSpace=WhiteSpace.Normal;label.style.marginLeft=10;label.style.fontSize=12;animationConfig.Add(label);
+                        label.AddToClassList("animation-source");label.style.whiteSpace=WhiteSpace.Normal;label.style.marginLeft=10;label.style.fontSize=12;if(!inline)animationConfig.Add(label);
                         if(inline){
-                            var animationFields=new GameplaySkillCardEditor(_document,actionId,_cardSerialized,true){Selecting=()=>{SelectedEventId=null;SelectNodeWithoutCamera(actionId);Selected?.Invoke(actionId);},Advanced=path=>{SelectedEventId=null;SelectNodeWithoutCamera(actionId);Selected?.Invoke(actionId);if(path!=null)GameplaySkillFieldSchema.RevealField(_document,path);}};
+                            var animationFields=new GameplaySkillCardEditor(_document,actionId,_cardSerialized,true){Selecting=()=>{SelectedEventId=null;SelectNodeWithoutCamera(actionId);Selected?.Invoke(actionId);},Advanced=path=>{SelectedEventId=null;SelectNodeWithoutCamera(actionId);Selected?.Invoke(actionId);if(path!=null)GameplaySkillFieldSchema.RevealField(_document,path);ConfigurationOwner?.OpenDetails();}};
                             animationConfig.Add(animationFields);
                         }else animationConfig.Add(new Button(()=>{SelectedEventId=null;FocusNode(actionId);Selected?.Invoke(actionId);}){text="定位独立动画行为",tooltip="编辑同一真实动画行为 "+actionId});
                     }
                     if(animationNodes.Length>0){
-                        var host=new IMGUIContainer(()=>DrawInlinePreview?.Invoke(data.Id)){name="AnimationViewport",style={width=210,flexShrink=0,minHeight=150,marginLeft=8,marginRight=8}};
+                        string heightKey=GameplaySkillEditorState.Key(_document)+".PreviewHeight."+data.Id;
+                        var host=new IMGUIContainer(()=>DrawInlinePreview?.Invoke(data.Id)){name="AnimationViewport",style={alignSelf=Align.Stretch,flexShrink=0,height=SessionState.GetFloat(heightKey,320),marginLeft=8,marginRight=8,marginTop=8}};
+                        // Keep native IMGUI input, but never bubble viewport navigation to GraphView.
+                        host.RegisterCallback<WheelEvent>(e=>e.StopPropagation());
+                        host.RegisterCallback<PointerDownEvent>(e=>{if(e.button==2)e.StopPropagation();});
+                        host.RegisterCallback<PointerMoveEvent>(e=>{if((e.pressedButtons&4)!=0)e.StopPropagation();});
+                        host.RegisterCallback<PointerUpEvent>(e=>{if(e.button==2)e.StopPropagation();});
+                        host.RegisterCallback<MouseDownEvent>(e=>{if(e.button==2)e.StopPropagation();});
+                        host.RegisterCallback<MouseMoveEvent>(e=>{if((e.pressedButtons&4)!=0)e.StopPropagation();});
+                        host.RegisterCallback<MouseUpEvent>(e=>{if(e.button==2)e.StopPropagation();});
                         animationHeader.Add(host);_inlineViews[data.Id]=host;card.extensionContainer.Add(animationHeader);
-                        animationHeader.RegisterCallback<GeometryChangedEvent>(e=>{
-                            bool narrow=e.newRect.width<470;animationHeader.style.flexDirection=narrow?FlexDirection.Column:FlexDirection.Row;
-                            host.style.width=narrow?Mathf.Min(260,e.newRect.width-16):Mathf.Clamp(e.newRect.width*.3f,170,240);
-                            host.style.alignSelf=narrow?Align.Center:Align.FlexStart;
-                        });
+                        var resize=new VisualElement{name="AnimationPreviewHeightHandle",tooltip="上下拖动调整预览高度；不改变卡片宽度或技能数据",style={height=8,marginLeft=8,marginRight=8,marginBottom=8,backgroundColor=new Color(.25f,.32f,.4f)}};
+                        animationHeader.Add(resize);float startY=0,startHeight=0;
+                        resize.RegisterCallback<PointerDownEvent>(e=>{if(e.button!=0)return;startY=contentViewContainer.WorldToLocal(e.position).y;startHeight=host.resolvedStyle.height;resize.CapturePointer(e.pointerId);e.StopPropagation();});
+                        resize.RegisterCallback<PointerMoveEvent>(e=>{if(!resize.HasPointerCapture(e.pointerId))return;host.style.height=Mathf.Max(160,startHeight+contentViewContainer.WorldToLocal(e.position).y-startY);host.MarkDirtyRepaint();e.StopPropagation();});
+                        resize.RegisterCallback<PointerUpEvent>(e=>{if(!resize.HasPointerCapture(e.pointerId))return;resize.ReleasePointer(e.pointerId);SessionState.SetFloat(heightKey,host.style.height.value.value);e.StopPropagation();});
                     }
                     card.extensionContainer.Add(new IMGUIContainer(view.DrawControls){name="TimelineTransport",style={marginLeft=10,marginRight=12}});
                     view.style.alignSelf=Align.Stretch;view.style.marginLeft=8;view.style.marginRight=8;
@@ -67272,21 +67341,21 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             if(data.Payload is GameplayRuleNodePayload){
                 bool enabled=_document.AuthoringGraph.PrimaryRuleNodeId==data.Id||_document.AuthoringGraph.AdditionalRuleNodeIds.Contains(data.Id);
-                if(!enabled)card.extensionContainer.Add(new Button(()=>Try(()=>GameplaySkillAuthoringCommands.SetRuleActive(_document,data.Id,true))){text="启用为正式附加规则",tooltip="先连接真实行为，再显式启用；不完整规则会说明原因。"});
+                if(!enabled)card.extensionContainer.Add(new Button(()=>Try(()=>GameplaySkillAuthoringCommands.SetRuleActive(_document,data.Id,true))){text="启用触发规则",tooltip="先连接真实行为，再显式启用；不完整规则会说明原因。"});
             }
             if (data.Payload is GameplayAbilityNodePayload)
             {
                 var label = new Label(_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能"){name="AbilitySummary"};
                 label.style.whiteSpace = WhiteSpace.Normal; label.style.marginLeft = 10; card.extensionContainer.Add(label);
                 card.extensionContainer.Add(new Button(()=>{
-                    ShowDrafts=true;string rule=null;
-                    Try(()=>rule=GameplaySkillAuthoringCommands.CreateRule(_document,card.GetPosition().position+new Vector2(card.GetPosition().width+80,0)));
-                    if(rule!=null)schedule.Execute(()=>{FocusNode(rule);Selected?.Invoke(rule);});
-                }){text="+ 附加触发规则（草稿）",tooltip="创建 → 配置触发/连接行为 → 在规则卡启用为正式规则；不会生成 Cost/CD 假执行线。"});
+                    string rule=null;
+                    Try(()=>rule=GameplaySkillAuthoringCommands.CreateRule(_document,CreationCenter));
+                    if(rule!=null)schedule.Execute(()=>{SelectNodeWithoutCamera(rule);Selected?.Invoke(rule);});
+                }){text="+ 附加触发规则",tooltip="创建未启用的独立触发规则；配置触发事件、连接行为后，在规则卡启用。"});
 
             }
             
-            StylePorts(card);
+            StylePorts(card,data.Payload is GameplayAbilityNodePayload);
             if(data.Payload is GameplayActionNodePayload&&!HasTimeline(data)){
                 // Real outgoing branches sit beside the business values, not in a tall empty
                 // half-width header. Port objects/owners remain the exact original instances.
@@ -67309,7 +67378,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var handle=new VisualElement{tooltip="拖动调整编排卡宽度；只改变视图布局",style={position=Position.Absolute,right=2,bottom=2,width=20,height=12,backgroundColor=new Color(.25f,.32f,.4f)}};
             card.mainContainer.Add(handle);float start=0,width=0;
             handle.RegisterCallback<PointerDownEvent>(e=>{if(e.button!=0||_layoutPreview!=null)return;start=contentViewContainer.WorldToLocal(e.position).x;width=card.resolvedStyle.width;handle.CapturePointer(e.pointerId);e.StopPropagation();});
-            handle.RegisterCallback<PointerMoveEvent>(e=>{if(!handle.HasPointerCapture(e.pointerId))return;float next=Mathf.Clamp(width+contentViewContainer.WorldToLocal(e.position).x-start,440,1200);card.style.width=next;card.style.minWidth=next;card.style.maxWidth=next;e.StopPropagation();});
+            handle.RegisterCallback<PointerMoveEvent>(e=>{if(!handle.HasPointerCapture(e.pointerId))return;float next=Mathf.Max(440,width+contentViewContainer.WorldToLocal(e.position).x-start);card.style.width=next;card.style.minWidth=next;card.style.maxWidth=next;e.StopPropagation();});
             handle.RegisterCallback<PointerUpEvent>(e=>{if(!handle.HasPointerCapture(e.pointerId))return;handle.ReleasePointer(e.pointerId);float next=card.resolvedStyle.width;Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"调整编排卡宽度",g=>g.Nodes.Single(n=>n.Id==data.Id).Size=new Vector2(next,0),false,GameplaySkillAuthoringChange.Local(new[]{data.Id},true)));e.StopPropagation();});
         }
         private bool HasTimeline(GameplayAuthoringNode node) => node.Payload.Definitions.Any(b => _document.AuthoringGraph.Timelines.Any(t => t.Id == b.LocalId));
@@ -67336,7 +67405,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private static string Key(string id, string port) => id + ":" + port;
         private void AddWire(Port output, Port input, string id, bool scheduled)
-        { var wire = new GameplaySkillExecutionEdge{Scheduled=scheduled,output=output,input=input};output.Connect(wire);input.Connect(wire);wire.layer=1;wire.visible=!scheduled||output.visible;wire.edgeControl.edgeWidth=2;wire.edgeControl.inputOrientation=Orientation.Horizontal;wire.edgeControl.outputOrientation=Orientation.Horizontal;wire.edgeControl.inputColor=input.portColor;wire.edgeControl.outputColor=output.portColor;wire.tooltip=scheduled?"◇ 时间调度 · 真实事件 "+id+" → "+(input.node?.title??"行为")+"；当前时间、次序与条件见同编号事件。":(output.node?.title??"后续行为")+" · → 同步后续 · "+output.portName+" → "+(input.node?.title??"行为")+" · "+input.portName; wire.userData = new Socket { Owner = id, Scheduled = scheduled }; AddElement(wire); }
+        { if(output.connections.Any(e=>e.input==input&&(e.userData as Socket)?.Owner==id&&(e.userData as Socket)?.Scheduled==scheduled))return;
+            var wire = new GameplaySkillExecutionEdge{Scheduled=scheduled,output=output,input=input};output.Connect(wire);input.Connect(wire);wire.layer=1;wire.visible=!scheduled||output.visible;wire.edgeControl.edgeWidth=2;wire.edgeControl.inputOrientation=Orientation.Horizontal;wire.edgeControl.outputOrientation=Orientation.Horizontal;wire.edgeControl.inputColor=input.portColor;wire.edgeControl.outputColor=output.portColor;wire.tooltip=scheduled?"◇ 时间调度 · 真实事件 "+id+" → "+(input.node?.title??"行为")+"；当前时间、次序与条件见同编号事件。":(output.node?.title??"后续行为")+" · → 同步后续 · "+output.portName+" → "+(input.node?.title??"行为")+" · "+input.portName; wire.userData = new Socket { Owner = id, Scheduled = scheduled }; AddElement(wire); }
         public override List<Port> GetCompatiblePorts(Port startPort, NodeAdapter nodeAdapter){var check=_connectionChecker??(_connectionChecker=GameplayGraphContextPolicy.ConnectionChecker(_document.AuthoringGraph));return ports.Where(p=>p.direction!=startPort.direction&&p.node!=startPort.node&&p.portType==startPort.portType&&CanUse(p)&&CanUse(startPort)&&ContextCompatible(startPort,p,check)).ToList();}
         private bool ContextCompatible(Port first,Port second,Func<string,string,string,string,bool,string> check){if((first.userData as Socket)?.Config!=null)return (first.userData as Socket).Config==(second.userData as Socket)?.Config;var from=(Socket)(first.direction==Direction.Output?first:second).userData;var to=(Socket)(first.direction==Direction.Input?first:second).userData;
             string reason=check(from.Owner,from.Port,to.Owner,to.Port,from.Scheduled);if(reason!=null){(first.direction==Direction.Input?first:second).tooltip=reason;return false;}return true;}
@@ -67352,7 +67422,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 change.edgesToCreate?.Clear();change.elementsToRemove?.Clear();
                 if(pending.Any(p=>p.source.Config!=null)||removed.Any(e=>e.Config!=null)){
                     foreach(var edge in removed.Where(e=>e.Config!=null))if(!pending.Any(p=>p.source.Config==edge.Config))DetachPolicy(edge.Config);
-                    foreach(var item in pending.Where(p=>p.source.Config!=null))if(item.source.Config==item.target.Config&&_policyDrafts.ContainsKey(PolicyKey(item.source.Config)))ReconnectPolicy(item.source.Config);
+                    foreach(var item in pending.Where(p=>p.source.Config!=null))if(item.source.Config==item.target.Config&&_policyDrafts.Any(p=>p.Key==PolicyKey(item.source.Config)))ReconnectPolicy(item.source.Config);
                     return change;
                 }
                 Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"重连正式行为",graph=>{
@@ -67384,23 +67454,44 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(focus is TextField||focus is FloatField||focus is IntegerField)return true;
             return false;
         }
-        private void RemoveSelected()
+        private void RemoveSelected(IEnumerable<ISelectable> elements=null)
         {
             if (!_document) return;
-            foreach(string role in selection.OfType<Node>().Where(n=>n.viewDataKey.StartsWith("Config:",StringComparison.Ordinal)).Select(n=>n.viewDataKey.Substring(7)).Concat(selection.OfType<Edge>().Select(e=>(e.userData as Socket)?.Config).Where(r=>r!=null)).Distinct().ToArray())DetachPolicy(role);
-            var selected = SelectedBehaviorIds(selection.OfType<Node>()).ToArray();
-            if(selected.Length==0&&!selection.OfType<Edge>().Any(e=>(e.userData as Socket)?.Config==null))return;
+            var chosen=(elements??selection).ToArray();
+            var edges=chosen.OfType<Edge>().Select(e=>e.userData as Socket).Where(s=>s!=null).ToArray();
+            // An edge operation cannot inherit a previously selected card and delete it.
+            // Removing nodes remains an explicit node-only selection operation.
+            var cards=edges.Length>0?Array.Empty<Node>():chosen.OfType<Node>().ToArray();
+            foreach(string role in edges.Select(e=>e.Config).Where(r=>r!=null).Distinct().ToArray())DetachPolicy(role);
+            var policies=cards.Where(n=>n.viewDataKey.StartsWith("Config:",StringComparison.Ordinal)).Select(n=>n.viewDataKey.Substring(7)).Distinct().ToArray();
+            var selected = SelectedBehaviorIds(cards).ToArray();
+            if(selected.Length==0&&policies.Length==0&&!edges.Any(e=>e.Config==null))return;
             if (selected.Contains(_document.AuthoringGraph.AbilityNodeId)) { DeleteMain?.Invoke(); return; }
-            Try(() => GameplaySkillAuthoringCommands.Transaction(_document, "删除所选行为 / 连接", graph => {
-                var edges = selection.OfType<Edge>().Select(e => e.userData as Socket).Where(s => s != null&&s.Config==null).ToArray();
-                foreach (var edge in edges) { if (edge.Scheduled) foreach (var timeline in graph.Timelines) timeline.Events.RemoveAll(e => e.Id == edge.Owner); else GameplaySkillAuthoringCommands.DisconnectInGraph(graph,edge.Owner); }
+            Try(() => {
+                if(policies.Length>0)Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"删除配置节点");
+                GameplaySkillAuthoringCommands.Transaction(_document, "删除所选节点 / 连接", graph => {
+                foreach (var edge in edges.Where(s=>s.Config==null)) { if (edge.Scheduled) foreach (var timeline in graph.Timelines) timeline.Events.RemoveAll(e => e.Id == edge.Owner); else GameplaySkillAuthoringCommands.DisconnectInGraph(graph,edge.Owner); }
+                if(policies.Length>0){
+                    var ability=(GameplayAbilityNodePayload)graph.Nodes.Single(n=>n.Id==graph.AbilityNodeId).Payload;
+                    var settings=(GameplayAbilityDefinitionData)ability.Settings;
+                    var released=policies.Contains("Recharge")?ability.Definitions.Where(b=>b.PropertyPath=="CooldownEffect").Select(b=>b.LocalId).ToArray():Array.Empty<string>();
+                    if(policies.Contains("Cost"))settings.Cost=null;
+                    if(policies.Contains("Recharge")){settings.Charge=null;ability.Definitions.RemoveAll(b=>b.PropertyPath=="CooldownEffect");}
+                    GameplaySkillAuthoringCommands.CollectReleased(graph,released);
+                }
                 GameplaySkillAuthoringCommands.DeleteFromGraph(graph, selected);
-            }));
+                });
+                _policyDrafts.RemoveAll(p=>policies.Any(role=>p.Key==PolicyKey(role)));
+            });
         }
         public override void BuildContextualMenu(ContextualMenuPopulateEvent evt)
         {
-            CreationPosition = contentViewContainer.WorldToLocal(evt.mousePosition);
-            evt.menu.AppendAction("创建业务行为…", _ => ShowMenu(evt.mousePosition));
+            var target=evt.target as VisualElement;
+            var contextEdge=target as Edge??target?.GetFirstAncestorOfType<Edge>();
+            if(contextEdge!=null&&!selection.Contains(contextEdge)){ClearSelection();AddToSelection(contextEdge);}
+            Vector2 anchor=evt.mousePosition;
+            CreationPosition = contentViewContainer.WorldToLocal(anchor);
+            evt.menu.AppendAction("创建节点…", _ => ShowMenu(anchor));
             AddCallbackCreationMenu(evt);
             if(_selectedInlineAction!=null&&_inlineOwners.TryGetValue(_selectedInlineAction,out var inlineOwner)){
                 string action=_selectedInlineAction;evt.menu.AppendAction("时间事件 / 展开独立卡片",_=>RevealTimelineAction(action));
@@ -67409,12 +67500,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach(var selectedCard in selection.OfType<Node>().Where(n=>_compactOwners.ContainsKey(n.viewDataKey)&&!IsTimelineInline(n.viewDataKey))){string id=selectedCard.viewDataKey;evt.menu.AppendAction("收回时间轴内编辑",_=>CompactTimelineAction(id));}
             foreach(var selected in selection.OfType<Node>().Select(n=>_document.AuthoringGraph.Nodes.FirstOrDefault(d=>d.Id==n.viewDataKey)).Where(n=>n?.Payload is GameplayRuleNodePayload)){
                 string id=selected.Id;bool active=_document.AuthoringGraph.PrimaryRuleNodeId==id||_document.AuthoringGraph.AdditionalRuleNodeIds.Contains(id);
-                evt.menu.AppendAction(active?"规则 / 停用为草稿":"规则 / 启用为正式附加规则",_=>Try(()=>GameplaySkillAuthoringCommands.SetRuleActive(_document,id,!active)));
+                evt.menu.AppendAction(active?"规则 / 停用触发规则":"规则 / 启用触发规则",_=>Try(()=>GameplaySkillAuthoringCommands.SetRuleActive(_document,id,!active)));
             }
-            if (selection.Count > 0) evt.menu.AppendAction("删除所选", _ => RemoveSelected());
+            var chosen=selection.ToArray();
+            if (chosen.Length > 0) evt.menu.AppendAction(chosen.OfType<Edge>().Any()?"删除所选连线（保留节点）":"删除所选", _ => RemoveSelected(chosen));
         }
         public void ShowMenu(Vector2? anchor = null, string timeline = null, float? seconds = null, Socket source=null)
-        { CreationLink=source==null?null:new GameplaySkillAuthoringCommands.CreationLink{Owner=source.Owner,Port=source.Port,Scheduled=source.Scheduled,Input=_document.AuthoringGraph.LocalDefinitions.Any(d=>d.Id==source.Owner&&GameplayGraphEffectCallbacks.IsPort(d.Payload,source.Port))?GameplayGraphEffectCallbacks.Input:"Execute"};if(anchor.HasValue)CreationPosition=contentViewContainer.WorldToLocal(anchor.Value);if(!anchor.HasValue){if(timeline==null)CreationPosition=contentViewContainer.WorldToLocal(worldBound.center);else{var owner=_document.AuthoringGraph.Nodes.Find(n=>n.Payload.Definitions.Any(b=>b.LocalId==timeline));if(owner!=null&&_nodes.TryGetValue(owner.Id,out var card))CreationPosition=card.GetPosition().position+new Vector2(card.GetPosition().width+90,30);}}GameplaySkillCreationMenu.Show(this, source!=null?"从此端口创建并连接":timeline == null ? "创建未安排行为（不执行）" : "此帧创建并安排", menu => Populate?.Invoke(menu, CreationPosition, timeline, seconds), anchor); }
+        { CreationLink=source==null?null:new GameplaySkillAuthoringCommands.CreationLink{Owner=source.Owner,Port=source.Port,Scheduled=source.Scheduled,Input=_document.AuthoringGraph.LocalDefinitions.Any(d=>d.Id==source.Owner&&GameplayGraphEffectCallbacks.IsPort(d.Payload,source.Port))?GameplayGraphEffectCallbacks.Input:"Execute"};CreationPosition=anchor.HasValue?contentViewContainer.WorldToLocal(anchor.Value):CreationCenter;GameplaySkillCreationMenu.Show(this, source!=null?"从此端口创建并连接":timeline == null ? "创建节点" : "此帧创建并安排", menu => Populate?.Invoke(menu, CreationPosition, timeline, seconds), anchor); }
         private sealed class CreationConnector:IEdgeConnectorListener
         {
             private readonly GameplayBehaviorGraphView _view;
@@ -67436,8 +67528,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         public void SelectNodeWithoutCamera(string id){ClearSelection();_selectedInlineAction=IsTimelineInline(id)?id:null;string cardId=_selectedInlineAction!=null?_inlineOwners[id]:id;if(_nodes.TryGetValue(cardId??"",out var node))AddToSelection(node);if(_document)HighlightBehavior(id);}
         public void SetInlinePreview(string id){_inlinePreview=id;InlinePreviewChanged?.Invoke(id,id!=null);foreach(var pair in _inlineViews)pair.Value.MarkDirtyRepaint();}
-        public void SaveViewState(){if(!_document)return;foreach(var state in _timelineStates.Values)state.Save();string key=CameraKey;SessionState.SetVector3(key+".Pan",_explicitLayoutPreview?_layoutPan:viewTransform.position);SessionState.SetFloat(key+".Zoom",_explicitLayoutPreview?_layoutZoom.x:viewTransform.scale.x);if(BusinessReading&&_layoutPreview!=null)SessionState.SetString(GameplaySkillEditorState.Key(_document)+".ReadingLayout",JsonUtility.ToJson(new ReadingLayout{Ids=_layoutPreview.Keys.ToList(),Positions=_layoutPreview.Values.ToList()}));}
-        private void RestoreCamera(){string key=CameraKey;float zoom=SessionState.GetFloat(key+".Zoom",-1);if(zoom<0){UpdateViewTransform(Vector3.zero,Vector3.one);var source=_document;schedule.Execute(()=>{if(_document==source)FocusMainFlow();}).StartingIn(100);}else UpdateViewTransform(SessionState.GetVector3(key+".Pan",Vector3.zero),Vector3.one*zoom);}
+        public void SaveViewState(){if(!_document)return;foreach(var state in _timelineStates.Values)state.Save();string key=CameraKey;SessionState.SetVector3(key+".Pan",_explicitLayoutPreview?_layoutPan:viewTransform.position);SessionState.SetFloat(key+".Zoom",_explicitLayoutPreview?_layoutZoom.x:viewTransform.scale.x);if(BusinessReading&&_nodes.Count>0)SessionState.SetString(GameplaySkillEditorState.Key(_document)+".ReadingLayout",JsonUtility.ToJson(new ReadingLayout{Ids=_nodes.Keys.ToList(),Positions=_nodes.Values.Select(n=>n.GetPosition().position).ToList()}));}
+        private void RestoreCamera(){string key=CameraKey;float zoom=SessionState.GetFloat(key+".Zoom",-1);if(zoom<0){UpdateViewTransform(Vector3.zero,Vector3.one);var source=_document;int generation=RefreshCount;schedule.Execute(()=>{if(_document==source&&RefreshCount==generation&&viewTransform.position==Vector3.zero&&viewTransform.scale==Vector3.one)FocusMainFlow();}).StartingIn(100);}else UpdateViewTransform(SessionState.GetVector3(key+".Pan",Vector3.zero),Vector3.one*zoom);}
         public void FocusNode(string id)
         { string cardId=IsTimelineInline(id)?_inlineOwners[id]:id;if (_nodes.ContainsKey(cardId??"")) { SelectNodeWithoutCamera(id);if(BusinessReading&&_layoutPreview==null){_focusAfterLayout=id;return;} FocusReadable(_nodes[cardId]); } }
         private void Try(Action action) { try { action();Feedback?.Invoke(null); } catch (Exception e) { Feedback?.Invoke(e.Message); } }
@@ -67470,7 +67562,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             string ownership=binding==null?"尚未配置真实空间资源。":binding.External?"生命周期归属由共享资源配置；共享来源只读。":resource is GameplayProjectileDefinitionData projectile&&!projectile.CancelOnAbilityEnd?"当前弹体由世界托管；结束或取消技能不会清理弹体。":"当前对象随施放结束 / 取消清理。";
             var endIds=graph.Nodes.Where(n=>(n.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring).Select(n=>n.Id).ToHashSet();
             var current=graph.Connections.Where(e=>endIds.Contains(e.ToNodeId)&&(e.FromNodeId==node.Id&&e.OutputPortKey=="Then"||binding!=null&&e.FromNodeId==binding.LocalId)).Select(e=>e.OutputPortKey+" → "+GameplaySkillNodeDisplay.Name(graph.Nodes.Single(n=>n.Id==e.ToNodeId),graph)).ToArray();
-            var label=new Label((pending?"结束策略待决 · 原结束节点保留为可见草稿\n":"")+"启动后继续立即返回，不等待对象结束。"+ownership+(current.Length>0?"\n直接结束关联："+string.Join("；",current):"")){
+            var label=new Label((pending?"结束策略待决 · 原结束节点保留，尚未接入执行流程\n":"")+"启动后继续立即返回，不等待对象结束。"+ownership+(current.Length>0?"\n直接结束关联："+string.Join("；",current):"")){
                 name="SpatialLifecycleSummary",style={whiteSpace=WhiteSpace.Normal,fontSize=11,marginLeft=10,marginRight=10,color=new Color(1,.77f,.4f)}};
             card.extensionContainer.Add(label);
             var choose=new Button(()=>ShowSpatialEndChoices(node.Id)){text="选择 / 替换真实结束策略…"};
@@ -67543,8 +67635,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private void AddMainAnimationControls(Node card,string owner,GameplayAuthoringTimeline timeline)
         {
-            var sourceDocument=_document;string main=timeline.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);
-            card.extensionContainer.Add(new Button(()=>GameplaySkillCreationMenu.Show(this,"设置主动画 · 使用真实后端",menu=>{
+            string main=timeline.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);
+            if(main==null)card.extensionContainer.Add(new Button(()=>ShowMainAnimationMenu(null,timeline)){text="＋ 设置主动画（可选）",tooltip="主动画使用真实 Animation Action 和唯一 Schedule；无动画也能执行。"});
+        }
+        private void ShowMainAnimationMenu(string main,GameplayAuthoringTimeline timeline)
+        {
+            GameplaySkillCreationMenu.Show(this,"设置主动画 · 使用真实后端",menu=>{
                 foreach(var type in GameplayAuthoringTypeCatalog.Query(typeof(GameplaySkillActionAuthoring),_document.AuthoringGraph.Scope).Where(t=>GameplaySkillNodeDescriptors.Get(t).IsAnimation)){
                     var action=(GameplaySkillActionAuthoring)Activator.CreateInstance(type);
                     var slot=GameplayGraphFields.ResourceSlots(action).FirstOrDefault();if(slot==null)continue;
@@ -67554,35 +67650,60 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         string reason=GameplaySkillTypeAvailability.Reason(_document,type);
                         if(reason!=null){label.tooltip=reason;menu.AddDisabledItem(label);continue;}
                         menu.AddItem(label,false,()=>Try(()=>{
-                            if(main==null)GameplaySkillAuthoringCommands.CreateAction(_document,(GameplaySkillActionAuthoring)Activator.CreateInstance(actionType),"主动画",card.GetPosition().position+new Vector2(0,-160),(GameplayLocalDefinitionPayload)Activator.CreateInstance(value),path,timeline.Id,0);
+                            if(main==null)GameplaySkillAuthoringCommands.CreateAction(_document,(GameplaySkillActionAuthoring)Activator.CreateInstance(actionType),"主动画",CreationCenter,(GameplayLocalDefinitionPayload)Activator.CreateInstance(value),path,timeline.Id,0);
                             else GameplaySkillAuthoringCommands.Transaction(_document,"更换主动画后端",g=>{
                                 var node=g.Nodes.Single(n=>n.Id==main);var old=node.Payload.Definitions.Select(b=>b.LocalId).ToArray();
                                 var local=new GameplayLocalDefinition{Name="主动画",SourceDefinitionId=_document.DefinitionId,Payload=(GameplayLocalDefinitionPayload)Activator.CreateInstance(value)};
                                 node.Payload=new GameplayActionNodePayload{Action=(GameplaySkillActionAuthoring)Activator.CreateInstance(actionType)};
                                 node.Payload.Definitions.Add(new GameplayDefinitionBinding{PropertyPath=path,LocalId=local.Id});g.LocalDefinitions.Add(local);GameplaySkillAuthoringCommands.CollectReleased(g,old);
                             });
-                            schedule.Execute(()=>{if(_document==sourceDocument&&BusinessReading){ReflowReading();FocusNode(owner);}}).StartingIn(250);
                         }));
                     }
                 }
-            })){text=main==null?"＋ 设置主动画（可选；无动画也能执行）":"更换主动画后端…",tooltip="主动画使用真实 Animation Action 和唯一 Schedule，显示在卡头，不重复普通事件行。"});
-            if(main==null)return;
-            string entry=timeline.Events.Single(e=>e.EntryNodeId==main).Id;
-            card.extensionContainer.Add(new IMGUIContainer(()=>{
-                var current=_document.AuthoringGraph.Timelines.Find(t=>t.Id==timeline.Id);var occurrence=current?.Events.Find(e=>e.Id==entry);if(occurrence==null)return;
+            });
+        }
+        /// <summary>Edits the same inline animation and schedule from the right business Inspector.</summary>
+        internal void DrawMainAnimationSettings(string selected)
+        {
+            string owner=selected!=null&&_inlineOwners.TryGetValue(selected,out var timelineOwner)?timelineOwner:selected;
+            var node=_document.AuthoringGraph.Nodes.Find(n=>n.Id==owner);if(node==null)return;
+            foreach(var current in _document.AuthoringGraph.Timelines.Where(t=>node.Payload.Definitions.Any(b=>b.LocalId==t.Id))){
+                string main=current.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);if(main==null)continue;
+                string timelineId=current.Id;var occurrence=current.Events.Single(e=>e.EntryNodeId==main);string entry=occurrence.Id;
+                GUILayout.Space(8);GUILayout.Label("主动画设置",EditorStyles.boldLabel);
+                if(GUILayout.Button(new GUIContent("预览输入…","调整预览等级、变体采样和临时数值输入。")))
+                    PreviewRequested?.Invoke(owner);
+                using(new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode||GameplaySkillAuthoringCommands.IsReadOnly(_document))){
                 float frame=EditorGUILayout.DelayedFloatField("主动画开始（帧）",occurrence.TimeSeconds*current.FramesPerSecond);
                 if(frame!=occurrence.TimeSeconds*current.FramesPerSecond)Try(()=>GameplaySkillAuthoringCommands.MoveEvent(_document,entry,frame/current.FramesPerSecond));
                 if(GameplaySkillFieldSchema.TryDuration(_document.AuthoringGraph,main,out _,out _,out float duration)){
                     EditorGUILayout.LabelField("动画 / 编排长度",duration.ToString("0.###")+"s / "+current.DurationSeconds.ToString("0.###")+"s");
-                    string followKey=FollowKey(_document,timeline.Id);bool follow=SessionState.GetString(followKey,"")==main;
+                    string followKey=FollowKey(_document,timelineId);bool follow=SessionState.GetString(followKey,"")==main;
                     bool next=EditorGUILayout.Toggle(new GUIContent("本次会话跟随主动画","修改Clip、速度或偏移时更新真实编排总长；其它事件与End时点保持。关闭后可独立编辑总长。"),follow);
                     if(next!=follow){SessionState.SetString(followKey,next?main:"");if(next)Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"编排跟随主动画",g=>{}));}
                     if(GUILayout.Button(new GUIContent("编排时长覆盖动画","其它事件与 End 时点不变")))Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"编排长度覆盖主动画",g=>{
-                        var t=g.Timelines.Single(x=>x.Id==timeline.Id);t.DurationSeconds=Mathf.Max(t.Events.Max(e=>e.TimeSeconds),occurrence.TimeSeconds+duration);
+                        var t=g.Timelines.Single(x=>x.Id==timelineId);t.DurationSeconds=Mathf.Max(t.Events.Max(e=>e.TimeSeconds),occurrence.TimeSeconds+duration);
                     }));
                 }
-            }){style={minWidth=0}});
-            card.extensionContainer.Add(new Button(()=>Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"移除主动画调度，保留行为草稿",g=>g.Timelines.Single(t=>t.Id==timeline.Id).Events.RemoveAll(e=>e.Id==entry)))){text="移除主动画调度 · 保留行为草稿"});
+                if(GUILayout.Button("更换主动画后端…"))ShowMainAnimationMenu(main,current);
+                if(GUILayout.Button("移除主动画调度 · 保留动画行为")){
+                    Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"移除主动画调度，保留动画行为",g=>g.Timelines.Single(t=>t.Id==timelineId).Events.RemoveAll(e=>e.Id==entry)));
+                    GUIUtility.ExitGUI();
+                }
+                var graph=_document.AuthoringGraph;
+                var liveTimeline=graph.Timelines.Single(t=>t.Id==timelineId);
+                var liveEvent=liveTimeline.Events.Single(e=>e.Id==entry);
+                _cardSerialized.UpdateIfRequiredOrScript();
+                var entryProperty=_cardSerialized.FindProperty("authoringGraph.Timelines")
+                    .GetArrayElementAtIndex(graph.Timelines.IndexOf(liveTimeline))
+                    .FindPropertyRelative("Events").GetArrayElementAtIndex(liveTimeline.Events.IndexOf(liveEvent));
+                GUILayout.Label("调度条件 / 目标覆盖会将动画显示为独立事件。",EditorStyles.wordWrappedMiniLabel);
+                var paths=new System.Collections.Generic.HashSet<string>();
+                GameplaySkillWorkbench.DrawScheduleOptions(entryProperty,paths);
+                if(paths.Count>0)GameplaySkillFieldSchema.ApplyFields(_cardSerialized,_document,false,paths);
+                }
+                using(GameplayAuthoringInspector.UseFieldContext("Inspector"))GameplaySkillFieldSchema.Draw(_cardSerialized,_document,main,null,true,true);
+            }
         }
     }
 }
@@ -67608,8 +67729,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private sealed class CostConfiguration {}
         private sealed class RechargeConfiguration {}
         private readonly Dictionary<string,Node> _policyCards=new Dictionary<string,Node>();
-        private readonly Dictionary<string,DetachedPolicy> _policyDrafts=new Dictionary<string,DetachedPolicy>();
-        private sealed class DetachedPolicy {internal GameplayAbilityCostAuthoring Cost;internal GameplayAbilityChargeAuthoring Charge;internal GameplayDefinitionBinding Cooldown;}
+        // The window owns this session-only list so native Undo can restore a deleted
+        // disconnected card as well as a connected card's document fields.
+        [Serializable] internal sealed class DetachedPolicy {
+            public string Key;
+            [SerializeReference] public GameplayAbilityCostAuthoring Cost;
+            [SerializeReference] public GameplayAbilityChargeAuthoring Charge;
+            public GameplayDefinitionBinding Cooldown;
+        }
+        internal GameplaySkillWorkbench ConfigurationOwner;
+        private List<DetachedPolicy> _policyDrafts=>ConfigurationOwner.DetachedPolicies;
         public Action<string> PolicySelected;
         private string PolicyKey(string role)=>_document.GetInstanceID()+":"+role;
         private GameplayAbilityNodePayload AbilityPayload=>_document.AuthoringGraph.Nodes.Single(n=>n.Id==_document.AuthoringGraph.AbilityNodeId).Payload as GameplayAbilityNodePayload;
@@ -67619,19 +67748,39 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach(string role in new[]{"Cost","Recharge"}){
                 var type=role=="Cost"?typeof(CostConfiguration):typeof(RechargeConfiguration);
                 var input=skill.InstantiatePort(Orientation.Horizontal,Direction.Input,Port.Capacity.Single,type);
-                input.portName=role=="Cost"?"◇ 消耗策略":"◇ 冷却 / 充能策略";input.userData=new Socket{Owner=_document.AuthoringGraph.AbilityNodeId,Config=role};input.portColor=new Color(.64f,.8f,.57f);skill.inputContainer.Add(input);
+                input.portName=role=="Cost"?"◇ 消耗":"◇ 冷却 / 充能";input.tooltip="从创建菜单添加独立配置节点，自动关联当前技能。";input.userData=new Socket{Owner=_document.AuthoringGraph.AbilityNodeId,Config=role};input.portColor=new Color(.64f,.8f,.57f);skill.inputContainer.Add(input);
                 var settings=AbilityPayload.Settings as GameplayAbilityDefinitionData;
                 if(settings==null){skill.extensionContainer.Add(new Label("共享释放配置只读；请先在高级配置选择本地来源。"));continue;}
                 bool connected=role=="Cost"?settings.Cost!=null:settings.Charge!=null||AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect");
-                if(connected||_policyDrafts.ContainsKey(PolicyKey(role)))AddPolicyCard(skill,input,role,connected);
-                else skill.extensionContainer.Add(new Button(()=>ShowPolicyChoices(role)){text=role=="Cost"?"＋ 消耗策略":"＋ 冷却或充能策略"});
+                if(connected||_policyDrafts.Any(p=>p.Key==PolicyKey(role)))AddPolicyCard(skill,input,role,connected);
             }
             skill.extensionContainer.Add(new Button(()=>ShowMenu(null,null,null,new Socket{Owner=_document.AuthoringGraph.PrimaryRuleNodeId,Port="Actions"})){text=_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Passive?"下一步：从主触发规则创建并连接行为":"下一步：从施放执行创建并连接行为",tooltip="连接实际主规则；被动技能先设置真实事件与主体，再选择行为。创建和连接是一次事务。"});
         }
+        /// <summary>Creates the visible configuration cards through the same typed Ability fields
+        /// as the card menu. Re-selecting existing content never resets it or moves its card.</summary>
+        internal void AddConfigurationEntries(IGameplaySkillCreationMenu menu,Vector2 position)
+        {
+            foreach(string kind in new[]{"消耗","冷却","充能"}){
+                string selection=kind;var caption=new GUIContent("技能/"+kind,"创建独立配置节点并自动关联当前技能；已有同类配置则保留。冷却与充能互斥，更换前会确认。");
+                if(!(AbilityPayload.Settings is GameplayAbilityDefinitionData)||GameplaySkillAuthoringCommands.IsReadOnly(_document)){caption.tooltip="当前技能使用共享释放配置或处于只读范例视图；请先选择可编辑的本地技能配置。";menu.AddDisabledItem(caption);}
+                else menu.AddItem(caption,false,()=>{
+                    string role=selection=="消耗"?"Cost":"Recharge";bool existed=_policyCards.ContainsKey(role);var source=_document;
+                    // Adding a second configuration must not displace an existing one.
+                    foreach(var pair in _policyCards){string saved=GameplaySkillEditorState.Key(_document)+".Policy."+pair.Key;SessionState.SetVector3(saved,pair.Value.GetPosition().position);SessionState.SetBool(saved+".Moved",true);}
+                    if(role=="Cost"&&((GameplayAbilityDefinitionData)AbilityPayload.Settings).Cost!=null)PolicySelected?.Invoke(role);
+                    else if(role=="Cost")ChangeCost(typeof(GameplayAttributeAbilityCostAuthoring),false);else ChangeRecharge(selection=="充能");
+                    var settings=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
+                    bool created=role=="Cost"?settings.Cost!=null:settings.Charge!=null||AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect");
+                    if(!created)return;
+                    if(!existed){string key=GameplaySkillEditorState.Key(_document)+".Policy."+role;SessionState.SetVector3(key,position);SessionState.SetBool(key+".Moved",true);}
+                    schedule.Execute(()=>{if(_document!=source)return;if(_policyCards.TryGetValue(role,out var card)){ClearSelection();AddToSelection(card);PolicySelected?.Invoke(role);}});
+                });
+            }
+        }
         private void ShowPolicyChoices(string role)
         {
-            GameplaySkillCreationMenu.Show(this,"配置策略（不是执行动作）",menu=>{
-                if(_policyDrafts.ContainsKey(PolicyKey(role)))menu.AddItem(new GUIContent("重新关联现有临时草稿"),false,()=>ReconnectPolicy(role));
+            GameplaySkillCreationMenu.Show(this,role=="Cost"?"更换消耗配置":"更换冷却 / 充能配置",menu=>{
+                if(_policyDrafts.Any(p=>p.Key==PolicyKey(role)))menu.AddItem(new GUIContent("重新关联已解绑配置"),false,()=>ReconnectPolicy(role));
                 if(role=="Cost")foreach(var type in GameplayAuthoringTypeCatalog.Query(typeof(GameplayAbilityCostAuthoring),_document.AuthoringGraph.Scope)){
                     var item=type;string name=GameplaySkillNodeDescriptors.Get(type).DisplayName;
                     bool existing=((GameplayAbilityDefinitionData)AbilityPayload.Settings).Cost?.GetType()==type;
@@ -67647,10 +67796,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         string id=local.Id;menu.AddItem(new GUIContent("冷却/复用本技能/"+local.Name),false,()=>{
                             if(AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect"&&b.LocalId==id))return;
                             if(!ConfirmPolicyReplacement("Recharge","关联所选局部冷却"))return;
-                            Try(()=>{GameplaySkillAuthoringCommands.Transaction(_document,"重新关联冷却草稿",g=>{
+                            Try(()=>{Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"关联冷却配置");GameplaySkillAuthoringCommands.Transaction(_document,"重新关联保留的冷却配置",g=>{
                             var ability=(GameplayAbilityNodePayload)g.Nodes.Single(n=>n.Id==g.AbilityNodeId).Payload;((GameplayAbilityDefinitionData)ability.Settings).Charge=null;
                             ability.Definitions.RemoveAll(b=>b.PropertyPath=="CooldownEffect");ability.Definitions.Add(new GameplayDefinitionBinding{PropertyPath="CooldownEffect",LocalId=id});
-                        });_policyDrafts.Remove(PolicyKey("Recharge"));});});
+                        });_policyDrafts.RemoveAll(p=>p.Key==PolicyKey("Recharge"));});});
                     }
                 }
             });
@@ -67658,28 +67807,28 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private void ChangeCost(Type type,bool replace)
         {
             if(!replace&&((GameplayAbilityDefinitionData)AbilityPayload.Settings).Cost?.GetType()==type){PolicySelected?.Invoke("Cost");return;}
-            if(!ConfirmPolicyReplacement("Cost","新建消耗策略并替换原配置"))return;
-            Try(()=>{GameplaySkillAuthoringCommands.Transaction(_document,"配置消耗策略",g=>{
+            if(!ConfirmPolicyReplacement("Cost","新建消耗并替换原配置"))return;
+            Try(()=>{Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"配置消耗");GameplaySkillAuthoringCommands.Transaction(_document,"配置消耗",g=>{
                 var settings=(GameplayAbilityDefinitionData)((GameplayAbilityNodePayload)g.Nodes.Single(n=>n.Id==g.AbilityNodeId).Payload).Settings;
                 settings.Cost=(GameplayAbilityCostAuthoring)Activator.CreateInstance(type);
                 if(settings.Cost is GameplayAttributeAbilityCostAuthoring cost)cost.Resources=new[]{new GameplayAttributeAbilityCostAuthoring.Entry{Attribute=new GameplayAttributeReference("Mana")}};
-            });_policyDrafts.Remove(PolicyKey("Cost"));schedule.Execute(FocusMainFlow).StartingIn(170);});
+            });_policyDrafts.RemoveAll(p=>p.Key==PolicyKey("Cost"));});
         }
         private void ChangeRecharge(bool charge,bool replace=false)
         {
             var current=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
             if(!replace&&(charge?current.Charge!=null:AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect"))){PolicySelected?.Invoke("Recharge");return;}
             if(!ConfirmPolicyReplacement("Recharge",charge?"新建默认充能（2次 / 3秒）":"新建普通冷却（3秒）"))return;
-            Try(()=>{GameplaySkillAuthoringCommands.Transaction(_document,"切换冷却或充能",g=>{
+            Try(()=>{Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"切换冷却或充能");GameplaySkillAuthoringCommands.Transaction(_document,"切换冷却或充能",g=>{
                 var ability=(GameplayAbilityNodePayload)g.Nodes.Single(n=>n.Id==g.AbilityNodeId).Payload;var settings=(GameplayAbilityDefinitionData)ability.Settings;
                 ability.Definitions.RemoveAll(b=>b.PropertyPath=="CooldownEffect");settings.Charge=charge?new GameplayAbilityChargeAuthoring{MaxCharges=2,RechargeDuration=3}:null;
                 if(!charge){var local=new GameplayLocalDefinition{Name="技能冷却",SourceDefinitionId=_document.DefinitionId,Payload=new GameplayEffectDefinitionData{DurationPolicy=GameplayEffectDurationPolicy.Duration,Duration=3,GrantedTags=new[]{new GameplayTagReference("Cooldown.Skill."+_document.SkillId)}}};g.LocalDefinitions.Add(local);ability.Definitions.Add(new GameplayDefinitionBinding{PropertyPath="CooldownEffect",LocalId=local.Id});}
-            },generatedTags:charge?null:new[]{"Cooldown.Skill."+_document.SkillId});_policyDrafts.Remove(PolicyKey("Recharge"));schedule.Execute(FocusMainFlow).StartingIn(170);});
+            },generatedTags:charge?null:new[]{"Cooldown.Skill."+_document.SkillId});_policyDrafts.RemoveAll(p=>p.Key==PolicyKey("Recharge"));});
         }
         private bool ConfirmPolicyReplacement(string role,string operation,bool detach=false)
         {
             var settings=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
-            _policyDrafts.TryGetValue(PolicyKey(role),out var draft);
+            var draft=_policyDrafts.Find(p=>p.Key==PolicyKey(role));
             object value=role=="Cost"?(object)(settings.Cost??draft?.Cost):settings.Charge??draft?.Charge;
             var cooldown=AbilityPayload.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect")??draft?.Cooldown;
             if(value==null&&(role=="Cost"||cooldown==null))return true;
@@ -67689,29 +67838,36 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             else if(value!=null)summary=GameplaySkillNodeDescriptors.Get(value.GetType()).DisplayName+"\n"+JsonUtility.ToJson(value,true);
             else if(cooldown.External)summary="普通冷却："+cooldown.External.name+"（共享来源，只读）";
             else {var local=_document.AuthoringGraph.LocalDefinitions.Single(d=>d.Id==cooldown.LocalId);var effect=(GameplayEffectDefinitionData)local.Payload;summary="普通冷却："+local.Name+"\n时长："+(effect.DurationValue==null?effect.Duration.ToString():GameplaySkillFieldSchema.FloatSummary(effect.DurationValue))+" 秒；Tag："+string.Join("、",effect.GrantedTags.Select(t=>t.Name));}
-            string warning=detach?"将清除技能中的这项配置。仅在当前工作台保留临时重连草稿；保存不包含草稿，关闭、换源或域重载后不能靠草稿恢复。":"将丢弃原消耗 / 充能配置（包括临时草稿），使用新的配置。保存、关闭后不能靠草稿恢复。";
+            string warning=detach?"将清除技能中的这项配置。仅在当前工作台保留临时重连缓存；保存不包含缓存，关闭、换源或域重载后不能靠缓存恢复。":"将丢弃原消耗 / 充能配置（包括临时重连缓存），使用新的配置。保存、关闭后不能靠缓存恢复。";
             return EditorUtility.DisplayDialog(operation,"原配置：\n"+summary+"\n\n"+warning+"\n只有本次编辑的 Undo 可撤销。局部冷却定义仍留在技能中，可从菜单重新关联；外部共享 SO 不修改。",detach?"确认清除关联":"确认替换","取消");
         }
         private void AddPolicyCard(Node skill,Port input,string role,bool connected)
         {
-            var card=new Node{title=role=="Cost"?"消耗策略":"冷却 / 充能策略",viewDataKey="Config:"+role,layer=-100};card.style.width=310;card.style.minWidth=310;
+            var settings=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
+            bool charge=(connected?settings.Charge:_policyDrafts.Single(p=>p.Key==PolicyKey(role)).Charge)!=null;
+            var card=new Node{title=role=="Cost"?"消耗":charge?"充能":"冷却",viewDataKey="Config:"+role,layer=-100};card.style.width=310;card.style.minWidth=310;
+            card.style.fontSize=12;card.mainContainer.style.backgroundColor=new Color(.18f,.19f,.2f,1);
             card.titleContainer.style.backgroundColor=new Color(.26f,.36f,.25f);
+            card.titleContainer.style.minHeight=30;var heading=card.titleContainer.Q<Label>();heading.style.fontSize=14;heading.style.unityFontStyleAndWeight=FontStyle.Bold;
             card.RegisterCallback<PointerDownEvent>(_=>PolicySelected?.Invoke(role),TrickleDown.TrickleDown);card.expanded=true;card.Q("collapse-button")?.RemoveFromHierarchy();
             var output=card.InstantiatePort(Orientation.Horizontal,Direction.Output,Port.Capacity.Multi,input.portType);
-            output.portName="◇ 配置关联";output.userData=new Socket{Owner=_document.AuthoringGraph.AbilityNodeId,Config=role};output.portColor=input.portColor;
+            output.portName="◇ 关联技能";output.userData=new Socket{Owner=_document.AuthoringGraph.AbilityNodeId,Config=role};output.portColor=input.portColor;
             output.RemoveManipulator(output.edgeConnector);output.AddManipulator(new EdgeConnector<Edge>(new CreationConnector(this)));card.outputContainer.Add(output);
-            card.extensionContainer.Add(new Label(connected?"仅配置施放策略 · 不参与执行顺序":"已解绑 · 临时草稿不随技能保存；关闭 / 换源 / 域重载后丢失"){style={whiteSpace=WhiteSpace.Normal,fontSize=11}});
+            StylePortBackground(card);
+            card.extensionContainer.Add(new Label(connected?"已关联技能施放":"已解绑 · 临时重连缓存不随技能保存；关闭 / 换源 / 域重载后丢失"){style={whiteSpace=WhiteSpace.Normal,fontSize=11}});
             if(connected){
-                card.extensionContainer.Add(new GameplaySkillCardEditor(_document,_document.AuthoringGraph.AbilityNodeId,_cardSerialized,policyRole:role){Selecting=()=>PolicySelected?.Invoke(role),Advanced=path=>{PolicySelected?.Invoke(role);if(path!=null)GameplaySkillFieldSchema.RevealField(_document,path);}});
-                card.extensionContainer.Add(new Button(()=>PolicySelected?.Invoke(role)){text="复杂配置 / 数值来源…"});
-                card.extensionContainer.Add(new Button(()=>ShowPolicyChoices(role)){text="切换策略 / 关联来源…"});
+                if(role=="Cost")card.extensionContainer.Add(new Label("消耗方式："+GameplaySkillNodeDescriptors.Get(settings.Cost.GetType()).DisplayName){style={whiteSpace=WhiteSpace.Normal,fontSize=11}});
+                if(role=="Cost"&&settings.Cost is GameplayAttributeAbilityCostAuthoring)card.extensionContainer.Add(new Label("资源变化：负数扣除，正数增加。"){style={whiteSpace=WhiteSpace.Normal,fontSize=11}});
+                card.extensionContainer.Add(new GameplaySkillCardEditor(_document,_document.AuthoringGraph.AbilityNodeId,_cardSerialized,policyRole:role){Selecting=()=>PolicySelected?.Invoke(role),Advanced=path=>{PolicySelected?.Invoke(role);if(path!=null)GameplaySkillFieldSchema.RevealField(_document,path);ConfigurationOwner.OpenDetails();}});
+                card.extensionContainer.Add(new Button(()=>{PolicySelected?.Invoke(role);ConfigurationOwner.OpenDetails();}){text="复杂配置 / 数值来源…"});
+                card.extensionContainer.Add(new Button(()=>ShowPolicyChoices(role)){text="更换配置 / 关联来源…"});
                 card.extensionContainer.Add(new Button(()=>DetachPolicy(role)){text="清除关联…（临时重连 / Undo）"});
-            }else card.extensionContainer.Add(new Button(()=>ReconnectPolicy(role)){text="重新关联此策略"});
+            }else card.extensionContainer.Add(new Button(()=>ReconnectPolicy(role)){text="重新关联此配置"});
             if(role=="Recharge"&&connected){var binding=AbilityPayload.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect");var local=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding?.LocalId);if(local!=null&&!_outputs.Values.Any(p=>(p.userData as Socket)?.Owner==local.Id)){foreach(var branch in GameplayGraphFields.ActionArrays(local.Payload))ResourcePort(card,local,binding,branch.Path);foreach(var branch in GameplayGraphEffectCallbacks.Ports(local.Payload))ResourcePort(card,local,binding,branch);}}
             string key=GameplaySkillEditorState.Key(_document)+".Policy."+role;
             var position=SessionState.GetVector3(key,new Vector3(skill.GetPosition().x-390,skill.GetPosition().y+(role=="Cost"?0:300),0));
             card.SetPosition(new Rect(position,new Vector2(310,0)));AddElement(card);_policyCards[role]=card;card.RefreshExpandedState();card.RefreshPorts();
-            if(connected){var wire=new GameplaySkillExecutionEdge{output=output,input=input,layer=1,Config=true};output.Connect(wire);input.Connect(wire);wire.userData=new Socket{Config=role};wire.tooltip="配置关联：写入 Ability 的真实策略，不是运行时执行边";AddElement(wire);}
+            if(connected){var wire=new GameplaySkillExecutionEdge{output=output,input=input,layer=1};output.Connect(wire);input.Connect(wire);wire.edgeControl.edgeWidth=2;wire.userData=new Socket{Config=role};wire.tooltip="关联当前技能的消耗、冷却或充能配置。";AddElement(wire);}
         }
         private void PositionPolicies()
         {
@@ -67726,19 +67882,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             var settings=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
             if(role=="Cost"?settings.Cost==null:settings.Charge==null&&!AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect"))return;
-            if(!ConfirmPolicyReplacement(role,"清除策略关联",true))return;
-            var draft=new DetachedPolicy{Cost=settings.Cost,Charge=settings.Charge,Cooldown=AbilityPayload.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect")};
-            Try(()=>{GameplaySkillAuthoringCommands.Transaction(_document,"解除策略关联（可撤销）",g=>{
+            if(!ConfirmPolicyReplacement(role,"清除配置关联",true))return;
+            var draft=new DetachedPolicy{Key=PolicyKey(role),Cost=settings.Cost,Charge=settings.Charge,Cooldown=AbilityPayload.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect")};
+            Try(()=>{Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"解除配置关联");GameplaySkillAuthoringCommands.Transaction(_document,"解除配置关联（可撤销）",g=>{
                 var ability=(GameplayAbilityNodePayload)g.Nodes.Single(n=>n.Id==g.AbilityNodeId).Payload;var value=(GameplayAbilityDefinitionData)ability.Settings;
                 if(role=="Cost")value.Cost=null;else{value.Charge=null;ability.Definitions.RemoveAll(b=>b.PropertyPath=="CooldownEffect");}
-            });_policyDrafts[PolicyKey(role)]=draft;Load(_document);});
+            });_policyDrafts.RemoveAll(p=>p.Key==PolicyKey(role));_policyDrafts.Add(draft);Load(_document);});
         }
         private void ReconnectPolicy(string role)
         {
-            if(!_policyDrafts.TryGetValue(PolicyKey(role),out var draft))return;
+            var draft=_policyDrafts.Find(p=>p.Key==PolicyKey(role));if(draft==null)return;
             var settings=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
             if(role=="Cost"?settings.Cost!=null:settings.Charge!=null||AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect"))return;
-            Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"重新关联策略",g=>{
+            Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,"重新关联配置",g=>{
                 var ability=(GameplayAbilityNodePayload)g.Nodes.Single(n=>n.Id==g.AbilityNodeId).Payload;var value=(GameplayAbilityDefinitionData)ability.Settings;
                 if(role=="Cost")value.Cost=(GameplayAbilityCostAuthoring)GameplayGraphFields.Clone(draft.Cost);
                 else {value.Charge=(GameplayAbilityChargeAuthoring)GameplayGraphFields.Clone(draft.Charge);ability.Definitions.RemoveAll(b=>b.PropertyPath=="CooldownEffect");if(draft.Cooldown!=null)ability.Definitions.Add((GameplayDefinitionBinding)GameplayGraphFields.Clone(draft.Cooldown));}
@@ -67756,12 +67912,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     var cost=settings.FindPropertyRelative("Cost");
                     if(cost.managedReferenceValue is GameplayAttributeAbilityCostAuthoring attributeCost){
                         var resources=cost.FindPropertyRelative("Resources");
+                        GUILayout.Label("资源消耗 · "+resources.arraySize+" 项",EditorStyles.boldLabel);
                         for(int j=0;j<resources.arraySize;j++){
                             var entry=resources.GetArrayElementAtIndex(j);var delta=entry.FindPropertyRelative("Delta");
-                            EditorGUILayout.LabelField("资源属性",attributeCost.Resources[j].Attribute.Value+"（策略卡编辑）");
+                            EditorGUILayout.BeginHorizontal();
+                            EditorGUILayout.LabelField("资源属性",attributeCost.Resources[j].Attribute.Value+"（配置节点编辑）");
+                            bool remove;
+                            using(new EditorGUI.DisabledScope(resources.arraySize<=1))
+                                remove=GUILayout.Button(new GUIContent("移除","至少保留一项资源。取消全部消耗可删除消耗节点。"),GUILayout.Width(46));
+                            EditorGUILayout.EndHorizontal();
+                            if(remove)EditCostResources(j);
                             GameplayAuthoringInspector.Field(entry.FindPropertyRelative("MinimumBalance"));
                             if(delta.managedReferenceValue is GameplayConstantFloatValueAuthoring){
-                                EditorGUILayout.LabelField("资源变化",GameplaySkillFieldSchema.FloatSummary(attributeCost.Resources[j].Delta)+"（策略卡编辑）");
+                                EditorGUILayout.LabelField("资源变化",GameplaySkillFieldSchema.FloatSummary(attributeCost.Resources[j].Delta)+"（配置节点编辑）");
                                 if(GUILayout.Button("切换此资源的数值来源…")){
                                     var handle=GameplaySourceHandle.Capture(_document,delta.propertyPath);
                                     GameplayAuthoringTypePicker.Show(typeof(GameplayFloatValueAuthoring),_document,type=>{
@@ -67772,9 +67935,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             }else GameplayAuthoringInspector.Field(delta);
                             paths.Add(entry.propertyPath);
                         }
+                        if(GUILayout.Button(new GUIContent("+ 添加资源项","复制第一项的资源属性，变化值为0。可在消耗节点修改属性和数值。")))
+                            EditCostResources(-1);
                     }else GameplayAuthoringInspector.Field(cost);
                     paths.Add(cost.propertyPath);
-                }else if(settings.FindPropertyRelative("Charge").managedReferenceValue!=null){var value=((GameplayAbilityDefinitionData)AbilityPayload.Settings).Charge;EditorGUILayout.LabelField("充能 / 回充",value.MaxCharges+" 次 / "+value.RechargeDuration+" 秒（策略卡编辑）");}
+                }else if(settings.FindPropertyRelative("Charge").managedReferenceValue!=null){var value=((GameplayAbilityDefinitionData)AbilityPayload.Settings).Charge;EditorGUILayout.LabelField("充能 / 回充",value.MaxCharges+" 次 / "+value.RechargeDuration+" 秒（配置节点编辑）");}
                 else {
                     var binding=AbilityPayload.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect");
                     if(binding?.External){EditorGUILayout.ObjectField("共享冷却（只读）",binding.External,typeof(GameplayEffectDefinitionAsset),false);if(GUILayout.Button("定位共享冷却"))EditorGUIUtility.PingObject(binding.External);}
@@ -67783,7 +67948,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         var duration=effect.FindPropertyRelative("DurationValue");
                         if(duration.managedReferenceValue==null||duration.managedReferenceValue is GameplayConstantFloatValueAuthoring){
                             var data=(GameplayEffectDefinitionData)_document.AuthoringGraph.LocalDefinitions[index].Payload;
-                            EditorGUILayout.LabelField("冷却秒数",(data.DurationValue==null?data.Duration.ToString("0.###"):GameplaySkillFieldSchema.FloatSummary(data.DurationValue))+"（策略卡编辑）");
+                            EditorGUILayout.LabelField("冷却秒数",(data.DurationValue==null?data.Duration.ToString("0.###"):GameplaySkillFieldSchema.FloatSummary(data.DurationValue))+"（配置节点编辑）");
                             if(GUILayout.Button("切换冷却的数值来源…")){
                                 var guard=GameplaySkillFieldSchema.CaptureBinding(_document,_document.AuthoringGraph.AbilityNodeId,"CooldownEffect",binding.LocalId);
                                 var handle=GameplaySourceHandle.Capture(_document,duration.propertyPath);
@@ -67799,6 +67964,22 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 if(EditorGUI.EndChangeCheck())GameplaySkillFieldSchema.ApplyFields(so,_document,false,paths);
             }
+        }
+
+        private void EditCostResources(int removeIndex)
+        {
+            bool add=removeIndex<0;
+            Try(()=>GameplaySkillAuthoringCommands.Transaction(_document,add?"添加消耗资源项":"移除消耗资源项",graph=>{
+                var ability=(GameplayAbilityNodePayload)graph.Nodes.Single(n=>n.Id==graph.AbilityNodeId).Payload;
+                var cost=(GameplayAttributeAbilityCostAuthoring)((GameplayAbilityDefinitionData)ability.Settings).Cost;
+                cost.Resources=add
+                    ?cost.Resources.Append(new GameplayAttributeAbilityCostAuthoring.Entry{
+                        Attribute=cost.Resources.Length==0?new GameplayAttributeReference("Mana"):cost.Resources[0].Attribute,
+                        Delta=new GameplayConstantFloatValueAuthoring{Value=0}
+                    }).ToArray()
+                    :cost.Resources.Where((_,index)=>index!=removeIndex).ToArray();
+            },structural:false,invalidation:GameplaySkillAuthoringChange.Local(new[]{_document.AuthoringGraph.AbilityNodeId})));
+            GUIUtility.ExitGUI();
         }
     }
 }
@@ -67819,28 +68000,36 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public sealed partial class GameplayBehaviorGraphView
     {
         private static readonly Color CallbackColor=new Color(.91f,.66f,.29f);
-        private void StylePorts(Node card)
+        private static void StylePortBackground(Node card)
         {
-            bool input=card.inputContainer.Children().OfType<Port>().Any();
-            bool output=card.outputContainer.Children().OfType<Port>().Any();
-            // Incoming sockets form a short row above the independently measured outgoing
-            // branches. One input no longer reserves half of a four-output search card.
+            // GraphView gives the two sides different fills. Paint the full header once.
+            card.outputContainer.parent.style.backgroundColor=GameplayEditorStyles.Surface;
+            card.inputContainer.style.backgroundColor=Color.clear;
+            card.outputContainer.style.backgroundColor=Color.clear;
+        }
+
+        private void StylePorts(Node card,bool alignSides)
+        {
+            StylePortBackground(card);
+            // Give each port its own row. Keep the two groups compact and independently
+            // measured so a single input does not reserve half of a multi-output card.
             var ports=card.inputContainer.parent;
-            ports.style.flexDirection=FlexDirection.Column;
+            ports.style.flexDirection=alignSides?FlexDirection.Row:FlexDirection.Column;
+            if(alignSides)ports.style.justifyContent=Justify.SpaceBetween;
             foreach(var side in new[]{card.inputContainer,card.outputContainer}){
                 side.style.flexGrow=0;side.style.flexBasis=StyleKeyword.Auto;
                 side.style.alignSelf=Align.Stretch;side.style.paddingTop=0;side.style.paddingBottom=0;
+                side.style.flexDirection=FlexDirection.Column;
             }
-            card.inputContainer.style.flexDirection=FlexDirection.Row;
-            card.inputContainer.style.flexWrap=Wrap.Wrap;
             var cardPorts=card.Query<Port>().ToList();_portsByCard[card.viewDataKey]=cardPorts;
             foreach(var port in cardPorts){
                 if((port.userData as Socket)?.Scheduled==true)continue;
                 var socket=port.userData as Socket;var data=_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey);var action=(data?.Payload as GameplayActionNodePayload)?.Action;
                 if(socket?.Port=="Then"){
+                    bool cue=action!=null&&GameplaySkillNodeDescriptors.Get(action.GetType()).IsPresentationCue;
                     bool starts=action is GameplayOwnedSequenceActionAuthoring||action is GameplaySkillPlaySequenceActionAuthoring||action is GameplaySpawnProjectileActionAuthoring||action is GameplaySpawnAreaActionAuthoring||action is GameplaySpawnSummonActionAuthoring;
-                    port.portName=starts?"启动后继续":"继续主链";
-                    port.tooltip=starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
+                    port.portName=cue?"开始播放后继续":starts?"启动后继续":"继续主链";
+                    port.tooltip=cue?"成功启动特效或音频后立即执行下游，不等待播放结束。":starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
                 }
                 if(action is GameplaySearchTargetActionAuthoring){
                     if(socket?.Port=="Completed"){port.portName="完成 · 结果集";port.tooltip="搜索后调用一次，包含完整结果集；也可能为空，不能假定存在目标。";}
@@ -67882,7 +68071,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var node=_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey);if(node==null)continue;
                 foreach(var binding in node.Payload.Definitions){
                     var local=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);if(!(local?.Payload is GameplayEffectDefinitionData effect))continue;
-                    string owner=local.Id;var position=card.GetPosition().position+new Vector2(card.GetPosition().width+80,120);
+                    string owner=local.Id;var position=CreationPosition;
                     if(effect.DurationPolicy==GameplayEffectDurationPolicy.Duration)Add("自然到期",GameplayGraphEffectCallbacks.Completion);
                     if(effect.Stacking!=null)Add(effect.Stacking.Overflow==GameplayEffectStackOverflowPolicy.ExecuteOverflow?"叠层溢出":"启用叠层溢出",GameplayGraphEffectCallbacks.Overflow);
                     void Add(string title,string port)=>evt.menu.AppendAction(title+" / 新建后续伤害（随所有者删除）",_=>Try(()=>{
@@ -67958,11 +68147,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var affected=new HashSet<string>();
             if(full)affected.UnionWith(_nodes.Keys);
             else foreach(string owner in change.Owners){if(_consumerCards.TryGetValue(owner,out var cards))affected.UnionWith(cards);if(_nodes.ContainsKey(owner))affected.Add(owner);}
+            var active=Reachable(_document.AuthoringGraph);
             long sample=System.Diagnostics.Stopwatch.GetTimestamp();
             using(new Unity.Profiling.ProfilerMarker("FRFrame.Workbench.Summaries").Auto())try{
                 foreach(string id in affected){var data=Record(id);if(data==null||!_nodes.TryGetValue(id,out var node))continue;NodePresentationUpdateCount++;
                     if(change?.Layout==true){var position=_layoutPreview!=null&&_layoutPreview.TryGetValue(id,out var projected)?projected:data.Position;if(node.GetPosition().position!=position)node.SetPosition(new Rect(position,node.GetPosition().size));if(HasTimeline(data)){float width=TimelineWidth(data);node.style.width=width;node.style.minWidth=width;node.style.maxWidth=width;}}
                     string title=GameplaySkillNodeDisplay.Name(data,_document.AuthoringGraph);if(node.title!=title)node.title=title;
+                    Set("ExecutionStatus",(active.Contains(id)?"正式执行":data.Payload is GameplayRuleNodePayload?"未启用 · 不参与执行":"未接入执行流程 · 不参与执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地"));
                     var editors=node.extensionContainer.Query<GameplaySkillCardEditor>().ToList();foreach(var editor in editors)editor.Refresh();
                     Set("BusinessSummary",GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,editors.Any(e=>e.HasFields)));
                     if(data.Payload is GameplayAbilityNodePayload)Set("AbilitySummary",_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能");
@@ -68025,14 +68216,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private void RestoreReadingLayout()
         {
+            if(!BusinessReading)return; // A queued reading-layout pass cannot overwrite a later switch to author layout.
             // Before the first panel layout GraphView reports NaN dimensions, not just zero.
             if(_nodes.Values.Any(n=>!float.IsFinite(n.GetPosition().width)||!float.IsFinite(n.GetPosition().height)||n.GetPosition().height<=1)){
                 var source=_document;int generation=RefreshCount;schedule.Execute(()=>{if(_document==source&&RefreshCount==generation&&panel!=null)RestoreReadingLayout();}).StartingIn(50);return;
             }
             string json=SessionState.GetString(GameplaySkillEditorState.Key(_document)+".ReadingLayout","");
             var saved=json.Length==0?null:JsonUtility.FromJson<ReadingLayout>(json);
-            if(saved!=null&&saved.Ids.Count==_nodes.Count&&saved.Ids.All(_nodes.ContainsKey)&&saved.Positions.All(p=>float.IsFinite(p.x)&&float.IsFinite(p.y))){
-                _layoutPreview=saved.Ids.Select((id,i)=>new{id,position=saved.Positions[i]}).ToDictionary(p=>p.id,p=>p.position);
+            if(saved!=null&&saved.Ids.Count==saved.Positions.Count&&saved.Positions.All(p=>float.IsFinite(p.x)&&float.IsFinite(p.y))){
+                // Topology edits do not request a reflow. Retain existing view positions and
+                // place newly visible/created cards at their actual authoring coordinates.
+                var remembered=saved.Ids.Select((id,i)=>new{id,position=saved.Positions[i]}).ToDictionary(p=>p.id,p=>p.position);
+                _layoutPreview=_nodes.Keys.ToDictionary(id=>id,id=>remembered.TryGetValue(id,out var position)?position:Record(id).Position);
                 foreach(var p in _layoutPreview){var card=_nodes[p.Key];card.SetPosition(new Rect(p.Value,card.GetPosition().size));}
             }else ArrangeLayout();
             PositionPolicies();
@@ -68049,7 +68244,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(BusinessReading)RestoreReadingLayout();
             if(switched){var source=_document;int generation=RefreshCount;schedule.Execute(()=>{if(_document==source&&RefreshCount==generation&&_readableFocusId==null&&_focusAfterLayout==null)RestoreCamera();}).StartingIn(120);}
         }
-        private float TimelineWidth(GameplayAuthoringNode data)=>data.Size.x>0?Mathf.Clamp(data.Size.x,440,1200):Mathf.Clamp(layout.width>0?layout.width-70:820,480,860);
+        private float TimelineWidth(GameplayAuthoringNode data)
+        {
+            if(data.Size.x>0)return Mathf.Max(440,data.Size.x);
+            var graph=_document.AuthoringGraph;
+            bool animated=graph.Timelines.Where(t=>data.Payload.Definitions.Any(b=>b.LocalId==t.Id)).SelectMany(t=>t.Events)
+                .Any(e=>graph.Nodes.Find(n=>n.Id==e.EntryNodeId)?.Payload is GameplayActionNodePayload p&&GameplaySkillNodeDescriptors.Get(p.Action.GetType()).IsAnimation);
+            return animated?800:Mathf.Clamp(layout.width>0?layout.width-70:820,480,860);
+        }
 
         /// <summary>Shows a derived arrangement without writing Node.Position. Only the explicit
         /// Apply action persists one Undo transaction; cancel restores the authored layout.</summary>
@@ -68896,12 +69098,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach (var d in copy.LocalDefinitions) { d.Id = map[d.Id]; d.SourceDefinitionId = document.DefinitionId; foreach (var b in d.Definitions) if (!string.IsNullOrEmpty(b.LocalId)) b.LocalId = map[b.LocalId]; }
             foreach (var timeline in copy.Timelines) { timeline.Id = map[timeline.Id]; foreach (var e in timeline.Events) { e.Id = map[e.Id]; e.EntryNodeId = map[e.EntryNodeId]; } }
             foreach (var edge in copy.Connections) { edge.Id = GameplayAuthoringGraph.NewId(); edge.FromNodeId = map[edge.FromNodeId]; edge.ToNodeId = map[edge.ToNodeId]; }
-            Transaction(document, activateRules?"粘贴为正式规则 / 行为":"粘贴为草稿规则 / 行为", graph => { graph.Nodes.AddRange(copy.Nodes); graph.LocalDefinitions.AddRange(copy.LocalDefinitions); graph.Timelines.AddRange(copy.Timelines); graph.Connections.AddRange(copy.Connections);
+            Transaction(document, activateRules?"粘贴为正式规则 / 行为":"粘贴为未启用规则 / 未接入行为", graph => { graph.Nodes.AddRange(copy.Nodes); graph.LocalDefinitions.AddRange(copy.LocalDefinitions); graph.Timelines.AddRange(copy.Timelines); graph.Connections.AddRange(copy.Connections);
                 if(activateRules)foreach(var rule in copy.Nodes.Where(n=>n.Payload is GameplayRuleNodePayload))ActivateRule(graph,rule.Id,true);
             });
             return copy.Nodes.Select(n => n.Id).ToArray();
         }
-        public static void SetRuleActive(GameplaySkillDocumentAsset document,string nodeId,bool active)=>Transaction(document,active?"启用正式触发规则":"停用为草稿规则",graph=>ActivateRule(graph,nodeId,active));
+        public static void SetRuleActive(GameplaySkillDocumentAsset document,string nodeId,bool active)=>Transaction(document,active?"启用正式触发规则":"停用触发规则",graph=>ActivateRule(graph,nodeId,active));
         private static void ActivateRule(GameplayAuthoringGraph graph,string nodeId,bool active)
         {
             if(!(graph.Nodes.Single(n=>n.Id==nodeId).Payload is GameplayRuleNodePayload))throw new InvalidOperationException("请选择触发规则。");
@@ -69042,7 +69244,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             using(var serialized=new SerializedObject(document))return Describe(document,nodeId,serialized);
         }
-        internal static List<Binding> Describe(GameplaySkillDocumentAsset document,string nodeId,SerializedObject so)
+        internal static List<Binding> Describe(GameplaySkillDocumentAsset document,string nodeId,SerializedObject so,bool animationHeader=false)
         {
             var result = new List<Binding>();
             var graph = document.AuthoringGraph;
@@ -69103,7 +69305,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 void Values(object values, string prefix)
                 {
                     foreach (var field in CoreFields(values).Concat(Providers.SelectMany(p => p.CardFields(values))))
+                    {
+                        if(animationHeader&&(field.Path=="SkinNames"||field.Path=="TrackIndex"||field.Path=="Channel"))continue;
                         Add(prefix + "." + field.Path, field.Label, field.FloatValue,field.Choices);
+                    }
                 }
             }
             return result;
@@ -69250,6 +69455,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private HelpBox _error;
         private bool _current=true;
         private readonly bool _compact;
+        private VisualElement _resourceRow,_playbackRow;
         private static readonly IGameplaySkillFieldControlProvider[] ControlProviders=TypeCache.GetTypesDerivedFrom<IGameplaySkillFieldControlProvider>().Where(t=>!t.IsAbstract&&t.GetConstructor(Type.EmptyTypes)!=null).OrderBy(t=>t.FullName).Select(t=>(IGameplaySkillFieldControlProvider)Activator.CreateInstance(t)).ToArray();
         private static readonly Dictionary<string,Type> ObjectTypes=new Dictionary<string,Type>();
         internal bool HasFields=>_fields.Count>0;
@@ -69259,7 +69465,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal GameplaySkillCardEditor(GameplaySkillDocumentAsset document,string nodeId,SerializedObject serialized,bool compact=false,string policyRole=null)
         {
             _document=document;_nodeId=nodeId;_serialized=serialized;_compact=compact;_policyRole=policyRole;name="CardQuickFields";
-            if(compact){style.flexDirection=FlexDirection.Row;style.flexWrap=Wrap.Wrap;style.alignItems=Align.FlexStart;}
+            if(compact)style.flexDirection=FlexDirection.Column;
             style.marginLeft=10;style.marginRight=10;style.marginBottom=8;style.fontSize=12;
             RegisterCallback<PointerDownEvent>(_=>Selecting?.Invoke(),TrickleDown.TrickleDown);
             RegisterCallback<PointerDownEvent>(e=>e.StopPropagation());
@@ -69276,10 +69482,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal void Refresh()
         {
             _serialized.UpdateIfRequiredOrScript();
-            _fields=_policyRole==null?GameplaySkillCardFields.Describe(_document,_nodeId,_serialized):GameplaySkillCardFields.DescribePolicy(_document,_nodeId,_policyRole);
+            _fields=_policyRole==null?GameplaySkillCardFields.Describe(_document,_nodeId,_serialized,_compact):GameplaySkillCardFields.DescribePolicy(_document,_nodeId,_policyRole);
             string signature=string.Join("|",_fields.Select(f=>f.Path+":"+f.Label+":"+f.Editable+":"+string.Join(",",f.Choices??Array.Empty<string>())));
-            if(signature==_signature){foreach(var sync in _sync)sync();return;}
+            if(signature==_signature){_current=true;SetEnabled(!EditorApplication.isPlayingOrWillChangePlaymode&&!GameplaySkillAuthoringCommands.IsReadOnly(_document));foreach(var sync in _sync)sync();return;}
             _signature=signature;Invalidate();Clear();_sync.Clear();
+            if(_compact){
+                _resourceRow=new VisualElement{name="AnimationResourceRow",style={flexDirection=FlexDirection.Row,alignItems=Align.Center,flexWrap=Wrap.Wrap}};
+                _playbackRow=new VisualElement{name="AnimationPlaybackRow",style={flexDirection=FlexDirection.Row,alignItems=Align.Center,flexWrap=Wrap.Wrap}};
+                Add(_resourceRow);Add(_playbackRow);
+            }
             for(int i=0;i<_fields.Count;i++)
             {
                 int slot=i;var field=_fields[i];
@@ -69292,7 +69503,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 var p=_serialized.FindProperty(field.Path);string path=field.Path;
                 var provider=ControlProviders.FirstOrDefault(editor=>editor.SupportsControl(p));
-                if(provider!=null){var control=provider.CreateControl(p,field.Label,()=>_current&&panel!=null&&!GameplaySkillAuthoringCommands.IsReadOnly(_document)&&(field.SourceGuard==null||field.SourceGuard()),out var refresh);control.name=path;control.style.fontSize=12;if(_compact){control.style.width=Length.Percent(100);control.style.flexShrink=0;control.style.marginRight=6;}Add(control);_sync.Add(refresh);continue;}
+                if(provider!=null){var control=provider.CreateControl(p,field.Label,()=>_current&&panel!=null&&!GameplaySkillAuthoringCommands.IsReadOnly(_document)&&(field.SourceGuard==null||field.SourceGuard()),out var refresh);control.name=path;control.style.fontSize=12;
+                    if(_compact){control.style.flexGrow=1;control.style.flexShrink=1;control.style.minWidth=200;control.style.marginRight=6;(p.propertyType==SerializedPropertyType.ObjectReference?_resourceRow:_playbackRow).Add(control);}else Add(control);
+                    _sync.Add(refresh);continue;}
                 switch(p.propertyType)
                 {
                     case SerializedPropertyType.Float:
@@ -69326,20 +69539,25 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         break;
                 }
             }
-            if(_fields.Any(f=>f.SourcePath!=null||!f.Editable))Add(new Button(()=>{var menu=new GenericMenu();foreach(var source in _fields.Where(f=>f.SourcePath!=null||!f.Editable)){string path=source.SourcePath??source.Path;menu.AddItem(new GUIContent(source.Label+" / 数值来源与高级"),false,()=>Advanced?.Invoke(path));}menu.ShowAsContext();}){text="数值来源 / 高级参数",tooltip="显式切换常量、Formula、Caller或属性来源；保留验证及 Undo"});
+            if(_compact){
+                _resourceRow.Add(new Button(()=>Advanced?.Invoke(null)){name="MainAnimationSettings",text="动画设置…",tooltip="在右侧编辑轨道、通道、皮肤、变体与主动画调度",style={width=92}});
+                var duration=new Label{name="MainAnimationDuration",style={fontSize=11,marginLeft=6}};_playbackRow.Add(duration);
+                _sync.Add(()=>{var timeline=_document.AuthoringGraph.Timelines.FirstOrDefault(t=>t.Events.Any(e=>e.EntryNodeId==_nodeId));duration.text=GameplaySkillFieldSchema.TryDuration(_document.AuthoringGraph,_nodeId,out _,out _,out float seconds)?seconds.ToString("0.###")+"s / 编排 "+timeline?.DurationSeconds.ToString("0.###")+"s":"";});
+            }
+            else if(_fields.Any(f=>f.SourcePath!=null||!f.Editable))Add(new Button(()=>{var menu=new GenericMenu();foreach(var source in _fields.Where(f=>f.SourcePath!=null||!f.Editable)){string path=source.SourcePath??source.Path;menu.AddItem(new GUIContent(source.Label+" / 数值来源与高级"),false,()=>Advanced?.Invoke(path));}menu.ShowAsContext();}){text="数值来源 / 高级参数",tooltip="显式切换常量、Formula、Caller或属性来源；保留验证及 Undo"});
             _error=new HelpBox("",HelpBoxMessageType.Error);_error.style.display=DisplayStyle.None;Add(_error);
             _current=true;SetEnabled(!EditorApplication.isPlayingOrWillChangePlaymode&&!GameplaySkillAuthoringCommands.IsReadOnly(_document));
             foreach(var sync in _sync)sync();
         }
-        // A structural command replaces the indexed view. Disabling its old controls first
-        // prevents delayed numeric FocusOut from committing through a retired property path.
-        internal void Invalidate(){_current=false;SetEnabled(false);}
+        // Reject stale FocusOut writes while bindings are being resolved again. Keep the
+        // rendered appearance intact; a pending structural refresh must not grey the canvas.
+        internal void Invalidate(){_current=false;}
         private void Bind<T>(BaseField<T> control,string path,Func<SerializedProperty,T> read,Action<SerializedProperty,T> write)
         {
             control.name=path;var source=_serialized.FindProperty(path);control.tooltip=source.propertyType==SerializedPropertyType.Enum?string.Join(" / ",source.enumNames)+"\n"+path:path;control.style.fontSize=12;
-            control.labelElement.style.minWidth=_compact?70:92;control.labelElement.style.maxWidth=_compact?70:92;
-            if(_compact){control.style.width=194;control.style.marginRight=6;control.style.flexShrink=0;}
-            Add(control);
+            float labelWidth=_compact?(control is Toggle?35:70):92;
+            control.labelElement.style.minWidth=labelWidth;control.labelElement.style.maxWidth=labelWidth;
+            if(_compact){control.style.width=control is Toggle?75:155;control.style.marginRight=6;control.style.flexShrink=0;_playbackRow.Add(control);}else Add(control);
             _sync.Add(()=>{var p=_serialized.FindProperty(path);if(p==null)return;var value=read(p);if(!EqualityComparer<T>.Default.Equals(control.value,value))control.SetValueWithoutNotify(value);});
             var sourceGuard=_fields.First(f=>f.Path==path||path.StartsWith(f.Path+".",StringComparison.Ordinal)).SourceGuard;
             control.RegisterValueChangedCallback(e=>{
@@ -69479,8 +69697,26 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             panel.style.paddingTop=6;panel.style.paddingBottom=6;panel.style.borderTopWidth=1;panel.style.borderTopColor=new Color(.4f,.6f,.8f);
             var anchor=worldAnchor.HasValue?view.WorldToLocal(worldAnchor.Value):new Vector2(12,40);
             panel.style.left=Mathf.Clamp(anchor.x,4,Mathf.Max(4,view.layout.width-362));panel.style.top=Mathf.Clamp(anchor.y,36,Mathf.Max(36,view.layout.height-440));
-            var header=new VisualElement();header.style.flexDirection=FlexDirection.Row;panel.Add(header);
-            var caption=new Label(title);caption.style.flexGrow=1;caption.style.whiteSpace=WhiteSpace.Normal;header.Add(caption);header.Add(new Button(()=>panel.RemoveFromHierarchy()){text="×"});
+            var header=new VisualElement{tooltip="拖动标题栏移动选择框"};header.style.flexDirection=FlexDirection.Row;panel.Add(header);
+            var caption=new Label(title){pickingMode=PickingMode.Ignore};caption.style.flexGrow=1;caption.style.whiteSpace=WhiteSpace.Normal;header.Add(caption);header.Add(new Button(()=>panel.RemoveFromHierarchy()){text="×"});
+            void PositionMenu(){
+                anchor.x=Mathf.Clamp(anchor.x,4,Mathf.Max(4,view.layout.width-panel.layout.width-4));
+                anchor.y=Mathf.Clamp(anchor.y,36,Mathf.Max(36,view.layout.height-panel.layout.height-4));
+                panel.style.left=anchor.x;panel.style.top=anchor.y;
+            }
+            Vector2 dragOffset=Vector2.zero;
+            header.RegisterCallback<PointerDownEvent>(e=>{
+                if(e.button!=0||e.target!=header)return;
+                dragOffset=panel.layout.position-view.WorldToLocal(e.position);header.CapturePointer(e.pointerId);e.StopPropagation();
+            });
+            header.RegisterCallback<PointerMoveEvent>(e=>{
+                if(!header.HasPointerCapture(e.pointerId))return;
+                anchor=view.WorldToLocal(e.position)+dragOffset;PositionMenu();e.StopPropagation();
+            });
+            header.RegisterCallback<PointerUpEvent>(e=>{
+                if(e.button!=0||!header.HasPointerCapture(e.pointerId))return;
+                header.ReleasePointer(e.pointerId);e.StopPropagation();
+            });
             var filter=new TextField{tooltip="按中文名称筛选当前 Scope 可创建的正式配置"};panel.Add(filter);
             var note=new Label("仅写入本入口说明的真实配置 · ↑↓ 选择 / Enter 执行 / Esc 关闭 · ☆ 收藏");note.style.fontSize=10;note.style.whiteSpace=WhiteSpace.Normal;panel.Add(note);
             var list=new ScrollView();list.style.maxHeight=Mathf.Min(330,Mathf.Max(40,view.layout.height-190));list.style.minHeight=40;panel.Add(list);
@@ -69532,16 +69768,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             EventCallback<PointerDownEvent> dismiss=e=>{if(!panel.Contains(e.target as VisualElement))panel.RemoveFromHierarchy();};
             view.RegisterCallback(dismiss,TrickleDown.TrickleDown);
             panel.RegisterCallback<DetachFromPanelEvent>(_=>view.UnregisterCallback(dismiss,TrickleDown.TrickleDown));
+            // Let the ScrollView handle its wheel first, including at its limits, then keep
+            // that input inside the palette instead of passing it to GraphView's zoomer.
+            panel.RegisterCallback<WheelEvent>(e=>e.StopPropagation());
             panel.RegisterCallback<PointerDownEvent>(e=>e.StopPropagation());panel.RegisterCallback<KeyDownEvent>(e=>{
                 if(e.keyCode==KeyCode.Escape){panel.RemoveFromHierarchy();e.StopImmediatePropagation();}
                 else if(e.keyCode==KeyCode.DownArrow||e.keyCode==KeyCode.UpArrow){focused+=e.keyCode==KeyCode.DownArrow?1:-1;Highlight();e.StopImmediatePropagation();}
                 else if(e.keyCode==KeyCode.Return||e.keyCode==KeyCode.KeypadEnter){var visible=rows.Where(r=>r.row.style.display.value!=DisplayStyle.None).ToArray();if(visible.Length>0)Pick(visible[Mathf.Clamp(focused,0,visible.Length-1)].name,visible[Mathf.Clamp(focused,0,visible.Length-1)].command);e.StopImmediatePropagation();}
             },TrickleDown.TrickleDown);
             view.hierarchy.Add(panel);panel.BringToFront();Filter();filter.Focus();
-            panel.RegisterCallback<GeometryChangedEvent>(_=>{
-                panel.style.left=Mathf.Clamp(anchor.x,4,Mathf.Max(4,view.layout.width-panel.layout.width-4));
-                panel.style.top=Mathf.Clamp(anchor.y,36,Mathf.Max(36,view.layout.height-panel.layout.height-4));
-            });
+            panel.RegisterCallback<GeometryChangedEvent>(_=>PositionMenu());
         }
     }
 }
@@ -69851,7 +70087,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     /// connections. Source ports and the existing GraphView deletion/selection still own it.</summary>
     internal sealed class GameplaySkillExecutionEdge : Edge
     {
-        internal bool Scheduled,Config;
+        internal bool Scheduled;
         // Curves remain visible across a card, but its fields, markers and native sockets own input there.
         private bool OverCard(Vector2 point){var graph=GetFirstAncestorOfType<GameplayBehaviorGraphView>();return graph!=null&&graph.IsCardPoint(this.ChangeCoordinatesTo(graph.contentViewContainer,point));}
         public override bool ContainsPoint(Vector2 localPoint)=>!OverCard(localPoint)&&base.ContainsPoint(localPoint);
@@ -69864,13 +70100,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 _owner=owner;generateVisualContent+=ctx=>{
                     var points=controlPoints;if(points==null||points.Length<4)return;
-                    if(owner.Config){
-                        var painter=ctx.painter2D;painter.strokeColor=inputColor;painter.lineWidth=4;
-                        for(int i=0;i<40;i+=2){
-                            Vector2 At(float t){float u=1-t;return u*u*u*points[0]+3*u*u*t*points[1]+3*u*t*t*points[2]+t*t*t*points[3]-layout.position;}
-                            painter.BeginPath();painter.MoveTo(At(i/40f));painter.LineTo(At((i+1)/40f));painter.Stroke();
-                        }
-                    }
                     var direction=(points[3]-points[2]).normalized;var tip=points[3]-layout.position-direction*9;var normal=new Vector2(-direction.y,direction.x);
                     var paint=ctx.painter2D;paint.fillColor=owner.Scheduled?new Color(.94f,.68f,.3f):inputColor;paint.BeginPath();paint.MoveTo(tip);
                     paint.LineTo(tip-direction*(owner.Scheduled?6:9)+normal*4);
@@ -69906,7 +70135,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     /// <summary>Typed integration metadata for a real constant presentation duration.
     /// Unknown/dynamic durations remain markers rather than fictitious resizable intervals.</summary>
     public interface IGameplaySkillValueDuration { bool TryReadDuration(object values,out string path,out float seconds); }
-    public interface IGameplaySkillValueSections { IEnumerable<GameplayBusinessInspectorGroup> Sections(object values); }
+    public interface IGameplaySkillValueSections
+    {
+        IEnumerable<GameplayBusinessInspectorGroup> Sections(object values);
+        /// <summary>Whether the field applies to the current embedded or shared resource.</summary>
+        bool IsFieldVisible(object values,string field);
+    }
+    /// <summary>Names independently creatable variants of one integration-owned value type.</summary>
+    public interface IGameplaySkillValueCreationPresets
+    {
+        IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType);
+    }
     public interface IGameplaySkillPreviewFactory
     {
         bool Supports(object values);
@@ -69920,6 +70159,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private static readonly IGameplaySkillValueEditor[] Providers = TypeCache.GetTypesDerivedFrom<IGameplaySkillValueEditor>()
             .Where(t => !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) != null)
             .OrderBy(t => t.FullName).Select(t => (IGameplaySkillValueEditor)Activator.CreateInstance(t)).ToArray();
+        private static readonly IGameplaySkillValueSections[] ValueSections=Providers.OfType<IGameplaySkillValueSections>().ToArray();
         private static readonly Dictionary<Type, Type> CoreValues = new Dictionary<Type, Type> {
             {typeof(GameplayEffectDefinitionAsset),typeof(GameplayEffectDefinitionData)},
             {typeof(GameplayAbilityDefinitionAsset),typeof(GameplayAbilityDefinitionData)},
@@ -69989,8 +70229,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private sealed class CardResponsibility:IDisposable
         {
             private readonly HashSet<string> _previous=_cardPaths;
-            internal CardResponsibility(GameplaySkillDocumentAsset document,string nodeId,bool enabled,SerializedObject serialized)
-            { _cardPaths=enabled?new HashSet<string>(GameplaySkillCardFields.Describe(document,nodeId,serialized).Where(f=>f.Editable).Select(f=>f.Path)):null; }
+            internal CardResponsibility(GameplaySkillDocumentAsset document,string nodeId,bool enabled,SerializedObject serialized,bool animationHeader)
+            { _cardPaths=enabled?new HashSet<string>(GameplaySkillCardFields.Describe(document,nodeId,serialized,animationHeader).Where(f=>f.Editable).Select(f=>f.Path)):null; }
             public void Dispose(){_cardPaths=_previous;}
         }
         private static bool CardSummary(SerializedProperty property)
@@ -70029,6 +70269,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         public static IEnumerable<Type> Values(Type resource) => CoreValues.Where(p => resource.IsAssignableFrom(p.Key)).Select(p => p.Value)
             .Concat(Providers.SelectMany(p => p.ValueTypes(resource))).Distinct();
+        internal static IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType)
+            => Providers.OfType<IGameplaySkillValueCreationPresets>().SelectMany(p => p.CreationPresets(valueType));
+        internal static bool IsValueFieldVisible(object values,string field)
+        {
+            foreach(var provider in ValueSections)
+                if(!provider.IsFieldVisible(values,field))return false;
+            return true;
+        }
         public static bool TryDuration(GameplayAuthoringGraph graph,string nodeId,out string localId,out string path,out float seconds){
             localId=null;path=null;seconds=0;var node=graph.Nodes.Find(n=>n.Id==nodeId);if(node==null)return false;
             foreach(var binding in node.Payload.Definitions){var local=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);object values=local?.Payload;if(values==null&&binding.External){try{values=binding.External.CaptureGraphValues();}catch(NotSupportedException){}}if(values==null)continue;
@@ -70071,13 +70319,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             using(var serialized=new SerializedObject(document))Draw(serialized,document,nodeId,definitionId,cardFields);
         }
         /// <summary>Draws against the canvas-owned buffer; does not dispose it or cache property paths.</summary>
-        internal static void Draw(SerializedObject serialized,GameplaySkillDocumentAsset document,string nodeId,string definitionId,bool cardFields)
+        internal static void Draw(SerializedObject serialized,GameplaySkillDocumentAsset document,string nodeId,string definitionId,bool cardFields,bool animationHeader=false)
         {
             if (!document) return;
             if(Errors.TryGetValue(document.GetInstanceID(),out string error))EditorGUILayout.HelpBox(error,MessageType.Error);
             if (document.AuthoringSchemaVersion != 2) { EditorGUILayout.HelpBox("此数据格式不能直接编辑；请选择 Schema 2 正式技能。", MessageType.Warning); return; }
             using (new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode||GameplaySkillAuthoringCommands.IsReadOnly(document)))
-            using (new CardResponsibility(document,nodeId,cardFields&&definitionId==null,serialized))
+            using (new CardResponsibility(document,nodeId,cardFields&&definitionId==null,serialized,animationHeader))
             using (new SourceScope(null))
             using (GameplayAuthoringInspector.UseScope(document.AuthoringGraph.Scope))
             {
@@ -70111,13 +70359,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         var payload = root.FindPropertyRelative("Payload");
                         if (node.Payload is GameplayAbilityNodePayload ability)
                         {
-                            if (ability.Settings != null) DrawValue(document, serialized, payload.FindPropertyRelative("Settings"), node.Id, ability.Definitions, "", new HashSet<string>(),edit);
-                            else DrawBinding(document, serialized, node.Id, ability.Definitions, "Settings", typeof(GameplayAbilityDefinitionAsset), new HashSet<string>(),edit);
                             if(GameplayBehaviorGraphView.InlinePrimaryRule(document)){
                                 int ruleIndex=document.AuthoringGraph.Nodes.FindIndex(n=>n.Id==document.AuthoringGraph.PrimaryRuleNodeId);var rule=document.AuthoringGraph.Nodes[ruleIndex];
-                                string key="PrimaryRule:"+document.GetInstanceID();bool open=EditorGUILayout.Foldout(Open.Contains(key),"施放触发 / 目标（高级）",true);
+                                string key="PrimaryRule:"+document.GetInstanceID();
+                                string caption=((GameplayRuleNodePayload)rule.Payload).Target is GameplaySkillPointTargetAuthoring
+                                    ?"施放触发 / 固定地点坐标":"施放触发 / 目标（高级）";
+                                bool open=EditorGUILayout.Foldout(Open.Contains(key),caption,true);
                                 if(open){Open.Add(key);DrawValue(document,serialized,serialized.FindProperty("authoringGraph.Nodes").GetArrayElementAtIndex(ruleIndex).FindPropertyRelative("Payload"),rule.Id,rule.Payload.Definitions,"",new HashSet<string>(),edit);}else Open.Remove(key);
                             }
+                            if (ability.Settings != null) DrawValue(document, serialized, payload.FindPropertyRelative("Settings"), node.Id, ability.Definitions, "", new HashSet<string>(),edit);
+                            else DrawBinding(document, serialized, node.Id, ability.Definitions, "Settings", typeof(GameplayAbilityDefinitionAsset), new HashSet<string>(),edit);
                         }
                         else if (node.Payload is GameplayActionNodePayload action)
                             DrawValue(document, serialized, payload.FindPropertyRelative("Action"), node.Id, action.Definitions, "", new HashSet<string>(),edit);
@@ -70164,8 +70415,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             void DrawChildren(SerializedProperty parent, object owner, string relative)
             {
                 var children=new List<SerializedProperty>();var cursor=parent.Copy();var end=parent.GetEndProperty();
-                if(cursor.NextVisible(true))do{if(SerializedProperty.EqualContents(cursor,end))break;children.Add(cursor.Copy());}while(cursor.NextVisible(false));
-                var sections=Providers.OfType<IGameplaySkillValueSections>().SelectMany(p=>p.Sections(owner)).ToList();if(sections.Count==0)sections=GameplayStandardBusinessInspector.Describe(owner).ToList();
+                if(cursor.NextVisible(true))do{
+                    if(SerializedProperty.EqualContents(cursor,end))break;
+                    if(IsValueFieldVisible(owner,cursor.name))children.Add(cursor.Copy());
+                }while(cursor.NextVisible(false));
+                var sections=ValueSections.SelectMany(p=>p.Sections(owner)).ToList();if(sections.Count==0)sections=GameplayStandardBusinessInspector.Describe(owner).ToList();
                 var covered=new HashSet<string>(sections.SelectMany(g=>g.Paths));
                 var rest=children.Where(p=>!covered.Contains(p.name)&&p.name!="Definitions").Select(p=>p.name).ToArray();
                 if(rest.Length>0)sections.Add(new GameplayBusinessInspectorGroup(null,sections.Count==0?"业务配置":"其它配置",null,rest));
@@ -70185,8 +70439,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     string bindingPath = bindingPrefix.Length == 0 ? path : bindingPrefix + "." + path;
                     if (it.name == "Definitions") continue;
                     if(!showInactive&&!Visible(owner,it.name))continue;
-                    if(_cardPaths!=null&&owner is GameplayAbilityDefinitionData&&(it.name=="Cost"||it.name=="Charge"||it.name=="CooldownEffect")){EditorGUILayout.LabelField(GameplayAuthoringInspector.Label(it),new GUIContent("在左侧策略卡编辑；复杂值从卡片进入"));continue;}
-                    if(CardSummary(it)){foreach(var provider in Providers.OfType<IGameplaySkillFieldControlProvider>())if(provider.DrawSourceLink(root,it))break;continue;}
+                    if(_cardPaths!=null&&owner is GameplayAbilityDefinitionData&&(it.name=="Cost"||it.name=="Charge"||it.name=="CooldownEffect")){EditorGUILayout.LabelField(GameplayAuthoringInspector.Label(it),new GUIContent("在对应消耗、冷却或充能节点编辑；复杂值从节点进入"));continue;}
+                    if(CardSummary(it)){
+                        // The target dropdown owns the type choice. Its configuration still belongs here.
+                        if(it.propertyType==SerializedPropertyType.ManagedReference&&it.managedReferenceValue is GameplaySkillTargetAuthoring target)
+                            DrawChildren(it,target,path);
+                        else
+                            foreach(var provider in Providers.OfType<IGameplaySkillFieldControlProvider>())if(provider.DrawSourceLink(root,it))break;
+                        continue;
+                    }
 
                     if (arrays.Contains(path)) { EditorGUILayout.LabelField(PortName(path), "在画布端口连接行为", EditorStyles.miniLabel); continue; }
                     if (resources.TryGetValue(path, out var resource)) { DrawBinding(doc, serialized, ownerId, bindings, bindingPath, resource, visited,edit); continue; }
@@ -70344,11 +70605,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 {
                     ApplyFields(serialized,doc);
                     var menu = new GenericMenu();
-                    foreach (var valueType in Values(resourceType)) { var type = valueType; menu.AddItem(new GUIContent("新建内嵌/" + Name(type)), false, () => Bind(doc, ownerId, path, type, null, null)); }
+                    foreach (var type in Values(resourceType))
+                    {
+                        var presets=CreationPresets(type).ToArray();
+                        if(presets.Length==0)
+                            menu.AddItem(new GUIContent("新建内嵌/"+Name(type)),false,()=>Bind(doc,ownerId,path,type,null,null));
+                        else
+                            foreach(var preset in presets)
+                                menu.AddItem(new GUIContent("新建内嵌/"+preset.Name),false,()=>BindValue(doc,ownerId,path,preset.Value,preset.Name,null,null,false));
+                    }
                     foreach (var d in doc.AuthoringGraph.LocalDefinitions.Where(d => Values(resourceType).Any(t => t.IsInstanceOfType(d.Payload))))
                     { string id = d.Id; menu.AddItem(new GUIContent("复用本技能/" + d.Name), false, () => Bind(doc, ownerId, path, null, id, null)); }
                     menu.AddItem(new GUIContent("解除引用 / 删除独占局部配置"), false, () => Bind(doc, ownerId, path, null, null, null));
-                    menu.AddItem(new GUIContent("解除引用 / 保留为可见草稿"), false, () => Bind(doc, ownerId, path, null, null, null,true)); menu.ShowAsContext();
+                    menu.AddItem(new GUIContent("解除引用 / 保留局部配置"), false, () => Bind(doc, ownerId, path, null, null, null,true)); menu.ShowAsContext();
                 }
 
                 EditorGUILayout.EndHorizontal();
@@ -70359,17 +70628,22 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             EditorGUILayout.EndVertical();
         }
         public static void Bind(GameplaySkillDocumentAsset doc, string ownerId, string path, Type create, string localId, GameplayDefinitionAsset external,bool keepReleasedDraft=false)
+            => BindValue(doc,ownerId,path,create==null?null:(GameplayLocalDefinitionPayload)Activator.CreateInstance(create),
+                create==null?null:Name(create),localId,external,keepReleasedDraft);
+
+        private static void BindValue(GameplaySkillDocumentAsset doc,string ownerId,string path,GameplayLocalDefinitionPayload value,
+            string name,string localId,GameplayDefinitionAsset external,bool keepReleasedDraft)
         {
             GameplaySkillAuthoringCommands.Transaction(doc, "配置正式资源", graph => {
                 var node = graph.Nodes.Find(n => n.Id == ownerId);
                 var bindings = node?.Payload.Definitions ?? graph.LocalDefinitions.Single(d => d.Id == ownerId).Definitions;
                 var released=bindings.Where(b=>b.PropertyPath==path).Select(b=>b.LocalId).Where(id=>!string.IsNullOrEmpty(id)).ToArray();
                 if(path=="Settings"&&node?.Payload is GameplayAbilityNodePayload ability){
-                    ability.Settings=create==null?null:(GameplayLocalDefinitionPayload)Activator.CreateInstance(create);
+                    ability.Settings=value;
                     bindings.RemoveAll(b=>b.PropertyPath==path);
                     if(external)bindings.Add(new GameplayDefinitionBinding{PropertyPath=path,External=external});return;
                 }
-                if (create != null) { var local = new GameplayLocalDefinition { Name = Name(create), Payload = (GameplayLocalDefinitionPayload)Activator.CreateInstance(create), SourceDefinitionId = doc.DefinitionId }; graph.LocalDefinitions.Add(local); localId = local.Id; }
+                if (value != null) { var local = new GameplayLocalDefinition { Name = name, Payload = value, SourceDefinitionId = doc.DefinitionId }; graph.LocalDefinitions.Add(local); localId = local.Id; }
                 bindings.RemoveAll(b => b.PropertyPath == path);
                 if (localId != null || external) bindings.Add(new GameplayDefinitionBinding { PropertyPath = path, LocalId = localId, External = external });
                 if(!keepReleasedDraft)GameplaySkillAuthoringCommands.CollectReleased(graph,released);
@@ -70603,15 +70877,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public bool IsSample { get; }
         public GameplayNodeVisualKind? VisualKind { get; }
         public bool IsAnimation { get; }
+        /// <summary>Starts a short-lived presentation without waiting for it to finish.</summary>
+        public bool IsPresentationCue { get; }
 
         public GameplaySkillNodeEditorDescriptor(string displayName, string categoryPath, string summary,
-            string authoringScope = "FRFrame", string keywords = "", bool isSample = false, GameplayNodeVisualKind? visualKind = null, bool isAnimation = false)
+            string authoringScope = "FRFrame", string keywords = "", bool isSample = false, GameplayNodeVisualKind? visualKind = null, bool isAnimation = false, bool isPresentationCue = false)
         {
             DisplayName = displayName;
             CategoryPath = categoryPath;
             Summary = summary;
             AuthoringScope = authoringScope; Keywords = keywords; IsSample = isSample;
             VisualKind = visualKind; IsAnimation = isAnimation;
+            IsPresentationCue = isPresentationCue;
         }
     }
 
@@ -71320,6 +71597,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         [SerializeField] private GameplayDefinitionAsset _sharedSource;
         [SerializeField] private string _selected;
         [SerializeField] private bool _referenceView;
+        [SerializeField] private List<GameplayBehaviorGraphView.DetachedPolicy> _detachedPolicies=new List<GameplayBehaviorGraphView.DetachedPolicy>();
+        internal List<GameplayBehaviorGraphView.DetachedPolicy> DetachedPolicies=>_detachedPolicies;
         private string _policySelection;
         private string _definition, _search = "", _feedback;
         private Vector2 _browserScroll, _inspectorScroll;
@@ -71364,7 +71643,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private static void CreateAsset()=>GetWindow<GameplaySkillWorkbench>().NewDocument();
         public static void Open(GameplaySkillDocumentAsset document, string nodeId = null)
         {
-            var window = GetWindow<GameplaySkillWorkbench>();window.SelectDocument(document,nodeId);window.Show();if(nodeId!=null)window.Canvas.FocusNode(nodeId);
+            var window = GetWindow<GameplaySkillWorkbench>();window.SelectDocument(document,nodeId);window.Show();window.Focus();if(nodeId!=null)window.Canvas.FocusNode(nodeId);
         }
         /// <summary>Resolves an Inspector/debugger source to the actual formal graph owner.
         /// Unowned shared definitions remain shared; navigation never creates a skill or workspace.</summary>
@@ -71428,8 +71707,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             toolbar.Add(new ToolbarButton(ShowHome){text="首页"});
             toolbar.Add(new ToolbarButton(NewDocument) { text = "新建技能" });
             toolbar.Add(new ToolbarButton(ShowOpenDocumentMenu){text="打开技能…"});
+            toolbar.Add(new ToolbarButton(ShowRecentDocumentMenu){text="最近使用…"});
             var tools=_documentTools=new VisualElement{name="DocumentTools",style={flexDirection=FlexDirection.Row,flexWrap=Wrap.Wrap}};toolbar.Add(tools);
-            tools.Add(new ToolbarButton(() => Canvas.ShowMenu()) { text = "+ 行为" });
+            tools.Add(new ToolbarButton(() => Canvas.ShowMenu()) { text = "+ 节点" });
             tools.Add(new ToolbarButton(() => Attempt(() => { if (_document) ValidateDocument(); })) { text = "校验" });
             tools.Add(new ToolbarButton(SaveDocument) { text = "保存" });
             tools.Add(readingView);tools.Add(viewCaption);
@@ -71441,18 +71721,23 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             layoutMenu.menu.AppendAction("预览整理（不写入）",_=>Canvas.PreviewLayout(),_=>Canvas.BusinessReading?DropdownMenuAction.Status.Disabled:DropdownMenuAction.Status.Normal);
             layoutMenu.menu.AppendAction("应用预览（一次 Undo）",_=>Canvas.ApplyLayoutPreview(),_=>Canvas.BusinessReading?DropdownMenuAction.Status.Disabled:DropdownMenuAction.Status.Normal);
             layoutMenu.menu.AppendAction("取消预览",_=>Canvas.CancelLayoutPreview());tools.Add(layoutMenu);
-            tools.Add(new ToolbarToggle { text = "显示草稿", value = false }.WithChanged(v => { Canvas.ShowDrafts = v; Canvas.Load(_document); }));
             tools.Add(new ToolbarButton(() => { _inspectorOpen=!_inspectorOpen;ApplyPaneWidths();SavePanePreferences(); }) { text = "详情 / 预览 / 试装" });
             tools.Add(new ToolbarButton(()=>EditorWindow.GetWindow<FRFrame.Gameplay.Editor.RuntimeDebugger.GameplayRuntimeDebuggerWindow>().Show()){text="Runtime 调试"});
             rootVisualElement.Add(new IMGUIContainer(DrawSourceBar){style={height=27,flexShrink=0}});
-            _welcome=new IMGUIContainer(DrawWelcome){name="SkillWorkbenchWelcome",style={flexGrow=1,paddingLeft=24,paddingRight=24}};rootVisualElement.Add(_welcome);
-            var row = _editingArea=new VisualElement(); row.style.flexDirection = FlexDirection.Row; row.style.flexGrow = 1; rootVisualElement.Add(row);
+            var workspace=new VisualElement{style={flexDirection=FlexDirection.Row,flexGrow=1,minHeight=0}};
+            rootVisualElement.Add(workspace);
             _documentBrowser=new GameplaySkillDocumentBrowser{Select=d=>SelectDocument(d,null,false)};
             _browser = new VisualElement();_browser.style.flexShrink=0;_browser.style.paddingLeft=5;_browser.style.paddingRight=5;_browser.style.backgroundColor=GameplayEditorStyles.Panel;
-            _browser.Add(new IMGUIContainer(DrawBrowser){style={flexGrow=1}});row.Add(_browser);
-            row.Add(_browserHandle=PaneHandle(delta=>{_browserWidth=Mathf.Clamp(_browserWidth+delta,200,500);ApplyPaneWidths();},()=>EditorPrefs.SetFloat("FRFrame.Workbench.BrowserWidth",_browserWidth)));
+            _browser.Add(new IMGUIContainer(DrawBrowser){style={flexGrow=1}});workspace.Add(_browser);
+            workspace.Add(_browserHandle=PaneHandle(delta=>{_browserWidth=Mathf.Clamp(_browserWidth+delta,200,500);ApplyPaneWidths();},()=>EditorPrefs.SetFloat("FRFrame.Workbench.BrowserWidth",_browserWidth)));
+            var content=new VisualElement{style={flexGrow=1,minWidth=0,minHeight=0}};
+            workspace.Add(content);
+            _welcome=new IMGUIContainer(DrawWelcome){name="SkillWorkbenchWelcome",style={flexGrow=1,paddingLeft=24,paddingRight=24}};
+            content.Add(_welcome);
+            var row=_editingArea=new VisualElement{style={flexDirection=FlexDirection.Row,flexGrow=1,minHeight=0}};
+            content.Add(row);
             toolbar.Add(new ToolbarButton(ShowExamples){text="技能范例"});
-            Canvas = new GameplayBehaviorGraphView { ViewModeChanged=reading=>{readingView.SetValueWithoutNotify(reading);viewCaption.text=reading?"会话排布 · 不写坐标":"作者原位";},PolicySelected=role=>{_selected=_document.AuthoringGraph.AbilityNodeId;_definition=null;_policySelection=role;_detailTab=0;_details.MarkDirtyRepaint();},Selected = id => { _policySelection=null;_selected = id; _definition = null;_detailTab=0;if(Canvas.HasInlinePreview(id))_inlinePreviewNode=id; _details.MarkDirtyRepaint(); }, Feedback = message => { _feedback = message; Repaint(); }, Populate = Populate, DeleteMain = DeleteMain,PreviewSeeked=RequestPreviewSeek,PreviewPlaying=id=>_previewClockOwner==id&&_previewPlaying,TogglePreview=TogglePreviewPlayback,HasPreview=HasPreview,DrawInlinePreview=DrawInlinePreview,InlinePreviewChanged=SetInlinePreview,PreviewRequested=id=>{_selected=id;_detailTab=1;_details.MarkDirtyRepaint();} };
+            Canvas = new GameplayBehaviorGraphView { ConfigurationOwner=this, ViewModeChanged=reading=>{readingView.SetValueWithoutNotify(reading);viewCaption.text=reading?"会话排布 · 不写坐标":"作者原位";},PolicySelected=role=>{_selected=_document.AuthoringGraph.AbilityNodeId;_definition=null;_policySelection=role;_detailTab=0;_details.MarkDirtyRepaint();},Selected = id => { _policySelection=null;_selected = id; _definition = null;_detailTab=0;if(Canvas.HasInlinePreview(id))_inlinePreviewNode=id; _details.MarkDirtyRepaint(); }, Feedback = message => { _feedback = message; Repaint(); }, Populate = Populate, DeleteMain = DeleteMain,PreviewSeeked=RequestPreviewSeek,PreviewPlaying=id=>_previewClockOwner==id&&_previewPlaying,TogglePreview=TogglePreviewPlayback,HasPreview=HasPreview,DrawInlinePreview=DrawInlinePreview,InlinePreviewChanged=SetInlinePreview,PreviewRequested=id=>{_selected=id;_definition=null;_policySelection=null;_inlinePreviewNode=Canvas.HasInlinePreview(id)?id:null;OpenDetails(1);} };
             row.Add(Canvas);
             row.Add(_inspectorHandle=PaneHandle(delta=>{_inspectorWidth=Mathf.Clamp(_inspectorWidth-delta,300,650);ApplyPaneWidths();},()=>EditorPrefs.SetFloat("FRFrame.Workbench.InspectorWidth",_inspectorWidth)));
             _inspector = new VisualElement();_inspector.style.flexShrink=0;_inspector.style.paddingLeft=7;_inspector.style.paddingRight=7;_inspector.style.backgroundColor=GameplayEditorStyles.Panel;
@@ -71495,17 +71780,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             ShapeAnalysisCount++;long sample=System.Diagnostics.Stopwatch.GetTimestamp();
             using(new Unity.Profiling.ProfilerMarker("FRFrame.Workbench.Shape").Auto())try{
             var g=_document?.AuthoringGraph;if(g==null)return "";
-            return GameplayBehaviorGraphView.InlinePrimaryRule(_document)+":"+g.Scope+":"+g.AbilityNodeId+":"+g.PrimaryRuleNodeId+":"+string.Join(",",g.AdditionalRuleNodeIds)+"|"+
+            var settings=(g.Nodes.Find(n=>n.Id==g.AbilityNodeId)?.Payload as GameplayAbilityNodePayload)?.Settings as GameplayAbilityDefinitionData;
+            return string.Join(",",_detachedPolicies.Select(p=>p.Key))+"|"+settings?.Cost?.GetType().FullName+":"+(settings?.Charge!=null)+"|"+GameplayBehaviorGraphView.InlinePrimaryRule(_document)+":"+g.Scope+":"+g.AbilityNodeId+":"+g.PrimaryRuleNodeId+":"+string.Join(",",g.AdditionalRuleNodeIds)+"|"+
                 string.Join("|",g.Nodes.Select(n=>n.Id+":"+n.Payload.GetType().Name+":"+(n.Payload as GameplayActionNodePayload)?.Action?.GetType().FullName+":"+string.Join(",",GameplayGraphFields.OutputPorts(n))+":"+string.Join(",",n.Payload.Definitions.Select(b=>b.PropertyPath+"="+b.LocalId+"@"+(b.External?b.External.GetInstanceID():0)))))+"|"+
                 string.Join("|",g.LocalDefinitions.Select(d=>d.Id+":"+d.Payload.GetType().FullName+":"+string.Join(",",GameplayGraphFields.ActionArrays(d.Payload).Select(a=>a.Path).Concat(GameplayGraphEffectCallbacks.Slots(d.Payload).Select(s=>s.Key)))))+"|"+
                 string.Join("|",g.Connections.Select(e=>e.Id+":"+e.FromNodeId+":"+e.OutputPortKey+":"+e.ToNodeId+":"+e.InputPortKey+":"+e.Order))+"|"+
-                string.Join("|",g.Timelines.SelectMany(t=>t.Events).Select(e=>e.Id+":"+e.EntryNodeId));
+                string.Join("|",g.Timelines.SelectMany(t=>t.Events).Select(e=>e.Id+":"+e.EntryNodeId+":"+(e.Conditions.Length>0)+":"+e.Target?.GetType().FullName));
             }
             finally{ShapeAnalysisMilliseconds+=(System.Diagnostics.Stopwatch.GetTimestamp()-sample)*1000d/System.Diagnostics.Stopwatch.Frequency;}
         }
         private void DrawBrowser()
         {
-            _browserTab=GUILayout.Toolbar(_browserTab,new[]{"文件夹 / 技能","草稿 / 资源"});
+            _browserTab=_document?GUILayout.Toolbar(_browserTab,new[]{"文件夹 / 技能","未接入 / 资源"}):0;
             if(_browserTab==0){_documentBrowser.Draw(Documents(),_document,_browser.resolvedStyle.width);return;}
             _browserScroll = EditorGUILayout.BeginScrollView(_browserScroll);
             if (_document?.AuthoringGraph != null)
@@ -71513,7 +71799,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var graph = _document.AuthoringGraph; var active = GameplayBehaviorGraphView.Reachable(graph);
                 GUILayout.Space(12); GUILayout.Label("未安排行为", EditorStyles.boldLabel);
                 foreach (var node in graph.Nodes.Where(n => !active.Contains(n.Id)))
-                    if (GUILayout.Button(GameplaySkillFieldSchema.NodeName(node), EditorStyles.miniButton)) { _selected = node.Id; _definition = null; Canvas.ShowDrafts = true; Canvas.Load(_document); Canvas.FocusNode(node.Id); }
+                    if (GUILayout.Button(GameplaySkillFieldSchema.NodeName(node), EditorStyles.miniButton)) { _selected = node.Id; _definition = null; Canvas.FocusNode(node.Id); }
                 var used = new HashSet<string>(graph.Nodes.SelectMany(n => n.Payload.Definitions).Concat(graph.LocalDefinitions.SelectMany(d => d.Definitions)).Select(b => b.LocalId));
                 GUILayout.Label("资源 / 未使用配置", EditorStyles.boldLabel);
                 foreach (var d in graph.LocalDefinitions.Where(d => !used.Contains(d.Id)).ToArray()){
@@ -71541,7 +71827,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(!_document&&_sharedSource){using(var source=new SerializedObject(_sharedSource))GameplayAuthoringInspector.Draw(source);}
             else if (!_document) EditorGUILayout.HelpBox("选择正式技能，或新建一个正式技能。", MessageType.Info);
             else {
-                if(_detailTab==0){if(_policySelection!=null)Canvas.DrawPolicy(_policySelection,true);else if(Canvas.SelectedEventId==null)using(GameplayAuthoringInspector.UseFieldContext("Inspector"))GameplaySkillFieldSchema.Draw(Canvas.SerializedSource,_document,_selected,_definition,true);else {GUILayout.Label("选中调度事件 · 行为参数在卡片编辑",EditorStyles.wordWrappedLabel);if(GUILayout.Button("行为高级参数")){Canvas.SelectNodeWithoutCamera(_selected);Canvas.ClearEventSelection();}}DrawTimelineFields(Canvas.SerializedSource,_document,_selected,Canvas.SelectedEventId);}
+                if(_detailTab==0){
+                    if(_policySelection!=null)Canvas.DrawPolicy(_policySelection,true);
+                    else if(Canvas.SelectedEventId==null){if(!Canvas.IsTimelineInline(_selected)||_definition!=null)using(GameplayAuthoringInspector.UseFieldContext("Inspector"))GameplaySkillFieldSchema.Draw(Canvas.SerializedSource,_document,_selected,_definition,true);}
+                    else {GUILayout.Label("选中调度事件 · 行为参数在卡片编辑",EditorStyles.wordWrappedLabel);if(GUILayout.Button("行为高级参数")){Canvas.SelectNodeWithoutCamera(_selected);Canvas.ClearEventSelection();}}
+                    if(_policySelection==null&&_definition==null&&Canvas.SelectedEventId==null)Canvas.DrawMainAnimationSettings(_selected);
+                    DrawTimelineFields(Canvas.SerializedSource,_document,_selected,Canvas.SelectedEventId,Canvas);
+                }
                 else if(_detailTab==1){DrawRangePreview();DrawPreview();}
                 else if(_detailTab==2){DrawInstallation();if(GUILayout.Button("打开 Runtime Debugger"))EditorWindow.GetWindow<FRFrame.Gameplay.Editor.RuntimeDebugger.GameplayRuntimeDebuggerWindow>().Show();}else DrawDiagnostics();
                 GUILayout.Space(10);
@@ -71565,7 +71857,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             using(var serialized=new SerializedObject(document))DrawTimelineFields(serialized,document,nodeId,selectedEventId);
         }
-        private static void DrawTimelineFields(SerializedObject serialized,GameplaySkillDocumentAsset document,string nodeId,string selectedEventId)
+        private static void DrawTimelineFields(SerializedObject serialized,GameplaySkillDocumentAsset document,string nodeId,string selectedEventId,GameplayBehaviorGraphView canvas=null)
         {
             var node = document.AuthoringGraph?.Nodes.Find(n => n.Id == nodeId); if (node == null) return;
             foreach (var timeline in document.AuthoringGraph.Timelines.Where(t=>node.Payload.Definitions.Any(b=>b.LocalId==t.Id)||t.Events.Any(e=>e.EntryNodeId==node.Id)))
@@ -71574,22 +71866,37 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 {
                     serialized.UpdateIfRequiredOrScript();
                     var p = serialized.FindProperty("authoringGraph.Timelines").GetArrayElementAtIndex(document.AuthoringGraph.Timelines.IndexOf(timeline));
+                    using var disabled=new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode||GameplaySkillAuthoringCommands.IsReadOnly(document));
                     var paths=new HashSet<string>();EditorGUI.BeginChangeCheck(); GUILayout.Label("时间编排", EditorStyles.boldLabel);
                     if(owns)foreach (var f in new[] { "Name", "DurationSeconds", "FramesPerSecond" }){var field=p.FindPropertyRelative(f);EditorGUI.BeginChangeCheck();EditorGUILayout.PropertyField(field,new GUIContent(f=="Name"?"编排名称":f=="DurationSeconds"?"总时长（秒）":"帧率 / 吸附"),true);if(EditorGUI.EndChangeCheck())paths.Add(field.propertyPath);}
                     for (int i = 0; i < timeline.Events.Count; i++)
                     {
+                        if(selectedEventId==null&&canvas?.IsTimelineInline(timeline.Events[i].EntryNodeId)==true)continue;
                         if(selectedEventId!=null&&timeline.Events[i].Id!=selectedEventId)continue;
                         if(!owns&&timeline.Events[i].EntryNodeId!=node.Id)continue;
                         if(!owns&&selectedEventId!=null&&timeline.Events.Any(e=>e.Id==selectedEventId&&e.EntryNodeId==node.Id)&&timeline.Events[i].Id!=selectedEventId)continue;
                         var entry = p.FindPropertyRelative("Events").GetArrayElementAtIndex(i); GUILayout.Label((timeline.Events[i].TimeSeconds*timeline.FramesPerSecond).ToString("0.##")+"f · "+GameplaySkillFieldSchema.NodeName(document.AuthoringGraph.Nodes.Find(n=>n.Id==timeline.Events[i].EntryNodeId))+" · #"+timeline.Events[i].Order, EditorStyles.boldLabel);
                         var time=entry.FindPropertyRelative("TimeSeconds");
                         float frame=time.floatValue*timeline.FramesPerSecond;float next=EditorGUILayout.FloatField("帧（秒数为运行权威）",frame);if(next!=frame){time.floatValue=next/timeline.FramesPerSecond;paths.Add(time.propertyPath);}
-                        foreach (var f in new[] { "TimeSeconds", "Order", "Conditions", "Target" }){var field=entry.FindPropertyRelative(f);EditorGUI.BeginChangeCheck();GameplayAuthoringInspector.Field(field,f=="TimeSeconds"?new GUIContent("时间（秒）"):GameplayAuthoringInspector.Label(field));if(EditorGUI.EndChangeCheck())paths.Add(field.propertyPath);}
+                        EditorGUI.BeginChangeCheck();
+                        GameplayAuthoringInspector.Field(time,new GUIContent("时间（秒）"));
+                        if(EditorGUI.EndChangeCheck())paths.Add(time.propertyPath);
+                        DrawScheduleOptions(entry,paths);
                     }
                     if (EditorGUI.EndChangeCheck()) GameplaySkillFieldSchema.ApplyFields(serialized,document,false,paths);
                 }
             }
         }
+        internal static void DrawScheduleOptions(SerializedProperty entry,HashSet<string> paths)
+        {
+            foreach(var name in new[]{"Order","Conditions","Target"}){
+                var field=entry.FindPropertyRelative(name);
+                EditorGUI.BeginChangeCheck();
+                GameplayAuthoringInspector.Field(field);
+                if(EditorGUI.EndChangeCheck())paths.Add(field.propertyPath);
+            }
+        }
+
         private void Populate(IGameplaySkillCreationMenu menu, Vector2 position, string timeline, float? seconds)
         {
             if (!_document || _document.AuthoringGraph == null) return;
@@ -71615,6 +71922,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             if (timeline == null)
             {
+                if(link==null)Canvas.AddConfigurationEntries(menu,position);
                 if(link?.Input==GameplayGraphEffectCallbacks.Input)menu.AddDisabledItem(new GUIContent("技能/时间编排","效果生命周期只消费真实Effect定义，不能调用时间编排。"));
                 else menu.AddItem(new GUIContent("技能/时间编排"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateSequence(_document, position,link)));
                 if(link==null)menu.AddItem(new GUIContent("[模板]/逐目标伤害与结束"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateDamageTemplate(_document,position)));
@@ -71640,18 +71948,30 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var unavailable=GameplaySkillTypeAvailability.Reason(_document,type);if(unavailable!=null){menu.AddDisabledItem(new GUIContent(GameplaySkillNodeDescriptors.Category(type)+"/"+GameplaySkillNodeDescriptors.Get(type).DisplayName+" · 不可用",unavailable));continue;}var descriptor = GameplaySkillNodeDescriptors.Get(type); var action = (GameplaySkillActionAuthoring)Activator.CreateInstance(type);
                 var slot = GameplayGraphFields.ResourceSlots(action).FirstOrDefault();
                 var values = slot == null ? new Type[0] : GameplaySkillFieldSchema.Values(slot.ValueType).ToArray();
-                string contextReason=ContextReason(action,values.Length==0?null:(GameplayLocalDefinitionPayload)Activator.CreateInstance(values[0]),slot?.Path);
-                if(contextReason!=null){menu.AddDisabledItem(new GUIContent(GameplaySkillNodeDescriptors.Category(type)+"/"+descriptor.DisplayName,contextReason));continue;}
-                if (values.Length == 0) menu.AddItem(new GUIContent(GameplaySkillNodeDescriptors.Category(type) + "/" + descriptor.DisplayName, descriptor.Summary), false,
-                    () => Create(() => GameplaySkillAuthoringCommands.CreateAction(_document, (GameplaySkillActionAuthoring)Activator.CreateInstance(type), descriptor.DisplayName, position, null, null, timeline, seconds,link)));
-                foreach (var value in values) { var valueType = value; menu.AddItem(new GUIContent(GameplaySkillNodeDescriptors.Category(type) + "/" + descriptor.DisplayName + " · " + GameplaySkillFieldSchema.Name(value), descriptor.Summary), false,
-                    () => Create(() => GameplaySkillAuthoringCommands.CreateAction(_document, (GameplaySkillActionAuthoring)Activator.CreateInstance(type), descriptor.DisplayName, position, (GameplayLocalDefinitionPayload)Activator.CreateInstance(valueType), slot.Path, timeline, seconds,link))); }
+                string category=GameplaySkillNodeDescriptors.Category(type);
+                if(values.Length==0)AddOption(descriptor.DisplayName,descriptor.DisplayName,null);
+                foreach(var valueType in values){
+                    var presets=GameplaySkillFieldSchema.CreationPresets(valueType).ToArray();
+                    if(presets.Length==0)
+                        AddOption(descriptor.DisplayName+" · "+GameplaySkillFieldSchema.Name(valueType),descriptor.DisplayName,(GameplayLocalDefinitionPayload)Activator.CreateInstance(valueType));
+                    else
+                        foreach(var preset in presets)AddOption(preset.Name,preset.Name,preset.Value);
+                }
+
+                void AddOption(string label,string title,GameplayLocalDefinitionPayload value)
+                {
+                    string reason=ContextReason(action,value,slot?.Path);
+                    var caption=new GUIContent(category+"/"+label,reason??descriptor.Summary);
+                    if(reason!=null)menu.AddDisabledItem(caption);
+                    else menu.AddItem(caption,false,()=>Create(()=>GameplaySkillAuthoringCommands.CreateAction(
+                        _document,(GameplaySkillActionAuthoring)Activator.CreateInstance(type),title,position,value,slot?.Path,timeline,seconds,link)));
+                }
             }
             void Effect(string title, GameplayEffectExecutionAuthoring execution) => Create(() => GameplaySkillAuthoringCommands.CreateAction(_document, new GameplayApplyToTargetsActionAuthoring(), title, position,
                 new GameplayEffectDefinitionData { DurationPolicy = GameplayEffectDurationPolicy.Instant, Executions = new[] { execution } }, "Effect", timeline, seconds,link));
         }
         private void Create(Func<string> command)
-        { Attempt(() => { var source=_document;_policySelection=null;Canvas.ClearEventSelection();Canvas.ShowDrafts = true; _selected = command();string created=_selected; _definition = null;_details.MarkDirtyRepaint();Canvas.schedule.Execute(()=>{if(_document==source)Canvas.FocusNode(created);}).StartingIn(170); }); }
+        { Attempt(() => { _policySelection=null;Canvas.ClearEventSelection(); _selected = command(); _definition = null;_details.MarkDirtyRepaint(); }); }
         private void DeleteMain()
         {
 
@@ -71707,17 +72027,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(cause is GameplayGraphCompilationException structured){foreach(var issue in structured.Issues)if(!_diagnostics.Any(i=>i.Path==issue.Path&&i.Message==issue.Message))_diagnostics.Add(issue);}
                 else _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Error,"技能",error.Message));}
             var active=GameplayGraphContextPolicy.Reachable(_document.AuthoringGraph);
-            foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>!active.Contains(n.Id)))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"未安排行为 / 草稿，不参与正式执行："+GameplaySkillFieldSchema.NodeName(node)));
+            foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>!active.Contains(n.Id)))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"未接入执行流程，不参与执行："+GameplaySkillFieldSchema.NodeName(node)));
             foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>active.Contains(n.Id)&&(n.Payload as GameplayRuleNodePayload)?.Target is GameplaySkillContextTargetAuthoring))
                 _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"调用者输入契约：此规则保留 TriggerEvent.Context；宿主须提供下游所需 Actor / Point。地点回调之后仍按实际来源检查，不能假定自身。"));
-            _feedback=_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error)?"编译未通过；点击校验条目定位同源字段。":"正式运行图编译通过；草稿提示另列。";
+            _feedback=_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error)?"编译未通过；点击校验条目定位同源字段。":"正式运行图编译通过；未接入流程的节点提示另列。";
             _detailTab=3;_details?.MarkDirtyRepaint();Repaint();
         }
         private void RecordPreviewError(string node,string message)
         {if(!_diagnostics.Any(i=>i.Path==node&&i.Message==message))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Error,node,message));}
         private void DrawDiagnostics()
         {
-            EditorGUILayout.HelpBox(_diagnosticsStale?"配置已修改，以下诊断已过期；重新校验可更新。":"诊断对应当前正式数据；草稿不计为编译错误。",_diagnosticsStale?MessageType.Warning:MessageType.Info);
+            EditorGUILayout.HelpBox(_diagnosticsStale?"配置已修改，以下诊断已过期；重新校验可更新。":"诊断对应当前正式数据；未接入流程的节点不参与执行。",_diagnosticsStale?MessageType.Warning:MessageType.Info);
             if(GUILayout.Button("重新校验正式技能"))ValidateDocument();
             using(new EditorGUI.DisabledScope(!_returnPan.HasValue))if(GUILayout.Button("返回定位前的视角")){Canvas.UpdateViewTransform(_returnPan.Value,_returnScale);_selected=_returnNode;Canvas.SelectNodeWithoutCamera(_selected);_returnPan=null;}
             foreach(var group in _diagnostics.GroupBy(i=>i.Severity)){
@@ -71735,7 +72055,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(node==null&&local!=null)node=graph.Nodes.FirstOrDefault(n=>n.Payload.Definitions.Any(b=>b.LocalId==local.Id));
             if(node==null)node=graph.Nodes.FirstOrDefault(n=>n.Id==graph.AbilityNodeId);if(node==null)return;
             _returnPan=Canvas.viewTransform.position;_returnScale=Canvas.viewTransform.scale;_returnNode=_selected;_selected=node.Id;_definition=local?.Id;_detailTab=0;
-            if(!GameplayGraphContextPolicy.Reachable(graph).Contains(node.Id)){Canvas.ShowDrafts=true;Canvas.Load(_document);}Canvas.FocusNode(node.Id);
+            Canvas.FocusNode(node.Id);
             string property=local!=null?"authoringGraph.LocalDefinitions.Array.data["+graph.LocalDefinitions.IndexOf(local)+"].Payload":
                 entry!=null?"authoringGraph.Timelines.Array.data["+graph.Timelines.IndexOf(timeline)+"].Events.Array.data["+timeline.Events.IndexOf(entry)+"]":
                 "authoringGraph.Nodes.Array.data["+graph.Nodes.IndexOf(node)+"].Payload"+(node.Payload is GameplayActionNodePayload?".Action":node.Payload is GameplayAbilityNodePayload?".Settings":"");
@@ -72001,8 +72321,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 state.Seconds=Mathf.Clamp(EditorGUILayout.FloatField(state.Seconds*fps)/fps,0,PreviewClockDuration(root));GUILayout.EndHorizontal();preview.Seek(state.Seconds);
             }
             float width=inline?Canvas.PreviewWidth(root):_inspector.resolvedStyle.width-35;
-            var rect=GUILayoutUtility.GetRect(100,Mathf.Clamp(width*.46f,150,220),GUILayout.ExpandWidth(true));
-            if(Event.current.type==EventType.Repaint)preview.Render(rect);
+            var rect=GUILayoutUtility.GetRect(100,inline?Canvas.PreviewHeight(root):Mathf.Clamp(width*.46f,150,220),GUILayout.ExpandWidth(true));
+            preview.Render(rect);
             if(!inline)preview.DrawControls();
         }
     }
@@ -72061,6 +72381,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             handle.RegisterCallback<PointerMoveEvent>(e=>{if(!handle.HasPointerCapture(e.pointerId))return;move(e.position.x-previous);previous=e.position.x;e.StopPropagation();});
             handle.RegisterCallback<PointerUpEvent>(e=>{if(!handle.HasPointerCapture(e.pointerId))return;handle.ReleasePointer(e.pointerId);save();e.StopPropagation();});return handle;
         }
+        internal void OpenDetails(int tab=0)
+        {
+            _detailTab=tab;
+            _inspectorScroll=Vector2.zero;
+            if(!_inspectorOpen){
+                _inspectorOpen=true;
+                ApplyPaneWidths();
+                SavePanePreferences();
+            }
+            _details.MarkDirtyRepaint();
+        }
+
         private void ApplyPaneWidths()
         {
             if(_browser==null||_inspector==null)return;
@@ -72193,6 +72525,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 menu.AddItem(new GUIContent((doc.AuthoringGraph?.Scope??"未迁移")+"/"+title,AssetDatabase.GetAssetPath(doc)),doc==_document,()=>SelectDocument(source));
             }
             if(documents.Count==0)menu.AddDisabledItem(new GUIContent("尚无技能，请先新建"));
+            menu.ShowAsContext();
+        }
+        private void ShowRecentDocumentMenu()
+        {
+            LoadRecent();
+            var menu=new GenericMenu();
+            foreach(var entry in _recent.Items)
+                menu.AddItem(new GUIContent(entry.Title+" · "+System.IO.Path.GetFileName(entry.Path),entry.Path),
+                    entry.Document==_document,()=>OpenRecent(entry));
+            if(_recent.Items.Count==0)
+                menu.AddDisabledItem(new GUIContent("暂无记录，打开技能后会出现在这里"));
             menu.ShowAsContext();
         }
         private void DrawWelcome()
@@ -75141,7 +75484,11 @@ namespace FRFrame.Gameplay.Spine.Editor
                 var filter=new TextField("筛选动画"){name="SpineAnimationFilter"};
                 var names=new DropdownField(label,new List<string>{""},0){name="SpineAnimationChoice"};
                 filter.labelElement.style.minWidth=70;filter.labelElement.style.maxWidth=92;names.labelElement.style.minWidth=70;names.labelElement.style.maxWidth=92;
-                root.Add(filter);root.Add(names);root.Add(error);
+                var row=new VisualElement{style={flexDirection=FlexDirection.Row,alignItems=Align.Center}};
+                names.label="动画";names.style.flexGrow=1;names.style.flexShrink=1;names.style.minWidth=100;
+                filter.label="筛选";filter.labelElement.style.minWidth=28;filter.labelElement.style.maxWidth=28;
+                filter.tooltip="筛选当前骨骼的动画；不修改已选动画";filter.style.width=112;filter.style.flexShrink=0;
+                row.Add(names);row.Add(filter);root.Add(row);root.Add(error);
                 string selected="",query=null;string[] all=Array.Empty<string>(),previous=null;
                 void Choices(){
                     if(ReferenceEquals(previous,all)&&query==filter.value)return;previous=all;query=filter.value;
@@ -76095,7 +76442,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(type==typeof(GameplayPlayAnimationActionAuthoring))return new GameplaySkillNodeEditorDescriptor(property?.FindPropertyRelative("Queue")?.boolValue==true?"排队动画":"播放动画","FRFrame/表现","播放正式动画资源；Queue在同一channel等待，取消施法释放当前与排队请求。",visualKind:GameplayNodeVisualKind.Presentation,isAnimation:true);
             if(type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset))return new GameplaySkillNodeEditorDescriptor("战斗飘字","FRFrame/表现","展示同来源已提交结果；复用Core UIWidget/Pool。不会决定伤害或另建规则时钟。",visualKind:GameplayNodeVisualKind.Presentation);
             var cue=property?.FindPropertyRelative("Cue")?.objectReferenceValue as GameplayPresentationCueAsset;
-            return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","直接正式资源绑定；复用 FRFrame Pool/Audio，绑定当前施法并精确清理。",visualKind:GameplayNodeVisualKind.Presentation);
+            return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","直接正式资源绑定；复用 FRFrame Pool/Audio，绑定当前施法并精确清理。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
         }
     }
     /// <summary>SDK-neutral preview uses exactly the Runtime asset factory. It owns only presentation
@@ -76116,6 +76463,9 @@ namespace FRFrame.Gameplay.Unity.Editor
         private GameObject _subject;
         private IGameplayAnimationPlayer _player;
         private PreviewRenderUtility _preview;
+        private Bounds _initialBounds,_frameBounds;
+        private Vector2 _viewOffset;
+        private float _viewZoom=1;
         private int _level=1;
         private float _time;
         private string _error;
@@ -76200,8 +76550,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 // clip rectangle. An isolated preview has no Canvas clipping parent. Override only
                 // this temporary renderer's block; never edit the shared source material.
                 foreach(var renderer in renderers){var block=new MaterialPropertyBlock();renderer.GetPropertyBlock(block);block.SetVector("_ClipRect",new Vector4(-100000,-100000,100000,100000));renderer.SetPropertyBlock(block);}
-                var bounds=new Bounds(_subject.transform.position,Vector3.one);
-                if(renderers.Length>0){bounds=renderers[0].bounds;foreach(var renderer in renderers)bounds.Encapsulate(renderer.bounds);}
+                var bounds=SubjectBounds();_initialBounds=_frameBounds=bounds;_viewOffset=Vector2.zero;_viewZoom=1;
                 _preview.camera.transform.position=bounds.center+new Vector3(0,0,-10);
                 _preview.camera.orthographicSize=Mathf.Max(.5f,bounds.extents.y*1.3f,bounds.extents.x*.85f);
             }
@@ -76230,9 +76579,36 @@ namespace FRFrame.Gameplay.Unity.Editor
         public void Render(Rect viewport)
         {
             if(_cuePreview!=null){_cuePreview.Render(viewport);return;}
-            if(_preview==null||Event.current.type!=EventType.Repaint)return;
+            if(_preview==null)return;
+            var toolbar=new Rect(viewport.x,viewport.y,viewport.width,22);
+            if(GUI.Button(new Rect(toolbar.x,toolbar.y,82,20),new GUIContent("适应画面","按当前帧的角色及可见内嵌特效重新取景"))){_frameBounds=SubjectBounds();_viewOffset=Vector2.zero;_viewZoom=1;}
+            if(GUI.Button(new Rect(toolbar.x+86,toolbar.y,82,20),new GUIContent("重置视图","恢复初始取景，清除预览平移与缩放"))){_frameBounds=_initialBounds;_viewOffset=Vector2.zero;_viewZoom=1;}
+            GUI.Label(new Rect(toolbar.x+176,toolbar.y,toolbar.width-176,20),"滚轮缩放 · 中键平移  "+(_viewZoom*100).ToString("0")+"%",EditorStyles.miniLabel);
+            viewport.yMin+=24;
+            float aspect=viewport.width/viewport.height;
+            float size=Mathf.Max(.01f,_frameBounds.extents.y,_frameBounds.extents.x/aspect)*1.15f/_viewZoom;
+            var evt=Event.current;int control=GUIUtility.GetControlID(FocusType.Passive);
+            if(evt.type==EventType.ScrollWheel&&viewport.Contains(evt.mousePosition)){
+                _viewZoom=Mathf.Clamp(_viewZoom*Mathf.Exp(-evt.delta.y*.08f),.1f,10);
+                float next=Mathf.Max(.01f,_frameBounds.extents.y,_frameBounds.extents.x/aspect)*1.15f/_viewZoom;
+                _viewOffset+=new Vector2(evt.mousePosition.x-viewport.center.x,viewport.center.y-evt.mousePosition.y)*(2*(size-next)/viewport.height);
+                size=next;evt.Use();GUI.changed=true;
+            }
+            if(evt.type==EventType.MouseDown&&evt.button==2&&viewport.Contains(evt.mousePosition)){GUIUtility.hotControl=control;evt.Use();}
+            if(evt.type==EventType.MouseDrag&&GUIUtility.hotControl==control){_viewOffset+=new Vector2(-evt.delta.x,evt.delta.y)*(2*size/viewport.height);evt.Use();GUI.changed=true;}
+            if(evt.type==EventType.MouseUp&&GUIUtility.hotControl==control){GUIUtility.hotControl=0;evt.Use();}
+            _preview.camera.transform.position=_frameBounds.center+new Vector3(_viewOffset.x,_viewOffset.y,-10);
+            _preview.camera.orthographicSize=size;
+            if(evt.type!=EventType.Repaint)return;
             _preview.BeginPreview(viewport,GUIStyle.none);_preview.Render(true);
             GUI.DrawTexture(viewport,_preview.EndPreview(),ScaleMode.ScaleToFit,false);
+        }
+        private Bounds SubjectBounds()
+        {
+            var renderers=_subject.GetComponentsInChildren<Renderer>();
+            var bounds=renderers.Length>0?renderers[0].bounds:new Bounds(_subject.transform.position,Vector3.one);
+            foreach(var renderer in renderers)bounds.Encapsulate(renderer.bounds);
+            return bounds;
         }
         private void Release()
         {
@@ -76385,24 +76761,33 @@ namespace FRFrame.Gameplay.Unity.Editor
 using System;
 using System.Collections.Generic;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 
 namespace FRFrame.Gameplay.Unity.Editor
 {
     /// <summary>Unity backends expose their real plain-data sources to the shared V2 editor.</summary>
-    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider
+    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider, IGameplaySkillValueCreationPresets
     {
         public IEnumerable<GameplaySkillCardField> CardFields(object values)
         {
             if(values is GameplayAnimationData){yield return new GameplaySkillCardField("Channel","播放通道");yield return new GameplaySkillCardField("Speed","速度",true);yield return new GameplaySkillCardField("Loop","循环");}
             if(values is GameplayUnityAnimationData){yield return new GameplaySkillCardField("Clip","动画剪辑");yield return new GameplaySkillCardField("StateName","状态名");}
-            if(values is GameplayPresentationCueData cue){yield return new GameplaySkillCardField("Kind","表现类型");yield return new GameplaySkillCardField(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"Clip":"Prefab","资源");yield return new GameplaySkillCardField("Duration","持续秒数",true);yield return new GameplaySkillCardField("Origin","播放位置");if(cue.Origin!=GameplayPresentationCueAsset.PositionSource.ContextPoint){yield return new GameplaySkillCardField("Binding","挂点（空为根）");yield return new GameplaySkillCardField("Follow","跟随位置");}}
+            if(values is GameplayPresentationCueData cue){
+                bool audio=cue.Kind==GameplayPresentationCueAsset.CueKind.Audio;
+                yield return audio?new GameplaySkillCardField("Clip","音频片段"):new GameplaySkillCardField("Prefab","特效预制体");
+                if(!audio)yield return new GameplaySkillCardField("RecycleWhenParticlesFinish","播完回收");
+                if(IsFieldVisible(cue,"Duration"))yield return new GameplaySkillCardField("Duration",audio?"停止时限":"回收时限",true);
+                yield return new GameplaySkillCardField("Origin","播放位置");
+                if(IsFieldVisible(cue,"Binding"))yield return new GameplaySkillCardField("Binding","挂点（空为根）");
+                if(IsFieldVisible(cue,"Follow"))yield return new GameplaySkillCardField("Follow","跟随位置");
+            }
             if(values is GameplayFloatingTextData text){yield return new GameplaySkillCardField("Prefab","战斗结算飘字");yield return new GameplaySkillCardField("Duration","持续秒数");yield return new GameplaySkillCardField("FixedPoint","固定世界位置");if(!text.FixedPoint){yield return new GameplaySkillCardField("Binding","结果目标挂点");yield return new GameplaySkillCardField("Follow","跟随结果目标");}yield return new GameplaySkillCardField("RequestedHealing","治疗显示请求值");}
         }
         public bool TryReadDuration(object values,out string path,out float seconds){
             if(values is GameplayUnityAnimationData animation&&animation.Clip&&animation.Speed is GameplayConstantFloatValueAuthoring speed&&speed.Value>0){path=null;seconds=animation.Clip.length/speed.Value;return true;}
-            path=null;seconds=0;if(values is GameplayPresentationCueData cue&&cue.Duration is GameplayConstantFloatValueAuthoring duration){path="Duration";seconds=duration.Value;return true;}return false;
+            path=null;seconds=0;if(values is GameplayPresentationCueData cue&&IsFieldVisible(cue,"Duration")&&cue.Duration is GameplayConstantFloatValueAuthoring duration){path="Duration";seconds=duration.Value;return true;}return false;
         }
         public IEnumerable<GameplayBusinessInspectorGroup> Sections(object values){
             if(values is GameplayAnimationData){
@@ -76414,18 +76799,32 @@ namespace FRFrame.Gameplay.Unity.Editor
                 yield return new GameplayBusinessInspectorGroup(null,"战斗结果 / 锚定","读取已经提交的 combat feedback；不使用任意上下文 Key。","Prefab","FixedPoint","Point","Binding","Follow","Offset","RequestedHealing","SuppressEmptyHealing");
                 yield return new GameplayBusinessInspectorGroup(null,"格式 / 颜色 / 动效",null,"Duration","DamagePrefix","NumberFormat","CriticalPrefix","MissText","ImmuneText","ShieldPrefix","DamageColor","CriticalColor","SupportColor","MissColor","RiseSpeed","Acceleration","VelocitySpread","FadeStartRatio");
             }
-            if(values is GameplayPresentationCueData){
-                yield return new GameplayBusinessInspectorGroup(null,"特效 / 声音资源",null,"Kind","Prefab","Clip");
-                yield return new GameplayBusinessInspectorGroup(null,"位置 / 挂点 / 朝向",null,"Origin","Binding","Offset","Scale","Follow","MirrorFacing");
-                yield return new GameplayBusinessInspectorGroup(null,"持续 / 释放 / 音频","OwnedByAbility 可在配置时长之前释放；时长不等于技能结束时点。","Duration","OwnedByAbility","Volume","Pitch","AudioLoop");
+            if(values is GameplayPresentationCueData cue){
+                bool audio=cue.Kind==GameplayPresentationCueAsset.CueKind.Audio;
+                yield return new GameplayBusinessInspectorGroup(null,audio?"音频资源":"特效资源",null,audio?"Clip":"Prefab");
+                yield return new GameplayBusinessInspectorGroup(null,audio?"播放位置":"位置 / 缩放 / 朝向",null,"Origin","Binding","Offset","Scale","Follow","MirrorFacing");
+                if(audio)
+                    yield return new GameplayBusinessInspectorGroup(null,"音频播放",null,"Volume","Pitch","AudioLoop");
+                yield return new GameplayBusinessInspectorGroup(null,audio?"停止与清理":"回收与清理",
+                    audio?"时限以秒计。到期停止音频，随技能清理可能提前停止。":"一次性粒子可以播完回收。循环或其它特效请用手动时限，随技能清理可以提前回收。",
+                    "RecycleWhenParticlesFinish","Duration","OwnedByAbility");
             }
         }
         public string Summary(object values) {
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
-            if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n时长 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s";
+            if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
             return null;
         }
+        public IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType)
+        {
+            if (valueType != typeof(GameplayPresentationCueData)) yield break;
+            yield return ("播放特效", new GameplayPresentationCueData {
+                Kind=GameplayPresentationCueAsset.CueKind.Vfx,RecycleWhenParticlesFinish=true,OwnedByAbility=false
+            });
+            yield return ("播放音频", new GameplayPresentationCueData { Kind = GameplayPresentationCueAsset.CueKind.Audio });
+        }
+
         public IEnumerable<Type> ValueTypes(Type resource)
         {
             if (resource.IsAssignableFrom(typeof(GameplayUnityAnimationAsset))) yield return typeof(GameplayUnityAnimationData);
@@ -76437,7 +76836,36 @@ namespace FRFrame.Gameplay.Unity.Editor
         }
         public string Name(Type type) => type == typeof(GameplayUnityAnimationData) ? "Animator / Playables" : type == typeof(GameplayPresentationCueData) ? "特效 / 音效" :
             type == typeof(GameplayFloatingTextData) ? "战斗飘字" : type == typeof(GameplayUnityProjectileData) ? "Unity 弹体" : type == typeof(GameplayUnityAreaData) ? "Unity 区域" : type == typeof(GameplayUnitySummonData) ? "Unity 召唤" : null;
-        public bool DrawField(SerializedProperty root, SerializedProperty field) => false;
+        public bool IsFieldVisible(object values,string field)
+        {
+            GameplayPresentationCueAsset.CueKind kind;
+            GameplayPresentationCueAsset.PositionSource origin;
+            bool autoRecycle;
+            if(values is GameplayPresentationCueData cue){
+                if(field=="Kind")return false;
+                kind=cue.Kind;
+                origin=cue.Origin;
+                autoRecycle=cue.RecycleWhenParticlesFinish;
+            }else if(values is GameplayPresentationCueAsset shared){
+                kind=shared.Kind;
+                origin=shared.Origin;
+                autoRecycle=shared.RecycleWhenParticlesFinish;
+            }else return true;
+
+            switch(field){
+                case "Prefab": case "Scale": case "MirrorFacing": case "RecycleWhenParticlesFinish":
+                    return kind==GameplayPresentationCueAsset.CueKind.Vfx;
+                case "Clip": case "Volume": case "Pitch": case "AudioLoop":
+                    return kind==GameplayPresentationCueAsset.CueKind.Audio;
+                case "Binding": case "Follow":
+                    return origin!=GameplayPresentationCueAsset.PositionSource.ContextPoint;
+                case "Duration":
+                    return kind!=GameplayPresentationCueAsset.CueKind.Vfx||!autoRecycle;
+                default:
+                    return true;
+            }
+        }
+        public bool DrawField(SerializedProperty root,SerializedProperty field)=>false;
         public bool Supports(object values) => values is GameplayAnimationData || values is GameplayPresentationCueData || values is GameplayFloatingTextData;
         public IGameplaySkillPreviewSession Create(GameplaySkillDocumentAsset document, object values, float startSeconds)
         { var session = new GameplayAnimationPreviewSession(); session.UpdateValues(document, values, startSeconds); return session; }
@@ -76474,9 +76902,13 @@ namespace FRFrame.Gameplay.Unity.Editor
         {
             try{
                 var build=new GameplayAuthoringBuildContext();
-                if(cue!=null){_cue=cue.Build(build);Duration=GameplayValueEvaluator.Evaluate(_cue.Duration,application);}
+                if(cue!=null){
+                    _cue=cue.Build(build);
+                    if(!_cue.RecycleWhenParticlesFinish)Duration=GameplayValueEvaluator.Evaluate(_cue.Duration,application);
+                }
                 else{_text=text.Build(build);Duration=_text.Duration;}
-                if(!float.IsFinite(Duration)||Duration<=0)throw new ArithmeticException("Presentation duration must be positive.");
+                if(_cue?.RecycleWhenParticlesFinish!=true&&(!float.IsFinite(Duration)||Duration<=0))
+                    throw new ArithmeticException("Presentation duration must be positive.");
                 if(_cue?.Kind==GameplayPresentationCueAsset.CueKind.Audio)return;
                 var prefab=_cue!=null?_cue.Prefab:_text.Prefab;
                 if(prefab==null)throw new InvalidOperationException("Select an existing presentation prefab.");
@@ -76488,6 +76920,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 _preview.camera.nearClipPlane=.01f;_preview.camera.farClipPlane=100;
                 _preview.lights[0].intensity=1;_preview.lights[0].transform.rotation=Quaternion.Euler(40,40,0);
                 _particles=Subject.GetComponentsInChildren<ParticleSystem>(true);
+                if(_cue?.RecycleWhenParticlesFinish==true)Duration=EstimateParticlePreviewDuration();
                 foreach(var particles in _particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);}
                 if(_text!=null){
                     _widget=Subject.GetComponent<GameplayFloatingTextWidget>();
@@ -76504,13 +76937,40 @@ namespace FRFrame.Gameplay.Unity.Editor
         internal void Seek(float seconds,bool started)
         {
             if(Subject==null)return;
-            bool visible=started&&seconds<Duration;Subject.SetActive(visible);if(!visible)return;
+            bool visible=started&&(_cue?.RecycleWhenParticlesFinish==true||seconds<Duration);
+            Subject.SetActive(visible);if(!visible)return;
             foreach(var particles in _particles){particles.Simulate(seconds,false,true,true);particles.Pause(false);}
             if(_widget!=null){Subject.transform.position=_start+Vector3.up*(seconds*_text.RiseSpeed);_widget.SetOpacity(1-seconds/Duration);}
         }
+        // The standalone scrubber needs a finite range. Runtime uses actual particle completion.
+        private float EstimateParticlePreviewDuration()
+        {
+            float duration=1;
+            foreach(var particles in _particles){
+                if(!particles.gameObject.activeInHierarchy)continue;
+                var main=particles.main;
+                var trails=particles.trails;
+                float lifetime=Peak(main.startLifetime);
+                if(trails.enabled&&!trails.dieWithParticles)lifetime+=lifetime*Peak(trails.lifetime);
+                duration=Mathf.Max(duration,(Peak(main.startDelay)+main.duration+lifetime)/main.simulationSpeed);
+            }
+            return duration;
+
+            float Peak(ParticleSystem.MinMaxCurve value)
+            {
+                if(value.mode==ParticleSystemCurveMode.Constant||value.mode==ParticleSystemCurveMode.TwoConstants)
+                    return value.constantMax;
+                float max=value.curveMax.keys.Select(k=>k.value).DefaultIfEmpty(0).Max();
+                if(value.mode==ParticleSystemCurveMode.TwoCurves)
+                    max=Mathf.Max(max,value.curveMin.keys.Select(k=>k.value).DefaultIfEmpty(0).Max());
+                return max*value.curveMultiplier;
+            }
+        }
         internal void DrawControls()
         {
-            EditorGUILayout.LabelField("正式表现素材 / 持续秒",Duration.ToString("0.###"));
+            if(_cue?.RecycleWhenParticlesFinish==true)
+                EditorGUILayout.LabelField("播完回收 · 预览范围估算",Duration.ToString("0.###")+" 秒");
+            else EditorGUILayout.LabelField("正式表现素材 / 持续秒",Duration.ToString("0.###"));
             if(_cue?.Kind==GameplayPresentationCueAsset.CueKind.Audio){
                 EditorGUILayout.ObjectField("音频素材",_cue.Clip,typeof(AudioClip),false);
                 EditorGUILayout.LabelField("运行音量 / 音高",_cue.Volume+" / "+_cue.Pitch);
@@ -76727,15 +77187,26 @@ namespace FRFrame.Gameplay.Unity
         public bool OwnedByAbility=true;
         public float Volume=1,Pitch=1;
         public bool AudioLoop;
+        /// <summary>VFX only. Recycle once all non-looping particle systems finish.</summary>
+        public bool RecycleWhenParticlesFinish;
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=1};
+        private bool UsesParticleCompletion=>Kind==GameplayPresentationCueAsset.CueKind.Vfx&&RecycleWhenParticlesFinish;
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>
-            new GameplayPresentationCueDefinition(Kind,Prefab,Clip,Origin,Offset,Follow,Volume,Pitch,AudioLoop,Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing));
+            new GameplayPresentationCueDefinition(Kind,Prefab,Clip,Origin,Offset,Follow,Volume,Pitch,AudioLoop,
+                UsesParticleCompletion?null:Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing,UsesParticleCompletion));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation,string path)
         {
             if(!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind),Kind)||!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.PositionSource),Origin))validation.Error(path,"Invalid cue policy.");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Vfx&&Prefab==null)validation.Error(path+".Prefab","VFX prefab is required.");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Audio&&Clip==null)validation.Error(path+".Clip","Audio clip is required.");
-            if(Duration==null)validation.Error(path+".Duration","Duration is required.");else Duration.Validate(validation,path+".Duration");
+            if(UsesParticleCompletion){
+                if(Prefab){
+                    var systems=Prefab.GetComponentsInChildren<ParticleSystem>();
+                    if(systems.Length==0||Array.Exists(systems,p=>p.main.loop||p.main.simulationSpeed<=0))
+                        validation.Error(path+".Prefab","播完回收需要至少一个正常播放的非循环粒子系统，且不能含循环粒子。循环或其它特效请关闭播完回收并设置回收时限。");
+                }
+            }else if(Duration==null)validation.Error(path+".Duration","Duration is required.");
+            else Duration.Validate(validation,path+".Duration");
             if(!float.IsFinite(Volume)||Volume<0||Volume>1||!float.IsFinite(Pitch)||Pitch<=0)validation.Error(path,"Invalid volume/pitch.");
             if(!float.IsFinite(Offset.x)||!float.IsFinite(Offset.y)||!float.IsFinite(Offset.z))validation.Error(path+".Offset","Offset must be finite.");
             if(!float.IsFinite(Scale.x)||!float.IsFinite(Scale.y)||!float.IsFinite(Scale.z))validation.Error(path+".Scale","Scale must be finite.");
@@ -77524,6 +77995,9 @@ namespace FRFrame.Gameplay.Unity
 
         public bool AudioLoop;
 
+        /// <summary>Opt-in completion policy for non-looping particle prefabs.</summary>
+        public bool RecycleWhenParticlesFinish;
+
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=1};
 
         public enum CueKind { Vfx, Audio }
@@ -77531,7 +78005,7 @@ namespace FRFrame.Gameplay.Unity
         public enum PositionSource { Owner, PrimaryTarget, ContextPoint }
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        private GameplayPresentationCueData CaptureValues() => new GameplayPresentationCueData { Kind = Kind, Prefab = Prefab, Clip = Clip, Origin = Origin, Offset = Offset, Binding = Binding, Scale = Scale, MirrorFacing = MirrorFacing, Follow = Follow, OwnedByAbility = OwnedByAbility, Volume = Volume, Pitch = Pitch, AudioLoop = AudioLoop, Duration = Duration };
+        private GameplayPresentationCueData CaptureValues() => new GameplayPresentationCueData { Kind = Kind, Prefab = Prefab, Clip = Clip, Origin = Origin, Offset = Offset, Binding = Binding, Scale = Scale, MirrorFacing = MirrorFacing, Follow = Follow, OwnedByAbility = OwnedByAbility, Volume = Volume, Pitch = Pitch, AudioLoop = AudioLoop, Duration = Duration, RecycleWhenParticlesFinish = RecycleWhenParticlesFinish };
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => CaptureValues().Build(context));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 
@@ -77551,10 +78025,17 @@ namespace FRFrame.Gameplay.Unity
         public float Volume {get;}
         public float Pitch {get;}
         public bool AudioLoop {get;}
+        public bool RecycleWhenParticlesFinish {get;}
+        /// <summary>Timer value for timed cues. Particle completion does not evaluate a timer.</summary>
         public IGameplayFloatValue Duration {get;}
         public GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind kind,GameObject prefab,AudioClip clip,
-            GameplayPresentationCueAsset.PositionSource origin,Vector3 offset,bool follow,float volume,float pitch,bool audioLoop,IGameplayFloatValue duration,bool ownedByAbility=true,string binding=null,Vector3? scale=null,bool mirrorFacing=false)
-        {Kind=kind;Prefab=prefab;Clip=clip;Origin=origin;Offset=offset;Follow=follow;Volume=volume;Pitch=pitch;AudioLoop=audioLoop;Duration=duration??throw new ArgumentNullException(nameof(duration));OwnedByAbility=ownedByAbility;Binding=binding;Scale=scale??Vector3.one;MirrorFacing=mirrorFacing;}
+            GameplayPresentationCueAsset.PositionSource origin,Vector3 offset,bool follow,float volume,float pitch,bool audioLoop,IGameplayFloatValue duration,bool ownedByAbility=true,string binding=null,Vector3? scale=null,bool mirrorFacing=false,bool recycleWhenParticlesFinish=false)
+        {
+            Kind=kind;Prefab=prefab;Clip=clip;Origin=origin;Offset=offset;Follow=follow;Volume=volume;Pitch=pitch;AudioLoop=audioLoop;
+            RecycleWhenParticlesFinish=kind==GameplayPresentationCueAsset.CueKind.Vfx&&recycleWhenParticlesFinish;
+            Duration=RecycleWhenParticlesFinish?null:duration??throw new ArgumentNullException(nameof(duration));
+            OwnedByAbility=ownedByAbility;Binding=binding;Scale=scale??Vector3.one;MirrorFacing=mirrorFacing;
+        }
     }
 }
 </file>
@@ -78024,8 +78505,11 @@ namespace FRFrame.Gameplay.Unity
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
-            float duration=GameplayValueEvaluator.Evaluate(definition.Duration,PresentationValueContext(context));
-            if(!float.IsFinite(duration)||duration<=0)throw new ArithmeticException("Cue duration must be positive.");
+            float duration=0;
+            if(!definition.RecycleWhenParticlesFinish){
+                duration=GameplayValueEvaluator.Evaluate(definition.Duration,PresentationValueContext(context));
+                if(!float.IsFinite(duration)||duration<=0)throw new ArithmeticException("Cue duration must be positive.");
+            }
             Vector3 point;Transform parent=null;
             if(definition.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint)
             {if(!context.TargetData.HasPoint)return false;var p=context.TargetData.Point;point=new Vector3(p.X,p.Y,p.Z);}
@@ -78037,7 +78521,7 @@ namespace FRFrame.Gameplay.Unity
                 parent=(target.Presentation as GameplayUnityAnimationController)?.Subject?.transform;
                 if(parent!=null&&!string.IsNullOrEmpty(definition.Binding)){parent=parent.Find(definition.Binding)??parent;point=parent.position;}
             }
-            var cue=new CueLease(this,grant,duration);
+            var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
             {
                 if(definition.Kind==GameplayPresentationCueAsset.CueKind.Vfx)
@@ -78072,6 +78556,7 @@ namespace FRFrame.Gameplay.Unity
             private readonly GameplayUnityAnimationController _owner;
             private readonly GameplayAbilityHandle _grant;
             private readonly float _duration;
+            private readonly bool _recycleWhenParticlesFinish;
             private double _elapsed;
             private bool _disposed;
             internal GameObject View;
@@ -78080,11 +78565,24 @@ namespace FRFrame.Gameplay.Unity
             internal ResourceKey Key;
             internal string Location;
             internal AudioHandle Audio;
-            internal CueLease(GameplayUnityAnimationController owner,GameplayAbilityHandle grant,float duration){_owner=owner;_grant=grant;_duration=duration;}
+            internal CueLease(GameplayUnityAnimationController owner,GameplayAbilityHandle grant,float duration,bool recycleWhenParticlesFinish)
+            {_owner=owner;_grant=grant;_duration=duration;_recycleWhenParticlesFinish=recycleWhenParticlesFinish;}
             internal void Advance(float delta)
             {
                 if(_disposed)return;
-                if(View!=null&&Particles!=null)foreach(var particles in Particles)if(particles!=null)particles.Simulate(delta,false,false,false);
+                bool finished=true;
+                if(View!=null&&Particles!=null)foreach(var particles in Particles){
+                    if(particles==null)continue;
+                    particles.Simulate(delta,false,false,false);
+                    // IsAlive stays true on the paused systems driven by Simulate. Unity keeps
+                    // trail-only particles in particleCount until their points have expired.
+                    if(_recycleWhenParticlesFinish&&(particles.time<particles.main.duration||particles.particleCount!=0))
+                        finished=false;
+                }
+                if(_recycleWhenParticlesFinish){
+                    if(finished)Dispose();
+                    return;
+                }
                 _elapsed+=delta;if(_elapsed>=_duration)Dispose();
             }
             public void Dispose()

@@ -509,12 +509,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach (var d in copy.LocalDefinitions) { d.Id = map[d.Id]; d.SourceDefinitionId = document.DefinitionId; foreach (var b in d.Definitions) if (!string.IsNullOrEmpty(b.LocalId)) b.LocalId = map[b.LocalId]; }
             foreach (var timeline in copy.Timelines) { timeline.Id = map[timeline.Id]; foreach (var e in timeline.Events) { e.Id = map[e.Id]; e.EntryNodeId = map[e.EntryNodeId]; } }
             foreach (var edge in copy.Connections) { edge.Id = GameplayAuthoringGraph.NewId(); edge.FromNodeId = map[edge.FromNodeId]; edge.ToNodeId = map[edge.ToNodeId]; }
-            Transaction(document, activateRules?"粘贴为正式规则 / 行为":"粘贴为草稿规则 / 行为", graph => { graph.Nodes.AddRange(copy.Nodes); graph.LocalDefinitions.AddRange(copy.LocalDefinitions); graph.Timelines.AddRange(copy.Timelines); graph.Connections.AddRange(copy.Connections);
+            Transaction(document, activateRules?"粘贴为正式规则 / 行为":"粘贴为未启用规则 / 未接入行为", graph => { graph.Nodes.AddRange(copy.Nodes); graph.LocalDefinitions.AddRange(copy.LocalDefinitions); graph.Timelines.AddRange(copy.Timelines); graph.Connections.AddRange(copy.Connections);
                 if(activateRules)foreach(var rule in copy.Nodes.Where(n=>n.Payload is GameplayRuleNodePayload))ActivateRule(graph,rule.Id,true);
             });
             return copy.Nodes.Select(n => n.Id).ToArray();
         }
-        public static void SetRuleActive(GameplaySkillDocumentAsset document,string nodeId,bool active)=>Transaction(document,active?"启用正式触发规则":"停用为草稿规则",graph=>ActivateRule(graph,nodeId,active));
+        public static void SetRuleActive(GameplaySkillDocumentAsset document,string nodeId,bool active)=>Transaction(document,active?"启用正式触发规则":"停用触发规则",graph=>ActivateRule(graph,nodeId,active));
         private static void ActivateRule(GameplayAuthoringGraph graph,string nodeId,bool active)
         {
             if(!(graph.Nodes.Single(n=>n.Id==nodeId).Payload is GameplayRuleNodePayload))throw new InvalidOperationException("请选择触发规则。");

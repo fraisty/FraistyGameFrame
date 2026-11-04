@@ -20,8 +20,11 @@ namespace FRFrame.Gameplay.Unity
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
-            float duration=GameplayValueEvaluator.Evaluate(definition.Duration,PresentationValueContext(context));
-            if(!float.IsFinite(duration)||duration<=0)throw new ArithmeticException("Cue duration must be positive.");
+            float duration=0;
+            if(!definition.RecycleWhenParticlesFinish){
+                duration=GameplayValueEvaluator.Evaluate(definition.Duration,PresentationValueContext(context));
+                if(!float.IsFinite(duration)||duration<=0)throw new ArithmeticException("Cue duration must be positive.");
+            }
             Vector3 point;Transform parent=null;
             if(definition.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint)
             {if(!context.TargetData.HasPoint)return false;var p=context.TargetData.Point;point=new Vector3(p.X,p.Y,p.Z);}
@@ -33,7 +36,7 @@ namespace FRFrame.Gameplay.Unity
                 parent=(target.Presentation as GameplayUnityAnimationController)?.Subject?.transform;
                 if(parent!=null&&!string.IsNullOrEmpty(definition.Binding)){parent=parent.Find(definition.Binding)??parent;point=parent.position;}
             }
-            var cue=new CueLease(this,grant,duration);
+            var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
             {
                 if(definition.Kind==GameplayPresentationCueAsset.CueKind.Vfx)
@@ -68,6 +71,7 @@ namespace FRFrame.Gameplay.Unity
             private readonly GameplayUnityAnimationController _owner;
             private readonly GameplayAbilityHandle _grant;
             private readonly float _duration;
+            private readonly bool _recycleWhenParticlesFinish;
             private double _elapsed;
             private bool _disposed;
             internal GameObject View;
@@ -76,11 +80,24 @@ namespace FRFrame.Gameplay.Unity
             internal ResourceKey Key;
             internal string Location;
             internal AudioHandle Audio;
-            internal CueLease(GameplayUnityAnimationController owner,GameplayAbilityHandle grant,float duration){_owner=owner;_grant=grant;_duration=duration;}
+            internal CueLease(GameplayUnityAnimationController owner,GameplayAbilityHandle grant,float duration,bool recycleWhenParticlesFinish)
+            {_owner=owner;_grant=grant;_duration=duration;_recycleWhenParticlesFinish=recycleWhenParticlesFinish;}
             internal void Advance(float delta)
             {
                 if(_disposed)return;
-                if(View!=null&&Particles!=null)foreach(var particles in Particles)if(particles!=null)particles.Simulate(delta,false,false,false);
+                bool finished=true;
+                if(View!=null&&Particles!=null)foreach(var particles in Particles){
+                    if(particles==null)continue;
+                    particles.Simulate(delta,false,false,false);
+                    // IsAlive stays true on the paused systems driven by Simulate. Unity keeps
+                    // trail-only particles in particleCount until their points have expired.
+                    if(_recycleWhenParticlesFinish&&(particles.time<particles.main.duration||particles.particleCount!=0))
+                        finished=false;
+                }
+                if(_recycleWhenParticlesFinish){
+                    if(finished)Dispose();
+                    return;
+                }
                 _elapsed+=delta;if(_elapsed>=_duration)Dispose();
             }
             public void Dispose()

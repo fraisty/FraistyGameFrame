@@ -14,7 +14,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(type==typeof(GameplayPlayAnimationActionAuthoring))return new GameplaySkillNodeEditorDescriptor(property?.FindPropertyRelative("Queue")?.boolValue==true?"排队动画":"播放动画","FRFrame/表现","播放正式动画资源；Queue在同一channel等待，取消施法释放当前与排队请求。",visualKind:GameplayNodeVisualKind.Presentation,isAnimation:true);
             if(type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset))return new GameplaySkillNodeEditorDescriptor("战斗飘字","FRFrame/表现","展示同来源已提交结果；复用Core UIWidget/Pool。不会决定伤害或另建规则时钟。",visualKind:GameplayNodeVisualKind.Presentation);
             var cue=property?.FindPropertyRelative("Cue")?.objectReferenceValue as GameplayPresentationCueAsset;
-            return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","直接正式资源绑定；复用 FRFrame Pool/Audio，绑定当前施法并精确清理。",visualKind:GameplayNodeVisualKind.Presentation);
+            return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","直接正式资源绑定；复用 FRFrame Pool/Audio，绑定当前施法并精确清理。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
         }
     }
     /// <summary>SDK-neutral preview uses exactly the Runtime asset factory. It owns only presentation
@@ -35,6 +35,9 @@ namespace FRFrame.Gameplay.Unity.Editor
         private GameObject _subject;
         private IGameplayAnimationPlayer _player;
         private PreviewRenderUtility _preview;
+        private Bounds _initialBounds,_frameBounds;
+        private Vector2 _viewOffset;
+        private float _viewZoom=1;
         private int _level=1;
         private float _time;
         private string _error;
@@ -119,8 +122,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 // clip rectangle. An isolated preview has no Canvas clipping parent. Override only
                 // this temporary renderer's block; never edit the shared source material.
                 foreach(var renderer in renderers){var block=new MaterialPropertyBlock();renderer.GetPropertyBlock(block);block.SetVector("_ClipRect",new Vector4(-100000,-100000,100000,100000));renderer.SetPropertyBlock(block);}
-                var bounds=new Bounds(_subject.transform.position,Vector3.one);
-                if(renderers.Length>0){bounds=renderers[0].bounds;foreach(var renderer in renderers)bounds.Encapsulate(renderer.bounds);}
+                var bounds=SubjectBounds();_initialBounds=_frameBounds=bounds;_viewOffset=Vector2.zero;_viewZoom=1;
                 _preview.camera.transform.position=bounds.center+new Vector3(0,0,-10);
                 _preview.camera.orthographicSize=Mathf.Max(.5f,bounds.extents.y*1.3f,bounds.extents.x*.85f);
             }
@@ -149,9 +151,36 @@ namespace FRFrame.Gameplay.Unity.Editor
         public void Render(Rect viewport)
         {
             if(_cuePreview!=null){_cuePreview.Render(viewport);return;}
-            if(_preview==null||Event.current.type!=EventType.Repaint)return;
+            if(_preview==null)return;
+            var toolbar=new Rect(viewport.x,viewport.y,viewport.width,22);
+            if(GUI.Button(new Rect(toolbar.x,toolbar.y,82,20),new GUIContent("适应画面","按当前帧的角色及可见内嵌特效重新取景"))){_frameBounds=SubjectBounds();_viewOffset=Vector2.zero;_viewZoom=1;}
+            if(GUI.Button(new Rect(toolbar.x+86,toolbar.y,82,20),new GUIContent("重置视图","恢复初始取景，清除预览平移与缩放"))){_frameBounds=_initialBounds;_viewOffset=Vector2.zero;_viewZoom=1;}
+            GUI.Label(new Rect(toolbar.x+176,toolbar.y,toolbar.width-176,20),"滚轮缩放 · 中键平移  "+(_viewZoom*100).ToString("0")+"%",EditorStyles.miniLabel);
+            viewport.yMin+=24;
+            float aspect=viewport.width/viewport.height;
+            float size=Mathf.Max(.01f,_frameBounds.extents.y,_frameBounds.extents.x/aspect)*1.15f/_viewZoom;
+            var evt=Event.current;int control=GUIUtility.GetControlID(FocusType.Passive);
+            if(evt.type==EventType.ScrollWheel&&viewport.Contains(evt.mousePosition)){
+                _viewZoom=Mathf.Clamp(_viewZoom*Mathf.Exp(-evt.delta.y*.08f),.1f,10);
+                float next=Mathf.Max(.01f,_frameBounds.extents.y,_frameBounds.extents.x/aspect)*1.15f/_viewZoom;
+                _viewOffset+=new Vector2(evt.mousePosition.x-viewport.center.x,viewport.center.y-evt.mousePosition.y)*(2*(size-next)/viewport.height);
+                size=next;evt.Use();GUI.changed=true;
+            }
+            if(evt.type==EventType.MouseDown&&evt.button==2&&viewport.Contains(evt.mousePosition)){GUIUtility.hotControl=control;evt.Use();}
+            if(evt.type==EventType.MouseDrag&&GUIUtility.hotControl==control){_viewOffset+=new Vector2(-evt.delta.x,evt.delta.y)*(2*size/viewport.height);evt.Use();GUI.changed=true;}
+            if(evt.type==EventType.MouseUp&&GUIUtility.hotControl==control){GUIUtility.hotControl=0;evt.Use();}
+            _preview.camera.transform.position=_frameBounds.center+new Vector3(_viewOffset.x,_viewOffset.y,-10);
+            _preview.camera.orthographicSize=size;
+            if(evt.type!=EventType.Repaint)return;
             _preview.BeginPreview(viewport,GUIStyle.none);_preview.Render(true);
             GUI.DrawTexture(viewport,_preview.EndPreview(),ScaleMode.ScaleToFit,false);
+        }
+        private Bounds SubjectBounds()
+        {
+            var renderers=_subject.GetComponentsInChildren<Renderer>();
+            var bounds=renderers.Length>0?renderers[0].bounds:new Bounds(_subject.transform.position,Vector3.one);
+            foreach(var renderer in renderers)bounds.Encapsulate(renderer.bounds);
+            return bounds;
         }
         private void Release()
         {

@@ -12,28 +12,36 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public sealed partial class GameplayBehaviorGraphView
     {
         private static readonly Color CallbackColor=new Color(.91f,.66f,.29f);
-        private void StylePorts(Node card)
+        private static void StylePortBackground(Node card)
         {
-            bool input=card.inputContainer.Children().OfType<Port>().Any();
-            bool output=card.outputContainer.Children().OfType<Port>().Any();
-            // Incoming sockets form a short row above the independently measured outgoing
-            // branches. One input no longer reserves half of a four-output search card.
+            // GraphView gives the two sides different fills. Paint the full header once.
+            card.outputContainer.parent.style.backgroundColor=GameplayEditorStyles.Surface;
+            card.inputContainer.style.backgroundColor=Color.clear;
+            card.outputContainer.style.backgroundColor=Color.clear;
+        }
+
+        private void StylePorts(Node card,bool alignSides)
+        {
+            StylePortBackground(card);
+            // Give each port its own row. Keep the two groups compact and independently
+            // measured so a single input does not reserve half of a multi-output card.
             var ports=card.inputContainer.parent;
-            ports.style.flexDirection=FlexDirection.Column;
+            ports.style.flexDirection=alignSides?FlexDirection.Row:FlexDirection.Column;
+            if(alignSides)ports.style.justifyContent=Justify.SpaceBetween;
             foreach(var side in new[]{card.inputContainer,card.outputContainer}){
                 side.style.flexGrow=0;side.style.flexBasis=StyleKeyword.Auto;
                 side.style.alignSelf=Align.Stretch;side.style.paddingTop=0;side.style.paddingBottom=0;
+                side.style.flexDirection=FlexDirection.Column;
             }
-            card.inputContainer.style.flexDirection=FlexDirection.Row;
-            card.inputContainer.style.flexWrap=Wrap.Wrap;
             var cardPorts=card.Query<Port>().ToList();_portsByCard[card.viewDataKey]=cardPorts;
             foreach(var port in cardPorts){
                 if((port.userData as Socket)?.Scheduled==true)continue;
                 var socket=port.userData as Socket;var data=_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey);var action=(data?.Payload as GameplayActionNodePayload)?.Action;
                 if(socket?.Port=="Then"){
+                    bool cue=action!=null&&GameplaySkillNodeDescriptors.Get(action.GetType()).IsPresentationCue;
                     bool starts=action is GameplayOwnedSequenceActionAuthoring||action is GameplaySkillPlaySequenceActionAuthoring||action is GameplaySpawnProjectileActionAuthoring||action is GameplaySpawnAreaActionAuthoring||action is GameplaySpawnSummonActionAuthoring;
-                    port.portName=starts?"启动后继续":"继续主链";
-                    port.tooltip=starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
+                    port.portName=cue?"开始播放后继续":starts?"启动后继续":"继续主链";
+                    port.tooltip=cue?"成功启动特效或音频后立即执行下游，不等待播放结束。":starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
                 }
                 if(action is GameplaySearchTargetActionAuthoring){
                     if(socket?.Port=="Completed"){port.portName="完成 · 结果集";port.tooltip="搜索后调用一次，包含完整结果集；也可能为空，不能假定存在目标。";}
@@ -75,7 +83,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var node=_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey);if(node==null)continue;
                 foreach(var binding in node.Payload.Definitions){
                     var local=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);if(!(local?.Payload is GameplayEffectDefinitionData effect))continue;
-                    string owner=local.Id;var position=card.GetPosition().position+new Vector2(card.GetPosition().width+80,120);
+                    string owner=local.Id;var position=CreationPosition;
                     if(effect.DurationPolicy==GameplayEffectDurationPolicy.Duration)Add("自然到期",GameplayGraphEffectCallbacks.Completion);
                     if(effect.Stacking!=null)Add(effect.Stacking.Overflow==GameplayEffectStackOverflowPolicy.ExecuteOverflow?"叠层溢出":"启用叠层溢出",GameplayGraphEffectCallbacks.Overflow);
                     void Add(string title,string port)=>evt.menu.AppendAction(title+" / 新建后续伤害（随所有者删除）",_=>Try(()=>{

@@ -130,8 +130,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 state.Seconds=Mathf.Clamp(EditorGUILayout.FloatField(state.Seconds*fps)/fps,0,PreviewClockDuration(root));GUILayout.EndHorizontal();preview.Seek(state.Seconds);
             }
             float width=inline?Canvas.PreviewWidth(root):_inspector.resolvedStyle.width-35;
-            var rect=GUILayoutUtility.GetRect(100,Mathf.Clamp(width*.46f,150,220),GUILayout.ExpandWidth(true));
-            if(Event.current.type==EventType.Repaint)preview.Render(rect);
+            var rect=GUILayoutUtility.GetRect(100,inline?Canvas.PreviewHeight(root):Mathf.Clamp(width*.46f,150,220),GUILayout.ExpandWidth(true));
+            preview.Render(rect);
             if(!inline)preview.DrawControls();
         }
     }

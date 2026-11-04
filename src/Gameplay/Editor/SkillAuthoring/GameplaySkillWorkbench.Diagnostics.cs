@@ -24,17 +24,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(cause is GameplayGraphCompilationException structured){foreach(var issue in structured.Issues)if(!_diagnostics.Any(i=>i.Path==issue.Path&&i.Message==issue.Message))_diagnostics.Add(issue);}
                 else _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Error,"技能",error.Message));}
             var active=GameplayGraphContextPolicy.Reachable(_document.AuthoringGraph);
-            foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>!active.Contains(n.Id)))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"未安排行为 / 草稿，不参与正式执行："+GameplaySkillFieldSchema.NodeName(node)));
+            foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>!active.Contains(n.Id)))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"未接入执行流程，不参与执行："+GameplaySkillFieldSchema.NodeName(node)));
             foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>active.Contains(n.Id)&&(n.Payload as GameplayRuleNodePayload)?.Target is GameplaySkillContextTargetAuthoring))
                 _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"调用者输入契约：此规则保留 TriggerEvent.Context；宿主须提供下游所需 Actor / Point。地点回调之后仍按实际来源检查，不能假定自身。"));
-            _feedback=_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error)?"编译未通过；点击校验条目定位同源字段。":"正式运行图编译通过；草稿提示另列。";
+            _feedback=_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error)?"编译未通过；点击校验条目定位同源字段。":"正式运行图编译通过；未接入流程的节点提示另列。";
             _detailTab=3;_details?.MarkDirtyRepaint();Repaint();
         }
         private void RecordPreviewError(string node,string message)
         {if(!_diagnostics.Any(i=>i.Path==node&&i.Message==message))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Error,node,message));}
         private void DrawDiagnostics()
         {
-            EditorGUILayout.HelpBox(_diagnosticsStale?"配置已修改，以下诊断已过期；重新校验可更新。":"诊断对应当前正式数据；草稿不计为编译错误。",_diagnosticsStale?MessageType.Warning:MessageType.Info);
+            EditorGUILayout.HelpBox(_diagnosticsStale?"配置已修改，以下诊断已过期；重新校验可更新。":"诊断对应当前正式数据；未接入流程的节点不参与执行。",_diagnosticsStale?MessageType.Warning:MessageType.Info);
             if(GUILayout.Button("重新校验正式技能"))ValidateDocument();
             using(new EditorGUI.DisabledScope(!_returnPan.HasValue))if(GUILayout.Button("返回定位前的视角")){Canvas.UpdateViewTransform(_returnPan.Value,_returnScale);_selected=_returnNode;Canvas.SelectNodeWithoutCamera(_selected);_returnPan=null;}
             foreach(var group in _diagnostics.GroupBy(i=>i.Severity)){
@@ -52,7 +52,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(node==null&&local!=null)node=graph.Nodes.FirstOrDefault(n=>n.Payload.Definitions.Any(b=>b.LocalId==local.Id));
             if(node==null)node=graph.Nodes.FirstOrDefault(n=>n.Id==graph.AbilityNodeId);if(node==null)return;
             _returnPan=Canvas.viewTransform.position;_returnScale=Canvas.viewTransform.scale;_returnNode=_selected;_selected=node.Id;_definition=local?.Id;_detailTab=0;
-            if(!GameplayGraphContextPolicy.Reachable(graph).Contains(node.Id)){Canvas.ShowDrafts=true;Canvas.Load(_document);}Canvas.FocusNode(node.Id);
+            Canvas.FocusNode(node.Id);
             string property=local!=null?"authoringGraph.LocalDefinitions.Array.data["+graph.LocalDefinitions.IndexOf(local)+"].Payload":
                 entry!=null?"authoringGraph.Timelines.Array.data["+graph.Timelines.IndexOf(timeline)+"].Events.Array.data["+timeline.Events.IndexOf(entry)+"]":
                 "authoringGraph.Nodes.Array.data["+graph.Nodes.IndexOf(node)+"].Payload"+(node.Payload is GameplayActionNodePayload?".Action":node.Payload is GameplayAbilityNodePayload?".Settings":"");

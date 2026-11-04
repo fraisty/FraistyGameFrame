@@ -41,14 +41,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private void RestoreReadingLayout()
         {
+            if(!BusinessReading)return; // A queued reading-layout pass cannot overwrite a later switch to author layout.
             // Before the first panel layout GraphView reports NaN dimensions, not just zero.
             if(_nodes.Values.Any(n=>!float.IsFinite(n.GetPosition().width)||!float.IsFinite(n.GetPosition().height)||n.GetPosition().height<=1)){
                 var source=_document;int generation=RefreshCount;schedule.Execute(()=>{if(_document==source&&RefreshCount==generation&&panel!=null)RestoreReadingLayout();}).StartingIn(50);return;
             }
             string json=SessionState.GetString(GameplaySkillEditorState.Key(_document)+".ReadingLayout","");
             var saved=json.Length==0?null:JsonUtility.FromJson<ReadingLayout>(json);
-            if(saved!=null&&saved.Ids.Count==_nodes.Count&&saved.Ids.All(_nodes.ContainsKey)&&saved.Positions.All(p=>float.IsFinite(p.x)&&float.IsFinite(p.y))){
-                _layoutPreview=saved.Ids.Select((id,i)=>new{id,position=saved.Positions[i]}).ToDictionary(p=>p.id,p=>p.position);
+            if(saved!=null&&saved.Ids.Count==saved.Positions.Count&&saved.Positions.All(p=>float.IsFinite(p.x)&&float.IsFinite(p.y))){
+                // Topology edits do not request a reflow. Retain existing view positions and
+                // place newly visible/created cards at their actual authoring coordinates.
+                var remembered=saved.Ids.Select((id,i)=>new{id,position=saved.Positions[i]}).ToDictionary(p=>p.id,p=>p.position);
+                _layoutPreview=_nodes.Keys.ToDictionary(id=>id,id=>remembered.TryGetValue(id,out var position)?position:Record(id).Position);
                 foreach(var p in _layoutPreview){var card=_nodes[p.Key];card.SetPosition(new Rect(p.Value,card.GetPosition().size));}
             }else ArrangeLayout();
             PositionPolicies();
@@ -65,7 +69,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(BusinessReading)RestoreReadingLayout();
             if(switched){var source=_document;int generation=RefreshCount;schedule.Execute(()=>{if(_document==source&&RefreshCount==generation&&_readableFocusId==null&&_focusAfterLayout==null)RestoreCamera();}).StartingIn(120);}
         }
-        private float TimelineWidth(GameplayAuthoringNode data)=>data.Size.x>0?Mathf.Clamp(data.Size.x,440,1200):Mathf.Clamp(layout.width>0?layout.width-70:820,480,860);
+        private float TimelineWidth(GameplayAuthoringNode data)
+        {
+            if(data.Size.x>0)return Mathf.Max(440,data.Size.x);
+            var graph=_document.AuthoringGraph;
+            bool animated=graph.Timelines.Where(t=>data.Payload.Definitions.Any(b=>b.LocalId==t.Id)).SelectMany(t=>t.Events)
+                .Any(e=>graph.Nodes.Find(n=>n.Id==e.EntryNodeId)?.Payload is GameplayActionNodePayload p&&GameplaySkillNodeDescriptors.Get(p.Action.GetType()).IsAnimation);
+            return animated?800:Mathf.Clamp(layout.width>0?layout.width-70:820,480,860);
+        }
 
         /// <summary>Shows a derived arrangement without writing Node.Position. Only the explicit
         /// Apply action persists one Undo transaction; cancel restores the authored layout.</summary>

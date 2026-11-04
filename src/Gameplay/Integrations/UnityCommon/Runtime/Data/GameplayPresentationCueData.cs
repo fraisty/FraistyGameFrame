@@ -25,15 +25,26 @@ namespace FRFrame.Gameplay.Unity
         public bool OwnedByAbility=true;
         public float Volume=1,Pitch=1;
         public bool AudioLoop;
+        /// <summary>VFX only. Recycle once all non-looping particle systems finish.</summary>
+        public bool RecycleWhenParticlesFinish;
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=1};
+        private bool UsesParticleCompletion=>Kind==GameplayPresentationCueAsset.CueKind.Vfx&&RecycleWhenParticlesFinish;
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>
-            new GameplayPresentationCueDefinition(Kind,Prefab,Clip,Origin,Offset,Follow,Volume,Pitch,AudioLoop,Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing));
+            new GameplayPresentationCueDefinition(Kind,Prefab,Clip,Origin,Offset,Follow,Volume,Pitch,AudioLoop,
+                UsesParticleCompletion?null:Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing,UsesParticleCompletion));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation,string path)
         {
             if(!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind),Kind)||!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.PositionSource),Origin))validation.Error(path,"Invalid cue policy.");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Vfx&&Prefab==null)validation.Error(path+".Prefab","VFX prefab is required.");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Audio&&Clip==null)validation.Error(path+".Clip","Audio clip is required.");
-            if(Duration==null)validation.Error(path+".Duration","Duration is required.");else Duration.Validate(validation,path+".Duration");
+            if(UsesParticleCompletion){
+                if(Prefab){
+                    var systems=Prefab.GetComponentsInChildren<ParticleSystem>();
+                    if(systems.Length==0||Array.Exists(systems,p=>p.main.loop||p.main.simulationSpeed<=0))
+                        validation.Error(path+".Prefab","播完回收需要至少一个正常播放的非循环粒子系统，且不能含循环粒子。循环或其它特效请关闭播完回收并设置回收时限。");
+                }
+            }else if(Duration==null)validation.Error(path+".Duration","Duration is required.");
+            else Duration.Validate(validation,path+".Duration");
             if(!float.IsFinite(Volume)||Volume<0||Volume>1||!float.IsFinite(Pitch)||Pitch<=0)validation.Error(path,"Invalid volume/pitch.");
             if(!float.IsFinite(Offset.x)||!float.IsFinite(Offset.y)||!float.IsFinite(Offset.z))validation.Error(path+".Offset","Offset must be finite.");
             if(!float.IsFinite(Scale.x)||!float.IsFinite(Scale.y)||!float.IsFinite(Scale.z))validation.Error(path+".Scale","Scale must be finite.");

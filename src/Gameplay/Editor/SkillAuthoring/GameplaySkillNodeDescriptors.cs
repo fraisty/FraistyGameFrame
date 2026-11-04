@@ -17,15 +17,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public bool IsSample { get; }
         public GameplayNodeVisualKind? VisualKind { get; }
         public bool IsAnimation { get; }
+        /// <summary>Starts a short-lived presentation without waiting for it to finish.</summary>
+        public bool IsPresentationCue { get; }
 
         public GameplaySkillNodeEditorDescriptor(string displayName, string categoryPath, string summary,
-            string authoringScope = "FRFrame", string keywords = "", bool isSample = false, GameplayNodeVisualKind? visualKind = null, bool isAnimation = false)
+            string authoringScope = "FRFrame", string keywords = "", bool isSample = false, GameplayNodeVisualKind? visualKind = null, bool isAnimation = false, bool isPresentationCue = false)
         {
             DisplayName = displayName;
             CategoryPath = categoryPath;
             Summary = summary;
             AuthoringScope = authoringScope; Keywords = keywords; IsSample = isSample;
             VisualKind = visualKind; IsAnimation = isAnimation;
+            IsPresentationCue = isPresentationCue;
         }
     }
 

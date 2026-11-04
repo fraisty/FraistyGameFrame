@@ -49,6 +49,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             handle.RegisterCallback<PointerMoveEvent>(e=>{if(!handle.HasPointerCapture(e.pointerId))return;move(e.position.x-previous);previous=e.position.x;e.StopPropagation();});
             handle.RegisterCallback<PointerUpEvent>(e=>{if(!handle.HasPointerCapture(e.pointerId))return;handle.ReleasePointer(e.pointerId);save();e.StopPropagation();});return handle;
         }
+        internal void OpenDetails(int tab=0)
+        {
+            _detailTab=tab;
+            _inspectorScroll=Vector2.zero;
+            if(!_inspectorOpen){
+                _inspectorOpen=true;
+                ApplyPaneWidths();
+                SavePanePreferences();
+            }
+            _details.MarkDirtyRepaint();
+        }
+
         private void ApplyPaneWidths()
         {
             if(_browser==null||_inspector==null)return;

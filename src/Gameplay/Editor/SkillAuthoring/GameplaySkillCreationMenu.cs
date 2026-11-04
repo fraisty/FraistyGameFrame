@@ -40,8 +40,26 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             panel.style.paddingTop=6;panel.style.paddingBottom=6;panel.style.borderTopWidth=1;panel.style.borderTopColor=new Color(.4f,.6f,.8f);
             var anchor=worldAnchor.HasValue?view.WorldToLocal(worldAnchor.Value):new Vector2(12,40);
             panel.style.left=Mathf.Clamp(anchor.x,4,Mathf.Max(4,view.layout.width-362));panel.style.top=Mathf.Clamp(anchor.y,36,Mathf.Max(36,view.layout.height-440));
-            var header=new VisualElement();header.style.flexDirection=FlexDirection.Row;panel.Add(header);
-            var caption=new Label(title);caption.style.flexGrow=1;caption.style.whiteSpace=WhiteSpace.Normal;header.Add(caption);header.Add(new Button(()=>panel.RemoveFromHierarchy()){text="×"});
+            var header=new VisualElement{tooltip="拖动标题栏移动选择框"};header.style.flexDirection=FlexDirection.Row;panel.Add(header);
+            var caption=new Label(title){pickingMode=PickingMode.Ignore};caption.style.flexGrow=1;caption.style.whiteSpace=WhiteSpace.Normal;header.Add(caption);header.Add(new Button(()=>panel.RemoveFromHierarchy()){text="×"});
+            void PositionMenu(){
+                anchor.x=Mathf.Clamp(anchor.x,4,Mathf.Max(4,view.layout.width-panel.layout.width-4));
+                anchor.y=Mathf.Clamp(anchor.y,36,Mathf.Max(36,view.layout.height-panel.layout.height-4));
+                panel.style.left=anchor.x;panel.style.top=anchor.y;
+            }
+            Vector2 dragOffset=Vector2.zero;
+            header.RegisterCallback<PointerDownEvent>(e=>{
+                if(e.button!=0||e.target!=header)return;
+                dragOffset=panel.layout.position-view.WorldToLocal(e.position);header.CapturePointer(e.pointerId);e.StopPropagation();
+            });
+            header.RegisterCallback<PointerMoveEvent>(e=>{
+                if(!header.HasPointerCapture(e.pointerId))return;
+                anchor=view.WorldToLocal(e.position)+dragOffset;PositionMenu();e.StopPropagation();
+            });
+            header.RegisterCallback<PointerUpEvent>(e=>{
+                if(e.button!=0||!header.HasPointerCapture(e.pointerId))return;
+                header.ReleasePointer(e.pointerId);e.StopPropagation();
+            });
             var filter=new TextField{tooltip="按中文名称筛选当前 Scope 可创建的正式配置"};panel.Add(filter);
             var note=new Label("仅写入本入口说明的真实配置 · ↑↓ 选择 / Enter 执行 / Esc 关闭 · ☆ 收藏");note.style.fontSize=10;note.style.whiteSpace=WhiteSpace.Normal;panel.Add(note);
             var list=new ScrollView();list.style.maxHeight=Mathf.Min(330,Mathf.Max(40,view.layout.height-190));list.style.minHeight=40;panel.Add(list);
@@ -93,16 +111,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             EventCallback<PointerDownEvent> dismiss=e=>{if(!panel.Contains(e.target as VisualElement))panel.RemoveFromHierarchy();};
             view.RegisterCallback(dismiss,TrickleDown.TrickleDown);
             panel.RegisterCallback<DetachFromPanelEvent>(_=>view.UnregisterCallback(dismiss,TrickleDown.TrickleDown));
+            // Let the ScrollView handle its wheel first, including at its limits, then keep
+            // that input inside the palette instead of passing it to GraphView's zoomer.
+            panel.RegisterCallback<WheelEvent>(e=>e.StopPropagation());
             panel.RegisterCallback<PointerDownEvent>(e=>e.StopPropagation());panel.RegisterCallback<KeyDownEvent>(e=>{
                 if(e.keyCode==KeyCode.Escape){panel.RemoveFromHierarchy();e.StopImmediatePropagation();}
                 else if(e.keyCode==KeyCode.DownArrow||e.keyCode==KeyCode.UpArrow){focused+=e.keyCode==KeyCode.DownArrow?1:-1;Highlight();e.StopImmediatePropagation();}
                 else if(e.keyCode==KeyCode.Return||e.keyCode==KeyCode.KeypadEnter){var visible=rows.Where(r=>r.row.style.display.value!=DisplayStyle.None).ToArray();if(visible.Length>0)Pick(visible[Mathf.Clamp(focused,0,visible.Length-1)].name,visible[Mathf.Clamp(focused,0,visible.Length-1)].command);e.StopImmediatePropagation();}
             },TrickleDown.TrickleDown);
             view.hierarchy.Add(panel);panel.BringToFront();Filter();filter.Focus();
-            panel.RegisterCallback<GeometryChangedEvent>(_=>{
-                panel.style.left=Mathf.Clamp(anchor.x,4,Mathf.Max(4,view.layout.width-panel.layout.width-4));
-                panel.style.top=Mathf.Clamp(anchor.y,36,Mathf.Max(36,view.layout.height-panel.layout.height-4));
-            });
+            panel.RegisterCallback<GeometryChangedEvent>(_=>PositionMenu());
         }
     }
 }

@@ -149,6 +149,7 @@ namespace FRFrame.Gameplay.Editor
                         // fields actually present on this source belong to its Inspector.
                         var p=so.FindProperty(path);if(p==null)continue;
                         int dot=path.LastIndexOf('.');var owner=Value(group.Source,dot<0?"":path.Substring(0,dot));
+                        if(!GameplaySkillFieldSchema.IsValueFieldVisible(owner,p.name))continue;
                         if(!Visible(owner,p.name)){inactive.Add((group.Source,path));continue;}
                         if(owner is GameplayAbilityDefinitionAsset&&p.name=="Charge"){
                             bool enabled=p.managedReferenceValue!=null;

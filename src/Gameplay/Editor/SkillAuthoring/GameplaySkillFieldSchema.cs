@@ -20,7 +20,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     /// <summary>Typed integration metadata for a real constant presentation duration.
     /// Unknown/dynamic durations remain markers rather than fictitious resizable intervals.</summary>
     public interface IGameplaySkillValueDuration { bool TryReadDuration(object values,out string path,out float seconds); }
-    public interface IGameplaySkillValueSections { IEnumerable<GameplayBusinessInspectorGroup> Sections(object values); }
+    public interface IGameplaySkillValueSections
+    {
+        IEnumerable<GameplayBusinessInspectorGroup> Sections(object values);
+        /// <summary>Whether the field applies to the current embedded or shared resource.</summary>
+        bool IsFieldVisible(object values,string field);
+    }
+    /// <summary>Names independently creatable variants of one integration-owned value type.</summary>
+    public interface IGameplaySkillValueCreationPresets
+    {
+        IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType);
+    }
     public interface IGameplaySkillPreviewFactory
     {
         bool Supports(object values);
@@ -34,6 +44,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private static readonly IGameplaySkillValueEditor[] Providers = TypeCache.GetTypesDerivedFrom<IGameplaySkillValueEditor>()
             .Where(t => !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) != null)
             .OrderBy(t => t.FullName).Select(t => (IGameplaySkillValueEditor)Activator.CreateInstance(t)).ToArray();
+        private static readonly IGameplaySkillValueSections[] ValueSections=Providers.OfType<IGameplaySkillValueSections>().ToArray();
         private static readonly Dictionary<Type, Type> CoreValues = new Dictionary<Type, Type> {
             {typeof(GameplayEffectDefinitionAsset),typeof(GameplayEffectDefinitionData)},
             {typeof(GameplayAbilityDefinitionAsset),typeof(GameplayAbilityDefinitionData)},
@@ -103,8 +114,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private sealed class CardResponsibility:IDisposable
         {
             private readonly HashSet<string> _previous=_cardPaths;
-            internal CardResponsibility(GameplaySkillDocumentAsset document,string nodeId,bool enabled,SerializedObject serialized)
-            { _cardPaths=enabled?new HashSet<string>(GameplaySkillCardFields.Describe(document,nodeId,serialized).Where(f=>f.Editable).Select(f=>f.Path)):null; }
+            internal CardResponsibility(GameplaySkillDocumentAsset document,string nodeId,bool enabled,SerializedObject serialized,bool animationHeader)
+            { _cardPaths=enabled?new HashSet<string>(GameplaySkillCardFields.Describe(document,nodeId,serialized,animationHeader).Where(f=>f.Editable).Select(f=>f.Path)):null; }
             public void Dispose(){_cardPaths=_previous;}
         }
         private static bool CardSummary(SerializedProperty property)
@@ -143,6 +154,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         public static IEnumerable<Type> Values(Type resource) => CoreValues.Where(p => resource.IsAssignableFrom(p.Key)).Select(p => p.Value)
             .Concat(Providers.SelectMany(p => p.ValueTypes(resource))).Distinct();
+        internal static IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType)
+            => Providers.OfType<IGameplaySkillValueCreationPresets>().SelectMany(p => p.CreationPresets(valueType));
+        internal static bool IsValueFieldVisible(object values,string field)
+        {
+            foreach(var provider in ValueSections)
+                if(!provider.IsFieldVisible(values,field))return false;
+            return true;
+        }
         public static bool TryDuration(GameplayAuthoringGraph graph,string nodeId,out string localId,out string path,out float seconds){
             localId=null;path=null;seconds=0;var node=graph.Nodes.Find(n=>n.Id==nodeId);if(node==null)return false;
             foreach(var binding in node.Payload.Definitions){var local=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);object values=local?.Payload;if(values==null&&binding.External){try{values=binding.External.CaptureGraphValues();}catch(NotSupportedException){}}if(values==null)continue;
@@ -185,13 +204,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             using(var serialized=new SerializedObject(document))Draw(serialized,document,nodeId,definitionId,cardFields);
         }
         /// <summary>Draws against the canvas-owned buffer; does not dispose it or cache property paths.</summary>
-        internal static void Draw(SerializedObject serialized,GameplaySkillDocumentAsset document,string nodeId,string definitionId,bool cardFields)
+        internal static void Draw(SerializedObject serialized,GameplaySkillDocumentAsset document,string nodeId,string definitionId,bool cardFields,bool animationHeader=false)
         {
             if (!document) return;
             if(Errors.TryGetValue(document.GetInstanceID(),out string error))EditorGUILayout.HelpBox(error,MessageType.Error);
             if (document.AuthoringSchemaVersion != 2) { EditorGUILayout.HelpBox("此数据格式不能直接编辑；请选择 Schema 2 正式技能。", MessageType.Warning); return; }
             using (new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode||GameplaySkillAuthoringCommands.IsReadOnly(document)))
-            using (new CardResponsibility(document,nodeId,cardFields&&definitionId==null,serialized))
+            using (new CardResponsibility(document,nodeId,cardFields&&definitionId==null,serialized,animationHeader))
             using (new SourceScope(null))
             using (GameplayAuthoringInspector.UseScope(document.AuthoringGraph.Scope))
             {
@@ -225,13 +244,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         var payload = root.FindPropertyRelative("Payload");
                         if (node.Payload is GameplayAbilityNodePayload ability)
                         {
-                            if (ability.Settings != null) DrawValue(document, serialized, payload.FindPropertyRelative("Settings"), node.Id, ability.Definitions, "", new HashSet<string>(),edit);
-                            else DrawBinding(document, serialized, node.Id, ability.Definitions, "Settings", typeof(GameplayAbilityDefinitionAsset), new HashSet<string>(),edit);
                             if(GameplayBehaviorGraphView.InlinePrimaryRule(document)){
                                 int ruleIndex=document.AuthoringGraph.Nodes.FindIndex(n=>n.Id==document.AuthoringGraph.PrimaryRuleNodeId);var rule=document.AuthoringGraph.Nodes[ruleIndex];
-                                string key="PrimaryRule:"+document.GetInstanceID();bool open=EditorGUILayout.Foldout(Open.Contains(key),"施放触发 / 目标（高级）",true);
+                                string key="PrimaryRule:"+document.GetInstanceID();
+                                string caption=((GameplayRuleNodePayload)rule.Payload).Target is GameplaySkillPointTargetAuthoring
+                                    ?"施放触发 / 固定地点坐标":"施放触发 / 目标（高级）";
+                                bool open=EditorGUILayout.Foldout(Open.Contains(key),caption,true);
                                 if(open){Open.Add(key);DrawValue(document,serialized,serialized.FindProperty("authoringGraph.Nodes").GetArrayElementAtIndex(ruleIndex).FindPropertyRelative("Payload"),rule.Id,rule.Payload.Definitions,"",new HashSet<string>(),edit);}else Open.Remove(key);
                             }
+                            if (ability.Settings != null) DrawValue(document, serialized, payload.FindPropertyRelative("Settings"), node.Id, ability.Definitions, "", new HashSet<string>(),edit);
+                            else DrawBinding(document, serialized, node.Id, ability.Definitions, "Settings", typeof(GameplayAbilityDefinitionAsset), new HashSet<string>(),edit);
                         }
                         else if (node.Payload is GameplayActionNodePayload action)
                             DrawValue(document, serialized, payload.FindPropertyRelative("Action"), node.Id, action.Definitions, "", new HashSet<string>(),edit);
@@ -278,8 +300,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             void DrawChildren(SerializedProperty parent, object owner, string relative)
             {
                 var children=new List<SerializedProperty>();var cursor=parent.Copy();var end=parent.GetEndProperty();
-                if(cursor.NextVisible(true))do{if(SerializedProperty.EqualContents(cursor,end))break;children.Add(cursor.Copy());}while(cursor.NextVisible(false));
-                var sections=Providers.OfType<IGameplaySkillValueSections>().SelectMany(p=>p.Sections(owner)).ToList();if(sections.Count==0)sections=GameplayStandardBusinessInspector.Describe(owner).ToList();
+                if(cursor.NextVisible(true))do{
+                    if(SerializedProperty.EqualContents(cursor,end))break;
+                    if(IsValueFieldVisible(owner,cursor.name))children.Add(cursor.Copy());
+                }while(cursor.NextVisible(false));
+                var sections=ValueSections.SelectMany(p=>p.Sections(owner)).ToList();if(sections.Count==0)sections=GameplayStandardBusinessInspector.Describe(owner).ToList();
                 var covered=new HashSet<string>(sections.SelectMany(g=>g.Paths));
                 var rest=children.Where(p=>!covered.Contains(p.name)&&p.name!="Definitions").Select(p=>p.name).ToArray();
                 if(rest.Length>0)sections.Add(new GameplayBusinessInspectorGroup(null,sections.Count==0?"业务配置":"其它配置",null,rest));
@@ -299,8 +324,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     string bindingPath = bindingPrefix.Length == 0 ? path : bindingPrefix + "." + path;
                     if (it.name == "Definitions") continue;
                     if(!showInactive&&!Visible(owner,it.name))continue;
-                    if(_cardPaths!=null&&owner is GameplayAbilityDefinitionData&&(it.name=="Cost"||it.name=="Charge"||it.name=="CooldownEffect")){EditorGUILayout.LabelField(GameplayAuthoringInspector.Label(it),new GUIContent("在左侧策略卡编辑；复杂值从卡片进入"));continue;}
-                    if(CardSummary(it)){foreach(var provider in Providers.OfType<IGameplaySkillFieldControlProvider>())if(provider.DrawSourceLink(root,it))break;continue;}
+                    if(_cardPaths!=null&&owner is GameplayAbilityDefinitionData&&(it.name=="Cost"||it.name=="Charge"||it.name=="CooldownEffect")){EditorGUILayout.LabelField(GameplayAuthoringInspector.Label(it),new GUIContent("在对应消耗、冷却或充能节点编辑；复杂值从节点进入"));continue;}
+                    if(CardSummary(it)){
+                        // The target dropdown owns the type choice. Its configuration still belongs here.
+                        if(it.propertyType==SerializedPropertyType.ManagedReference&&it.managedReferenceValue is GameplaySkillTargetAuthoring target)
+                            DrawChildren(it,target,path);
+                        else
+                            foreach(var provider in Providers.OfType<IGameplaySkillFieldControlProvider>())if(provider.DrawSourceLink(root,it))break;
+                        continue;
+                    }
 
                     if (arrays.Contains(path)) { EditorGUILayout.LabelField(PortName(path), "在画布端口连接行为", EditorStyles.miniLabel); continue; }
                     if (resources.TryGetValue(path, out var resource)) { DrawBinding(doc, serialized, ownerId, bindings, bindingPath, resource, visited,edit); continue; }
@@ -458,11 +490,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 {
                     ApplyFields(serialized,doc);
                     var menu = new GenericMenu();
-                    foreach (var valueType in Values(resourceType)) { var type = valueType; menu.AddItem(new GUIContent("新建内嵌/" + Name(type)), false, () => Bind(doc, ownerId, path, type, null, null)); }
+                    foreach (var type in Values(resourceType))
+                    {
+                        var presets=CreationPresets(type).ToArray();
+                        if(presets.Length==0)
+                            menu.AddItem(new GUIContent("新建内嵌/"+Name(type)),false,()=>Bind(doc,ownerId,path,type,null,null));
+                        else
+                            foreach(var preset in presets)
+                                menu.AddItem(new GUIContent("新建内嵌/"+preset.Name),false,()=>BindValue(doc,ownerId,path,preset.Value,preset.Name,null,null,false));
+                    }
                     foreach (var d in doc.AuthoringGraph.LocalDefinitions.Where(d => Values(resourceType).Any(t => t.IsInstanceOfType(d.Payload))))
                     { string id = d.Id; menu.AddItem(new GUIContent("复用本技能/" + d.Name), false, () => Bind(doc, ownerId, path, null, id, null)); }
                     menu.AddItem(new GUIContent("解除引用 / 删除独占局部配置"), false, () => Bind(doc, ownerId, path, null, null, null));
-                    menu.AddItem(new GUIContent("解除引用 / 保留为可见草稿"), false, () => Bind(doc, ownerId, path, null, null, null,true)); menu.ShowAsContext();
+                    menu.AddItem(new GUIContent("解除引用 / 保留局部配置"), false, () => Bind(doc, ownerId, path, null, null, null,true)); menu.ShowAsContext();
                 }
 
                 EditorGUILayout.EndHorizontal();
@@ -473,17 +513,22 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             EditorGUILayout.EndVertical();
         }
         public static void Bind(GameplaySkillDocumentAsset doc, string ownerId, string path, Type create, string localId, GameplayDefinitionAsset external,bool keepReleasedDraft=false)
+            => BindValue(doc,ownerId,path,create==null?null:(GameplayLocalDefinitionPayload)Activator.CreateInstance(create),
+                create==null?null:Name(create),localId,external,keepReleasedDraft);
+
+        private static void BindValue(GameplaySkillDocumentAsset doc,string ownerId,string path,GameplayLocalDefinitionPayload value,
+            string name,string localId,GameplayDefinitionAsset external,bool keepReleasedDraft)
         {
             GameplaySkillAuthoringCommands.Transaction(doc, "配置正式资源", graph => {
                 var node = graph.Nodes.Find(n => n.Id == ownerId);
                 var bindings = node?.Payload.Definitions ?? graph.LocalDefinitions.Single(d => d.Id == ownerId).Definitions;
                 var released=bindings.Where(b=>b.PropertyPath==path).Select(b=>b.LocalId).Where(id=>!string.IsNullOrEmpty(id)).ToArray();
                 if(path=="Settings"&&node?.Payload is GameplayAbilityNodePayload ability){
-                    ability.Settings=create==null?null:(GameplayLocalDefinitionPayload)Activator.CreateInstance(create);
+                    ability.Settings=value;
                     bindings.RemoveAll(b=>b.PropertyPath==path);
                     if(external)bindings.Add(new GameplayDefinitionBinding{PropertyPath=path,External=external});return;
                 }
-                if (create != null) { var local = new GameplayLocalDefinition { Name = Name(create), Payload = (GameplayLocalDefinitionPayload)Activator.CreateInstance(create), SourceDefinitionId = doc.DefinitionId }; graph.LocalDefinitions.Add(local); localId = local.Id; }
+                if (value != null) { var local = new GameplayLocalDefinition { Name = name, Payload = value, SourceDefinitionId = doc.DefinitionId }; graph.LocalDefinitions.Add(local); localId = local.Id; }
                 bindings.RemoveAll(b => b.PropertyPath == path);
                 if (localId != null || external) bindings.Add(new GameplayDefinitionBinding { PropertyPath = path, LocalId = localId, External = external });
                 if(!keepReleasedDraft)GameplaySkillAuthoringCommands.CollectReleased(graph,released);

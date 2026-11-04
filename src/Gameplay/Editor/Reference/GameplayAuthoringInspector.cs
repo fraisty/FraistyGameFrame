@@ -51,6 +51,7 @@ namespace FRFrame.Gameplay.Editor
         };
         static GameplayAuthoringInspector(){
             Labels["definitionId"]="定义标识";
+            Labels["RecycleWhenParticlesFinish"]="播完回收";
             Labels["ActivationOwnedTags"]="激活期间拥有的标签";
             Labels["CancelAbilitiesWithTags"]="取消具有这些标签的技能";
             Labels["Cost"]="资源消耗";Labels["Charge"]="充能";

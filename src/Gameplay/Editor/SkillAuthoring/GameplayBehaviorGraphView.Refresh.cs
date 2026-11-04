@@ -59,11 +59,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var affected=new HashSet<string>();
             if(full)affected.UnionWith(_nodes.Keys);
             else foreach(string owner in change.Owners){if(_consumerCards.TryGetValue(owner,out var cards))affected.UnionWith(cards);if(_nodes.ContainsKey(owner))affected.Add(owner);}
+            var active=Reachable(_document.AuthoringGraph);
             long sample=System.Diagnostics.Stopwatch.GetTimestamp();
             using(new Unity.Profiling.ProfilerMarker("FRFrame.Workbench.Summaries").Auto())try{
                 foreach(string id in affected){var data=Record(id);if(data==null||!_nodes.TryGetValue(id,out var node))continue;NodePresentationUpdateCount++;
                     if(change?.Layout==true){var position=_layoutPreview!=null&&_layoutPreview.TryGetValue(id,out var projected)?projected:data.Position;if(node.GetPosition().position!=position)node.SetPosition(new Rect(position,node.GetPosition().size));if(HasTimeline(data)){float width=TimelineWidth(data);node.style.width=width;node.style.minWidth=width;node.style.maxWidth=width;}}
                     string title=GameplaySkillNodeDisplay.Name(data,_document.AuthoringGraph);if(node.title!=title)node.title=title;
+                    Set("ExecutionStatus",(active.Contains(id)?"正式执行":data.Payload is GameplayRuleNodePayload?"未启用 · 不参与执行":"未接入执行流程 · 不参与执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地"));
                     var editors=node.extensionContainer.Query<GameplaySkillCardEditor>().ToList();foreach(var editor in editors)editor.Refresh();
                     Set("BusinessSummary",GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,editors.Any(e=>e.HasFields)));
                     if(data.Payload is GameplayAbilityNodePayload)Set("AbilitySummary",_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能");

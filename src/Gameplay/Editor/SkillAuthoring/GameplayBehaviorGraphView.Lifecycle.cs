@@ -21,7 +21,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             string ownership=binding==null?"尚未配置真实空间资源。":binding.External?"生命周期归属由共享资源配置；共享来源只读。":resource is GameplayProjectileDefinitionData projectile&&!projectile.CancelOnAbilityEnd?"当前弹体由世界托管；结束或取消技能不会清理弹体。":"当前对象随施放结束 / 取消清理。";
             var endIds=graph.Nodes.Where(n=>(n.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring).Select(n=>n.Id).ToHashSet();
             var current=graph.Connections.Where(e=>endIds.Contains(e.ToNodeId)&&(e.FromNodeId==node.Id&&e.OutputPortKey=="Then"||binding!=null&&e.FromNodeId==binding.LocalId)).Select(e=>e.OutputPortKey+" → "+GameplaySkillNodeDisplay.Name(graph.Nodes.Single(n=>n.Id==e.ToNodeId),graph)).ToArray();
-            var label=new Label((pending?"结束策略待决 · 原结束节点保留为可见草稿\n":"")+"启动后继续立即返回，不等待对象结束。"+ownership+(current.Length>0?"\n直接结束关联："+string.Join("；",current):"")){
+            var label=new Label((pending?"结束策略待决 · 原结束节点保留，尚未接入执行流程\n":"")+"启动后继续立即返回，不等待对象结束。"+ownership+(current.Length>0?"\n直接结束关联："+string.Join("；",current):"")){
                 name="SpatialLifecycleSummary",style={whiteSpace=WhiteSpace.Normal,fontSize=11,marginLeft=10,marginRight=10,color=new Color(1,.77f,.4f)}};
             card.extensionContainer.Add(label);
             var choose=new Button(()=>ShowSpatialEndChoices(node.Id)){text="选择 / 替换真实结束策略…"};

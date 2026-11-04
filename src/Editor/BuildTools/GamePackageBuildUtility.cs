@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
-using HybridCLR.Editor;
+using HybridCLR;
 using UnityEditor;
 using UnityEngine;
 using Unity.SharpZipLib.Utils;

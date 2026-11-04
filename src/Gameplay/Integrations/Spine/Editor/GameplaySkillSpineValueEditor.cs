@@ -115,7 +115,11 @@ namespace FRFrame.Gameplay.Spine.Editor
                 var filter=new TextField("筛选动画"){name="SpineAnimationFilter"};
                 var names=new DropdownField(label,new List<string>{""},0){name="SpineAnimationChoice"};
                 filter.labelElement.style.minWidth=70;filter.labelElement.style.maxWidth=92;names.labelElement.style.minWidth=70;names.labelElement.style.maxWidth=92;
-                root.Add(filter);root.Add(names);root.Add(error);
+                var row=new VisualElement{style={flexDirection=FlexDirection.Row,alignItems=Align.Center}};
+                names.label="动画";names.style.flexGrow=1;names.style.flexShrink=1;names.style.minWidth=100;
+                filter.label="筛选";filter.labelElement.style.minWidth=28;filter.labelElement.style.maxWidth=28;
+                filter.tooltip="筛选当前骨骼的动画；不修改已选动画";filter.style.width=112;filter.style.flexShrink=0;
+                row.Add(names);row.Add(filter);root.Add(row);root.Add(error);
                 string selected="",query=null;string[] all=Array.Empty<string>(),previous=null;
                 void Choices(){
                     if(ReferenceEquals(previous,all)&&query==filter.value)return;previous=all;query=filter.value;

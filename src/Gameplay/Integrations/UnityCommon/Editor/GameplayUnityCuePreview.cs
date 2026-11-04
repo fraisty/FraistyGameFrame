@@ -26,9 +26,13 @@ namespace FRFrame.Gameplay.Unity.Editor
         {
             try{
                 var build=new GameplayAuthoringBuildContext();
-                if(cue!=null){_cue=cue.Build(build);Duration=GameplayValueEvaluator.Evaluate(_cue.Duration,application);}
+                if(cue!=null){
+                    _cue=cue.Build(build);
+                    if(!_cue.RecycleWhenParticlesFinish)Duration=GameplayValueEvaluator.Evaluate(_cue.Duration,application);
+                }
                 else{_text=text.Build(build);Duration=_text.Duration;}
-                if(!float.IsFinite(Duration)||Duration<=0)throw new ArithmeticException("Presentation duration must be positive.");
+                if(_cue?.RecycleWhenParticlesFinish!=true&&(!float.IsFinite(Duration)||Duration<=0))
+                    throw new ArithmeticException("Presentation duration must be positive.");
                 if(_cue?.Kind==GameplayPresentationCueAsset.CueKind.Audio)return;
                 var prefab=_cue!=null?_cue.Prefab:_text.Prefab;
                 if(prefab==null)throw new InvalidOperationException("Select an existing presentation prefab.");
@@ -40,6 +44,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 _preview.camera.nearClipPlane=.01f;_preview.camera.farClipPlane=100;
                 _preview.lights[0].intensity=1;_preview.lights[0].transform.rotation=Quaternion.Euler(40,40,0);
                 _particles=Subject.GetComponentsInChildren<ParticleSystem>(true);
+                if(_cue?.RecycleWhenParticlesFinish==true)Duration=EstimateParticlePreviewDuration();
                 foreach(var particles in _particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);}
                 if(_text!=null){
                     _widget=Subject.GetComponent<GameplayFloatingTextWidget>();
@@ -56,13 +61,40 @@ namespace FRFrame.Gameplay.Unity.Editor
         internal void Seek(float seconds,bool started)
         {
             if(Subject==null)return;
-            bool visible=started&&seconds<Duration;Subject.SetActive(visible);if(!visible)return;
+            bool visible=started&&(_cue?.RecycleWhenParticlesFinish==true||seconds<Duration);
+            Subject.SetActive(visible);if(!visible)return;
             foreach(var particles in _particles){particles.Simulate(seconds,false,true,true);particles.Pause(false);}
             if(_widget!=null){Subject.transform.position=_start+Vector3.up*(seconds*_text.RiseSpeed);_widget.SetOpacity(1-seconds/Duration);}
         }
+        // The standalone scrubber needs a finite range. Runtime uses actual particle completion.
+        private float EstimateParticlePreviewDuration()
+        {
+            float duration=1;
+            foreach(var particles in _particles){
+                if(!particles.gameObject.activeInHierarchy)continue;
+                var main=particles.main;
+                var trails=particles.trails;
+                float lifetime=Peak(main.startLifetime);
+                if(trails.enabled&&!trails.dieWithParticles)lifetime+=lifetime*Peak(trails.lifetime);
+                duration=Mathf.Max(duration,(Peak(main.startDelay)+main.duration+lifetime)/main.simulationSpeed);
+            }
+            return duration;
+
+            float Peak(ParticleSystem.MinMaxCurve value)
+            {
+                if(value.mode==ParticleSystemCurveMode.Constant||value.mode==ParticleSystemCurveMode.TwoConstants)
+                    return value.constantMax;
+                float max=value.curveMax.keys.Select(k=>k.value).DefaultIfEmpty(0).Max();
+                if(value.mode==ParticleSystemCurveMode.TwoCurves)
+                    max=Mathf.Max(max,value.curveMin.keys.Select(k=>k.value).DefaultIfEmpty(0).Max());
+                return max*value.curveMultiplier;
+            }
+        }
         internal void DrawControls()
         {
-            EditorGUILayout.LabelField("正式表现素材 / 持续秒",Duration.ToString("0.###"));
+            if(_cue?.RecycleWhenParticlesFinish==true)
+                EditorGUILayout.LabelField("播完回收 · 预览范围估算",Duration.ToString("0.###")+" 秒");
+            else EditorGUILayout.LabelField("正式表现素材 / 持续秒",Duration.ToString("0.###"));
             if(_cue?.Kind==GameplayPresentationCueAsset.CueKind.Audio){
                 EditorGUILayout.ObjectField("音频素材",_cue.Clip,typeof(AudioClip),false);
                 EditorGUILayout.LabelField("运行音量 / 音高",_cue.Volume+" / "+_cue.Pitch);
