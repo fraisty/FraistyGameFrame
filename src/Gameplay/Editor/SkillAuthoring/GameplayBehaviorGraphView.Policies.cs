@@ -107,11 +107,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var current=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
             if(!replace&&(charge?current.Charge!=null:AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect"))){PolicySelected?.Invoke("Recharge");return;}
             if(!ConfirmPolicyReplacement("Recharge",charge?"新建默认充能（2次 / 3秒）":"新建普通冷却（3秒）"))return;
-            Try(()=>{Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"切换冷却或充能");GameplaySkillAuthoringCommands.Transaction(_document,"切换冷却或充能",g=>{
+            Try(()=>{string tag=charge?null:GameplaySkillAuthoringCommands.GeneratedSkillTag(GameplayReferenceCatalogProvider.Scope(_document),"Cooldown.Skill.",_document.SkillId.ToString());
+                Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"切换冷却或充能");GameplaySkillAuthoringCommands.Transaction(_document,"切换冷却或充能",g=>{
                 var ability=(GameplayAbilityNodePayload)g.Nodes.Single(n=>n.Id==g.AbilityNodeId).Payload;var settings=(GameplayAbilityDefinitionData)ability.Settings;
                 ability.Definitions.RemoveAll(b=>b.PropertyPath=="CooldownEffect");settings.Charge=charge?new GameplayAbilityChargeAuthoring{MaxCharges=2,RechargeDuration=3}:null;
-                if(!charge){var local=new GameplayLocalDefinition{Name="技能冷却",SourceDefinitionId=_document.DefinitionId,Payload=new GameplayEffectDefinitionData{DurationPolicy=GameplayEffectDurationPolicy.Duration,Duration=3,GrantedTags=new[]{new GameplayTagReference("Cooldown.Skill."+_document.SkillId)}}};g.LocalDefinitions.Add(local);ability.Definitions.Add(new GameplayDefinitionBinding{PropertyPath="CooldownEffect",LocalId=local.Id});}
-            },generatedTags:charge?null:new[]{"Cooldown.Skill."+_document.SkillId});_policyDrafts.RemoveAll(p=>p.Key==PolicyKey("Recharge"));});
+                if(!charge){var local=new GameplayLocalDefinition{Name="技能冷却",SourceDefinitionId=_document.DefinitionId,Payload=new GameplayEffectDefinitionData{DurationPolicy=GameplayEffectDurationPolicy.Duration,Duration=3,GrantedTags=new[]{new GameplayTagReference(tag)}}};g.LocalDefinitions.Add(local);ability.Definitions.Add(new GameplayDefinitionBinding{PropertyPath="CooldownEffect",LocalId=local.Id});}
+            },generatedTags:charge?null:new[]{tag});_policyDrafts.RemoveAll(p=>p.Key==PolicyKey("Recharge"));});
         }
         private bool ConfirmPolicyReplacement(string role,string operation,bool detach=false)
         {

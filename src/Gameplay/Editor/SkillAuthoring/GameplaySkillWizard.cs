@@ -17,12 +17,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private List<GameplaySkillCopyReferences.Reference> _references;
         private readonly HashSet<string> _preserveReferences=new HashSet<string>();
         private Vector2 _referenceScroll;
-        private readonly string[] _scopes={"SkillLab","XH","AzurLane","FRFrame","LogicGrid","TurnBased"};
+        private string[] _scopes;
         private int _scope,_fps=30,_id,_start;private string _name="我的技能",_error;private bool _allowDuplicate,_turns;
         private GameplayActorProfileAsset _profile;
         internal static void Open(GameplaySkillWorkbench owner,GameplaySkillDocumentAsset template=null)
         {
             var wizard=CreateInstance<GameplaySkillWizard>();wizard._owner=owner;wizard._template=template;if(template)wizard._name=template.DisplayName+" 副本";wizard._id=GameplaySkillWorkbench.Documents().Select(d=>d.SkillId).DefaultIfEmpty(2009).Max()+1;
+            string current=template?template.AuthoringGraph.Scope:owner.Document?.AuthoringGraph?.Scope??GameplayReferenceCatalogProvider.Framework;
+            wizard._scopes=GameplayReferenceCatalogProvider.Catalogs.SelectMany(catalog=>catalog.ScopeAliases.Prepend(GameplayReferenceCatalogProvider.OwnerScope(catalog)))
+                .Append(current).Distinct(StringComparer.Ordinal).ToArray();
             if(template)wizard._references=GameplaySkillCopyReferences.Audit(template);
             wizard._scope=Mathf.Max(0,Array.IndexOf(wizard._scopes,template?template.AuthoringGraph.Scope:owner.Document?.AuthoringGraph?.Scope??"FRFrame"));wizard.titleContent=new GUIContent("新建正式技能");wizard.minSize=template?new Vector2(540,650):new Vector2(440,400);wizard.ShowUtility();
         }
@@ -40,6 +43,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool duplicate=GameplaySkillWorkbench.Documents().Any(d=>d.SkillId==_id);
             if(duplicate){EditorGUILayout.HelpBox("已有同 ID 技能；不同 Host 中复用 ID 需要作者明确确认。",MessageType.Warning);_allowDuplicate=EditorGUILayout.Toggle("明确允许跨 Host 重号",_allowDuplicate);}
             if(_template){
+                string tagScope=GameplayReferenceCatalogProvider.Scope(_template);
                 EditorGUILayout.HelpBox("新GUID/ID/局部StableIds；保持原Scope与Host限制。逐项确认自身身份：勾选重映射至新ID；取消勾选表示有意引用源技能（可能共同冷却/续接归属源技能）。其它ID、普通数值与外部SO保持原引用，外部SO不会被修改。",MessageType.Info);
                 _referenceScroll=EditorGUILayout.BeginScrollView(_referenceScroll,GUILayout.MinHeight(100),GUILayout.MaxHeight(230));
                 var drawnCooldowns=new HashSet<string>();
@@ -48,10 +52,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         if(!drawnCooldowns.Add(reference.CooldownGroup))continue;
                         var group=_references.Where(r=>r.CooldownGroup==reference.CooldownGroup).ToArray();
                         bool independent=!group.Any(r=>_preserveReferences.Contains(r.Path));
-                        bool next=EditorGUILayout.ToggleLeft(new GUIContent("独立冷却："+reference.CooldownGroup+" → "+reference.TargetTag(_id)+"（"+group.Length+"处）",string.Join("\n",group.Select(r=>r.Path))+"\n取消勾选：有意与源技能共享这组冷却及业务标签。"),independent);
+                        bool next=EditorGUILayout.ToggleLeft(new GUIContent("独立冷却："+reference.CooldownGroup+" → "+reference.TargetTag(_id,tagScope)+"（"+group.Length+"处）",string.Join("\n",group.Select(r=>r.Path))+"\n取消勾选：有意与源技能共享这组冷却及业务标签。"),independent);
                         foreach(var item in group)if(next)_preserveReferences.Remove(item.Path);else _preserveReferences.Add(item.Path);
                     }
-                    else if(reference.IsSelf){string target=reference.IsTag?reference.TargetTag(_id):_id.ToString();bool remap=!_preserveReferences.Contains(reference.Path);bool next=EditorGUILayout.ToggleLeft(new GUIContent("重映射："+reference.Description+" → "+target,reference.Path),remap);if(next)_preserveReferences.Remove(reference.Path);else _preserveReferences.Add(reference.Path);}
+                    else if(reference.IsSelf){string target=reference.IsTag?reference.TargetTag(_id,tagScope):_id.ToString();bool remap=!_preserveReferences.Contains(reference.Path);bool next=EditorGUILayout.ToggleLeft(new GUIContent("重映射："+reference.Description+" → "+target,reference.Path),remap);if(next)_preserveReferences.Remove(reference.Path);else _preserveReferences.Add(reference.Path);}
                     else EditorGUILayout.LabelField(new GUIContent("保留："+reference.Description,reference.Path));
                 }
                 EditorGUILayout.EndScrollView();

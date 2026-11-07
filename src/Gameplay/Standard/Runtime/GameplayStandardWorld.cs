@@ -237,6 +237,7 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Timed consumable shield contributions over the actual resource and Effect clock.</summary>
         public GameplayShieldContributions Shields { get; }
         public GameplayCombatOutcome? LastCombatOutcome { get; private set; }
+        private (GameplayContext Targeted, GameplayContext Input) _effectExecution;
         /// <summary>Optional view driver. The scene/game binding supplies it; no presentation object is stored in definitions.</summary>
         public IGameplayPresentationDriver Presentation { get; set; }
         /// <summary>Optional behaviour driver over an existing host FSM/controller. World supplies
@@ -245,6 +246,8 @@ namespace FRFrame.Gameplay.Standard
         public event Action<GameplayCombatOutcome> CombatChanged;
         public void ReportCombat(GameplayCombatOutcome outcome)
         {
+            if (_effectExecution.Input != null && ReferenceEquals(_effectExecution.Targeted, outcome.Context))
+                outcome = outcome.WithExecutionContext(_effectExecution.Input);
             LastCombatOutcome = outcome;
             World.PublishCombat(this,outcome);
             CombatChanged?.Invoke(outcome);
@@ -303,12 +306,21 @@ namespace FRFrame.Gameplay.Standard
         public bool UninstallSkill(GameplaySkillRuntime runtime) { if (!_skills.Remove(runtime)) return false; runtime.Dispose(); return true; }
         /// <summary>Applies to this World using an explicit Caller snapshot, or a detached copy
         /// of the captured chain inputs when omitted. Explicit Empty remains an empty override.</summary>
-        public GameplayEffectApplicationResult ApplyEffect(GameplayContext context, GameplayEffectDefinition effect, GameplaySetByCallerValues values=null)
+        public GameplayEffectApplicationResult ApplyEffect(GameplayContext context, GameplayEffectDefinition effect, GameplaySetByCallerValues values=null) =>
+            ApplyEffect(context, effect, values, null);
+
+        internal GameplayEffectApplicationResult ApplyEffect(GameplayContext context, GameplayEffectDefinition effect,
+            GameplaySetByCallerValues values, GameplayContext executionContext)
         {
             if (IsDisposed || context.InstigatorId != Id) throw new InvalidOperationException("Effect instigator must be this active actor.");
             if (!World.TryGetActor(context.TargetData.PrimaryTargetId, out var target)) throw new InvalidOperationException("Effect target left the world.");
-            return target.Effects.Apply(effect, new GameplayEffectApplicationContext(context, target,
-                values ?? context.Values.AsSetByCallerValues(), Attributes, Id, instigatorTarget: this));
+            var application = new GameplayEffectApplicationContext(context, target,
+                values ?? context.Values.AsSetByCallerValues(), Attributes, Id, instigatorTarget: this);
+            if (executionContext == null) return target.Effects.Apply(effect, application);
+            var previous = target._effectExecution;
+            target._effectExecution = (context, executionContext);
+            try { return target.Effects.Apply(effect, application); }
+            finally { target._effectExecution = previous; }
         }
         internal void AdvanceSkills(float amount)
         {

@@ -14,7 +14,7 @@ namespace FRFrame.Gameplay.Editor
         private enum Tab { Tags, Attributes, Diagnostics }
         private Tab _tab;
         private GameplayReferenceCatalogAsset _catalog;
-        private string _discoveryError;
+        [SerializeField] private string _scope;
         private string _search = string.Empty;
         private string _selectedTag;
         private string _newTag = string.Empty;
@@ -26,29 +26,51 @@ namespace FRFrame.Gameplay.Editor
         private IReadOnlyList<GameplayCodeLiteralReference> _literals = Array.Empty<GameplayCodeLiteralReference>();
         private readonly Dictionary<string, bool> _expanded = new Dictionary<string, bool>(StringComparer.Ordinal);
         private Vector2 _scroll;
+        private Vector2 _tagDetailScroll;
 
         [MenuItem("FRFrame/Gameplay/References")]
-        public static void Open() => GetWindow<GameplayReferenceEditorWindow>("Gameplay References");
+        public static void Open()
+        {
+            var source = (focusedWindow as SkillAuthoring.GameplaySkillWorkbench)?.Document ?? Selection.activeObject;
+            OpenForScope(GameplayReferenceCatalogProvider.Scope(source));
+        }
+
+        internal static void OpenForScope(string scope)
+        {
+            var window = GetWindow<GameplayReferenceEditorWindow>("Gameplay References");
+            window.minSize = new Vector2(580,320);
+            if(scope!=null)window.SelectScope(scope);
+            window.Focus();
+        }
 
         private void OnEnable()
         {
             EditorApplication.projectChanged += OnProjectChanged;
-            Refresh();
+            Undo.undoRedoPerformed += OnProjectChanged;
         }
-        private void OnDisable() => EditorApplication.projectChanged -= OnProjectChanged;
+        private void OnDisable()
+        {
+            EditorApplication.projectChanged -= OnProjectChanged;
+            Undo.undoRedoPerformed -= OnProjectChanged;
+        }
         private void OnProjectChanged()
         {
-            _catalog = null; _report = null;
-            EditorApplication.delayCall += () => { if (this != null) Refresh(); };
+            _report = null; _preview = null;
+            Repaint();
+        }
+
+        private void SelectScope(string scope)
+        {
+            _scope = scope; _selectedTag = null; _preview = null;
+            _expanded.Clear(); _scroll = _tagDetailScroll = Vector2.zero;
         }
 
         private void Refresh()
         {
-            _catalog = GameplayReferenceCatalogProvider.Find(out _discoveryError);
             var assets = GameplayReferenceScanner.FindDefinitionAssets();
             _references = GameplayReferenceScanner.ScanAssets(assets);
             _literals = GameplayReferenceScanner.ScanProductionCode();
-            _report = GameplayReferenceDiagnostics.Scan(_catalog, assets, _literals);
+            _report = GameplayReferenceDiagnostics.Scan(null, assets, _literals);
             _preview = null;
             Repaint();
         }
@@ -59,57 +81,99 @@ namespace FRFrame.Gameplay.Editor
             _tab = (Tab)GUILayout.Toolbar((int)_tab, new[] { "Tags", "Attributes", "Diagnostics" }, EditorStyles.toolbarButton);
             if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(65))) Refresh();
             EditorGUILayout.EndHorizontal();
-            if (_catalog == null) _catalog = GameplayReferenceCatalogProvider.Find(out _discoveryError);
+            _catalog = GameplayReferenceCatalogProvider.Find(out string error);
             if (_catalog == null)
             {
-                EditorGUILayout.HelpBox(_discoveryError ?? "Catalog unavailable.", MessageType.Error);
+                EditorGUILayout.HelpBox(error, MessageType.Error);
                 return;
             }
-            EditorGUILayout.ObjectField("Catalog", _catalog, typeof(GameplayReferenceCatalogAsset), false);
-            _search = EditorGUILayout.TextField("Search", _search);
-            _scroll = EditorGUILayout.BeginScrollView(_scroll);
-            switch (_tab)
+            if(_tab==Tab.Tags)
             {
-                case Tab.Tags: DrawTags(); break;
-                case Tab.Attributes: DrawAttributes(); break;
-                default: DrawDiagnostics(); break;
+                var scopes = GameplayReferenceCatalogProvider.Catalogs.Select(GameplayReferenceCatalogProvider.OwnerScope)
+                    .Distinct(StringComparer.Ordinal).Prepend("").ToArray();
+                int selected = Math.Max(0,Array.IndexOf(scopes,_scope??""));
+                int next = EditorGUILayout.Popup("Tag Scope",selected,scopes.Select(scope=>scope==""?"全工程":scope).ToArray());
+                if(next!=selected)SelectScope(scopes[next]);
             }
+            _search = EditorGUILayout.TextField("Search", _search);
+            if(_tab==Tab.Tags){DrawTags();return;}
+            _scroll = EditorGUILayout.BeginScrollView(_scroll);
+            if(_tab==Tab.Attributes)DrawAttributes();else DrawDiagnostics();
             EditorGUILayout.EndScrollView();
         }
 
         private void DrawTags()
         {
-            EditorGUILayout.HelpBox("Full Tag paths are canonical identities. Indented groups are derived, not stored.", MessageType.Info);
-            var tags = _catalog.Tags ?? Array.Empty<string>();
-            if (string.IsNullOrEmpty(_search))
-                foreach (var child in GameplayReferenceTree.Project(tags).Children.Values) DrawTreeNode(child, 0);
-            else foreach (string tag in tags.Where(x => x != null && x.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0)
-                         .OrderBy(x => x, StringComparer.Ordinal)) DrawTagRow(tag, tag, 0);
-            EditorGUILayout.Space(8);
+            var catalogs = GameplayReferenceCatalogProvider.Catalogs;
+            var visible = string.IsNullOrEmpty(_scope) ? catalogs : GameplayReferenceCatalogProvider.Visible(_scope);
+            var owners = visible.SelectMany(catalog=>catalog.Tags.Select(tag=>(tag,catalog)))
+                .Where(entry=>!string.IsNullOrEmpty(entry.tag))
+                .ToLookup(entry=>entry.tag,entry=>entry.catalog,StringComparer.Ordinal);
+            var tags = owners.Select(group=>group.Key).ToArray();
+            EditorGUILayout.HelpBox(string.IsNullOrEmpty(_scope)?"全工程浏览。选择具体 Scope 后可登记。":
+                $"显示 {_scope} 和可引用的共享 Tag。新 Tag 登记到 {_scope}。", MessageType.Info);
+            float detailWidth=Mathf.Clamp(position.width*.38f,290,440);
+            using(new EditorGUILayout.HorizontalScope())
+            {
+                using(var list=new EditorGUILayout.ScrollViewScope(_scroll,GUILayout.Width(position.width-detailWidth-8)))
+                {
+                    _scroll=list.scrollPosition;
+                    if (string.IsNullOrEmpty(_search))
+                        foreach (var child in GameplayReferenceTree.Project(tags).Children.Values) DrawTreeNode(child, 0,owners);
+                    else foreach (string tag in tags.Where(x => x.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0)
+                                 .OrderBy(x => x, StringComparer.Ordinal)) DrawTagRow(tag,owners[tag]);
+                }
+                using(var details=new EditorGUILayout.ScrollViewScope(_tagDetailScroll,GUILayout.Width(detailWidth)))
+                {
+                    _tagDetailScroll=details.scrollPosition;
+                    DrawTagDetails(owners);
+                }
+            }
+        }
+
+        private void DrawTagDetails(ILookup<string,GameplayReferenceCatalogAsset> owners)
+        {
             _newTag = EditorGUILayout.TextField("New Tag / Child", _newTag);
+            var target = string.IsNullOrEmpty(_scope)?null:GameplayReferenceCatalogProvider.Find(_scope,out _);
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Add Tag")) AddTag(_newTag);
-            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_selectedTag)))
-                if (GUILayout.Button("Add Child")) AddTag(_selectedTag + "." + _newTag);
+            using (new EditorGUI.DisabledScope(target==null))
+            {
+                if (GUILayout.Button("Add Tag")) AddTag(target,_newTag);
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_selectedTag)))
+                    if (GUILayout.Button("Add Child")) AddTag(target,_selectedTag + "." + _newTag);
+            }
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Selected", _selectedTag ?? "(none)");
             if (string.IsNullOrEmpty(_selectedTag)) return;
-            EditorGUILayout.LabelField("Serialized references (subtree)",
-                _references.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
-            EditorGUILayout.LabelField("Code literals (subtree)",
-                _literals.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
+            var selectedOwners=owners[_selectedTag].ToArray();
+            if(selectedOwners.Length==1)
+            {
+                var owner=selectedOwners[0];
+                using(new EditorGUI.DisabledScope(true))EditorGUILayout.ObjectField("所属 Catalog",owner,typeof(GameplayReferenceCatalogAsset),false);
+                string ownerScope=GameplayReferenceCatalogProvider.OwnerScope(owner);
+                if(ownerScope!=GameplayReferenceCatalogProvider.Shared&&ownerScope!=GameplayReferenceCatalogProvider.Framework&&
+                    GUILayout.Button(new GUIContent("提升此 Tag 到 Shared","移动登记归属，各游戏可引用同一个原字符串。")))
+                    Promote(owner,_selectedTag);
+            }
+            if(_report!=null)
+            {
+                EditorGUILayout.LabelField("Serialized references (subtree)",
+                    _references.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
+                EditorGUILayout.LabelField("Code literals (subtree)",
+                    _literals.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
+            }
             _renameTarget = EditorGUILayout.TextField("Rename to", _renameTarget);
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Preview Rename"))
-                _preview = GameplayTagRefactorService.PreviewRename(_catalog, _selectedTag, _renameTarget);
-            if (GUILayout.Button("Preview Delete"))
-                _preview = GameplayTagRefactorService.PreviewDelete(_catalog, _selectedTag);
+            if (GUILayout.Button("预览全工程重命名"))
+                _preview = GameplayTagRefactorService.PreviewProjectRename(_selectedTag, _renameTarget);
+            if (GUILayout.Button("预览全工程删除"))
+                _preview = GameplayTagRefactorService.PreviewProjectDelete(_selectedTag);
             EditorGUILayout.EndHorizontal();
             DrawPreview();
         }
 
-        private void DrawTreeNode(GameplayReferenceTreeNode node, int depth)
+        private void DrawTreeNode(GameplayReferenceTreeNode node, int depth,ILookup<string,GameplayReferenceCatalogAsset> owners)
         {
             EditorGUILayout.BeginHorizontal(); GUILayout.Space(depth * 14f);
             if (node.Children.Count > 0)
@@ -121,24 +185,29 @@ namespace FRFrame.Gameplay.Editor
             if (GUILayout.Button(new GUIContent(node.Segment + (node.IsDefined ? "" : " (group)"), node.FullPath),
                     _selectedTag == node.FullPath ? EditorStyles.toolbarButton : EditorStyles.linkLabel))
             { _selectedTag = node.FullPath; _renameTarget = node.FullPath; _preview = null; }
-            if (node.IsDefined) GUILayout.Label("defined", EditorStyles.miniLabel, GUILayout.Width(45f));
+            if (node.IsDefined) DrawOwners(owners[node.FullPath]);
             EditorGUILayout.EndHorizontal();
             if (node.Children.Count > 0 && _expanded[node.FullPath])
-                foreach (var child in node.Children.Values) DrawTreeNode(child, depth + 1);
+                foreach (var child in node.Children.Values) DrawTreeNode(child, depth + 1,owners);
         }
-        private void DrawTagRow(string label, string path, int depth)
+        private void DrawTagRow(string path,IEnumerable<GameplayReferenceCatalogAsset> owners)
         {
-            EditorGUILayout.BeginHorizontal(); GUILayout.Space(depth * 14f);
-            if (GUILayout.Button(new GUIContent(label, path), EditorStyles.linkLabel))
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(new GUIContent(path, path), EditorStyles.linkLabel))
             { _selectedTag = path; _renameTarget = path; _preview = null; }
+            DrawOwners(owners);
             EditorGUILayout.EndHorizontal();
         }
+        private static void DrawOwners(IEnumerable<GameplayReferenceCatalogAsset> owners) =>
+            GUILayout.Label(string.Join(" / ",owners.Select(GameplayReferenceCatalogProvider.OwnerScope)),EditorStyles.miniLabel);
         private void DrawPreview()
         {
             if (_preview == null) return;
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField(_preview.IsDelete ? "Delete preview" : "Rename preview", EditorStyles.boldLabel);
             EditorGUILayout.LabelField("Catalog entries", _preview.AffectedCatalogTags.Count.ToString());
+            foreach(var pair in _preview.CatalogChanges)
+                EditorGUILayout.LabelField(GameplayReferenceCatalogProvider.OwnerScope(pair.Key),pair.Value.Length.ToString());
             EditorGUILayout.LabelField("Serialized references", _preview.AffectedReferences.Count.ToString());
             EditorGUILayout.LabelField("C# literals", _preview.AffectedCode.Count.ToString());
             foreach (string error in _preview.Errors) EditorGUILayout.HelpBox(error, MessageType.Error);
@@ -166,8 +235,10 @@ namespace FRFrame.Gameplay.Editor
             {
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.LabelField(value, GUILayout.MinWidth(150));
-                GUILayout.Label("assets " + CountSerialized(GameplayReferenceKind.Attribute, value), GUILayout.Width(75));
-                GUILayout.Label("code " + CountCode(GameplayReferenceKind.Attribute, value), GUILayout.Width(70));
+                if(_report!=null){
+                    GUILayout.Label("assets " + CountSerialized(GameplayReferenceKind.Attribute, value), GUILayout.Width(75));
+                    GUILayout.Label("code " + CountCode(GameplayReferenceKind.Attribute, value), GUILayout.Width(70));
+                }
                 if (GUILayout.Button("Remove", GUILayout.Width(65))) RemoveAttribute(value);
                 EditorGUILayout.EndHorizontal();
             }
@@ -181,7 +252,7 @@ namespace FRFrame.Gameplay.Editor
             EditorGUILayout.LabelField($"Assets {_report.AssetCount}, serialized references {_report.SerializedReferenceCount}, " +
                 $"source files {_report.SourceFileCount}, code literals {_report.SourceLiteralCount}", EditorStyles.boldLabel);
             EditorGUILayout.LabelField($"Errors {_report.Errors.Count}: 12A {_report.AuthoringValidationErrors}, " +
-                $"missing Tag {_report.MissingTagReferences}, missing Attribute {_report.MissingAttributeReferences}, " +
+                $"missing Tag {_report.MissingTagReferences}, out of scope {_report.OutOfScopeTagReferences}, missing Attribute {_report.MissingAttributeReferences}, " +
                 $"code literal {_report.MissingCodeLiterals}");
             if (_report.Errors.Count == 0) EditorGUILayout.HelpBox("All project references are valid.", MessageType.Info);
             foreach (GameplayReferenceDiagnostic warning in _report.Warnings)
@@ -203,14 +274,29 @@ namespace FRFrame.Gameplay.Editor
         private int CountCode(GameplayReferenceKind kind, string value) =>
             _literals.Count(x => x.Kind == kind && StringComparer.Ordinal.Equals(x.Value, value));
 
-        private void AddTag(string value)
+        private void AddTag(GameplayReferenceCatalogAsset catalog,string value)
         {
-            if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, value))
-            { EditorUtility.DisplayDialog("Invalid Tag", "Enter a valid dot-separated Tag path.", "OK"); return; }
-            if ((_catalog.Tags ?? Array.Empty<string>()).Contains(value, StringComparer.Ordinal)) return;
-            Undo.RecordObject(_catalog, "Add Gameplay Tag");
-            _catalog.Tags = (_catalog.Tags ?? Array.Empty<string>()).Concat(new[] { value }).ToArray();
-            EditorUtility.SetDirty(_catalog); AssetDatabase.SaveAssets(); Refresh();
+            try
+            {
+                var next = GameplayReferenceCatalogProvider.WithRegistrations(catalog,new[]{value});
+                if(next.SequenceEqual(catalog.Tags,StringComparer.Ordinal))return;
+                Undo.RecordObject(catalog,"登记 Gameplay Tag");
+                catalog.Tags=next;
+                EditorUtility.SetDirty(catalog);AssetDatabase.SaveAssetIfDirty(catalog);
+                _selectedTag=value;_renameTarget=value;OnProjectChanged();
+            }
+            catch(InvalidOperationException error){EditorUtility.DisplayDialog("登记 Gameplay Tag",error.Message,"关闭");}
+        }
+        private void Promote(GameplayReferenceCatalogAsset owner,string tag)
+        {
+            var shared=GameplayReferenceCatalogProvider.Find(GameplayReferenceCatalogProvider.Shared,out string error);
+            if(shared==null||GameplayReferenceCatalogProvider.Catalogs.Count(catalog=>catalog.Tags.Contains(tag,StringComparer.Ordinal))!=1)
+            {EditorUtility.DisplayDialog("提升到 Shared",error??"Tag 归属存在冲突。","关闭");return;}
+            Undo.RecordObjects(new UnityEngine.Object[]{owner,shared},"提升 Gameplay Tag 到 Shared");
+            owner.Tags=owner.Tags.Where(value=>value!=tag).ToArray();
+            shared.Tags=shared.Tags.Append(tag).ToArray();
+            EditorUtility.SetDirty(owner);EditorUtility.SetDirty(shared);
+            AssetDatabase.SaveAssetIfDirty(owner);AssetDatabase.SaveAssetIfDirty(shared);OnProjectChanged();
         }
         private void AddAttribute(string value)
         {

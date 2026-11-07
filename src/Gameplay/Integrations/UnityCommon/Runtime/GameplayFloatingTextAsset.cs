@@ -23,7 +23,9 @@ namespace FRFrame.Gameplay.Unity
 
         public bool Follow=true;
 
-        public string Binding,DamagePrefix="",NumberFormat="0.##";
+        public string Binding;
+        [Tooltip("伤害数值前的文字，例如 - 或 处决。")] public string DamagePrefix="";
+        [Tooltip("0 显示整数，0.## 最多显示两位小数。只影响飘字。")] public string NumberFormat="0.##";
 
         public bool RequestedHealing,SuppressEmptyHealing,FixedPoint;
 

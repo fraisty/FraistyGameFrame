@@ -80,6 +80,7 @@ namespace FRFrame.Gameplay.Unity
             foreach(var playback in new List<Playback>(_channels.Values))playback.Advance(amount);
             foreach(var cue in cues)cue.Advance(amount);
             foreach(var text in floating)text.Advance(amount);
+            FlushCombatText();
             _ownedAudio?.Update(amount,amount);
         }
         public void Dispose()
@@ -87,6 +88,7 @@ namespace FRFrame.Gameplay.Unity
             if(_disposed)return;_disposed=true;
             Controllers.Remove(this);
             Actor.CombatChanged-=OnFloatingCombat;
+            _pendingCombatText.Clear();
             foreach(var playback in new List<Playback>(_channels.Values))playback.Dispose();_channels.Clear();
             DisposeQueues();
             foreach(var cue in _cues.ToArray())cue.Dispose();

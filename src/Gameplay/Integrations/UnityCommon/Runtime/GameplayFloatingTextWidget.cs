@@ -12,14 +12,16 @@ namespace FRFrame.Gameplay.Unity
         private Color _color;
         private TMP_FontAsset _font;
         private Material _material;
+        internal TMP_FontAsset FontOverride { get; set; }
         public string DisplayText=>_text==null?string.Empty:_text.text;
         protected override void OnInit()
         {
             _text=GetComponentInChildren<TMP_Text>(true);if(_text==null)throw new InvalidOperationException("Floating widget requires TMP text.");
             // Preview and learning scenes must not add glyphs or atlas pixels to a shared asset.
             // A pooled widget keeps its own dynamic font/atlas until the widget is destroyed.
-            if(_text.font!=null){
-                var source=_text.font;
+            var source=FontOverride!=null?FontOverride:_text.font;
+            if(source!=null){
+                if(FontOverride!=null)_text.font=source;
                 if(source.sourceFontFile!=null){
                     _font=TMP_FontAsset.CreateFontAsset(source.sourceFontFile,(int)source.faceInfo.pointSize,source.atlasPadding,source.atlasRenderMode,source.atlasWidth,source.atlasHeight,AtlasPopulationMode.Dynamic);
                 }

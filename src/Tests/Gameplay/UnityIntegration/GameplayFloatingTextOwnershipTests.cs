@@ -2,6 +2,7 @@ using FRFrame.Gameplay;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Standard;
 using FRFrame.Gameplay.Unity;
+using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -9,6 +10,46 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
 {
     public sealed class GameplayFloatingTextOwnershipTests
     {
+        [Test]
+        public void AuthoredFeedbackClaimsOnlyItsOutcomeAndUnclaimedResultsKeepTheirDefault()
+        {
+            var subject = new GameObject("Combat text target");
+            var asset = Object.Instantiate(UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayFloatingTextAsset>(
+                "Assets/GameRes/GameplayValidation/XH/Gameplay/Standard/Feedback1001.asset"));
+            asset.Follow = true;
+            var authored = Object.Instantiate(asset);
+            try
+            {
+                authored.DamagePrefix = "Execute ";
+                authored.NumberFormat = "0.##";
+                using var world = new GameplayStandardWorld();
+                var attacker = world.CreateActor(default);
+                var target = world.CreateActor(default);
+                var build = new GameplayAuthoringBuildContext();
+                var controller = new GameplayUnityAnimationController(target, subject) { FloatingText = asset.Build(build) };
+                target.Presentation = controller;
+                var action = new GameplayShowCombatTextActionAuthoring { Source = authored }.Build(build);
+                var targetData = new GameplayTargetData(target.Id);
+                var first = new GameplayContext(attacker.Id, targetData);
+                var second = new GameplayContext(attacker.Id, targetData);
+                target.ReportCombat(new GameplayCombatOutcome(first, GameplayCombatOutcomeKind.Damage, default, 5.4f, 0, 100, 94.6f));
+                target.ReportCombat(new GameplayCombatOutcome(second, GameplayCombatOutcomeKind.Damage, default, 12.25f, 0, 94.6f, 82.35f));
+                Assert.That(action.Execute(first, default, attacker), Is.EqualTo(GameplaySkillActionResult.Rejected),
+                    "A separate callback can share source IDs without owning the latest result.");
+                Assert.That(action.Execute(second.WithSource(target.Id), default, attacker), Is.EqualTo(GameplaySkillActionResult.Rejected));
+                Assert.That(action.Execute(second, default, attacker), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+                Assert.That(action.Execute(second, default, attacker), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+                Assert.That(controller.ActiveFloatingTextCount, Is.EqualTo(1));
+                world.Advance(0);
+                var labels = subject.GetComponentsInChildren<GameplayFloatingTextWidget>().Select(widget => widget.DisplayText);
+                Assert.That(labels, Is.EquivalentTo(new[] { "Execute 12.25", "-5" }));
+                Assert.That(action.Execute(second, default, attacker), Is.EqualTo(GameplaySkillActionResult.Rejected));
+                world.Advance(2);
+                Assert.That(controller.ActiveFloatingTextCount, Is.Zero);
+            }
+            finally { Object.DestroyImmediate(authored); Object.DestroyImmediate(asset); Object.DestroyImmediate(subject); }
+        }
+
         /// <summary>Regression from real XH Stop Play: TMP destroys a cloned static font's borrowed
         /// asset atlas. Static fonts must remain borrowed; dynamic fonts must release their private atlas.</summary>
         [TestCase(false)][TestCase(true)]

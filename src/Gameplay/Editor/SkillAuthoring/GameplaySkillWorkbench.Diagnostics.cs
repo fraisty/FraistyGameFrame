@@ -27,6 +27,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>!active.Contains(n.Id)))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"未接入执行流程，不参与执行："+GameplaySkillFieldSchema.NodeName(node)));
             foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>active.Contains(n.Id)&&(n.Payload as GameplayRuleNodePayload)?.Target is GameplaySkillContextTargetAuthoring))
                 _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"调用者输入契约：此规则保留 TriggerEvent.Context；宿主须提供下游所需 Actor / Point。地点回调之后仍按实际来源检查，不能假定自身。"));
+            if(!_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error))
+                _diagnostics.AddRange(GameplaySkillContextVariables.For(_document).Diagnostics());
             _feedback=_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error)?"编译未通过；点击校验条目定位同源字段。":"正式运行图编译通过；未接入流程的节点提示另列。";
             _detailTab=3;_details?.MarkDirtyRepaint();Repaint();
         }

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 
 namespace FRFrame.Gameplay.Editor
@@ -17,8 +18,11 @@ namespace FRFrame.Gameplay.Editor
         public readonly string PropertyPath;
         public readonly string Value;
         public readonly GameplayReferenceKind Kind;
+        public readonly GameplayDefinitionAsset Source;
         public GameplaySerializedReference(string assetPath, string propertyPath, string value, GameplayReferenceKind kind)
-        { AssetPath = assetPath; PropertyPath = propertyPath; Value = value; Kind = kind; }
+            : this(null,assetPath,propertyPath,value,kind) { }
+        internal GameplaySerializedReference(GameplayDefinitionAsset source, string assetPath, string propertyPath, string value, GameplayReferenceKind kind)
+        { Source = source; AssetPath = assetPath; PropertyPath = propertyPath; Value = value; Kind = kind; }
     }
 
     public readonly struct GameplayCodeLiteralReference
@@ -45,7 +49,7 @@ namespace FRFrame.Gameplay.Editor
     public static class GameplayReferenceScanner
     {
         private static readonly Regex LiteralPattern = new Regex(
-            @"\bnew\s+Gameplay(Tag|AttributeId)\s*\(\s*""([^""\r\n]*)""\s*\)", RegexOptions.Compiled);
+            @"\bnew\s+(?:(?:global::)?FRFrame\.Gameplay\.)?Gameplay(Tag|AttributeId)\s*\(\s*""([^""\r\n]*)""\s*\)", RegexOptions.Compiled);
 
         public static IReadOnlyList<GameplayDefinitionAsset> FindDefinitionAssets()
         {
@@ -85,13 +89,18 @@ namespace FRFrame.Gameplay.Editor
                     GameplayReferenceKind kind;
                     string field;
                     if (property.type == nameof(GameplayTagReference))
-                    { kind = GameplayReferenceKind.Tag; field = "Name"; }
+                    {
+                        var owner = GameplaySkillContextVariables.FieldOwner(property);
+                        if (GameplaySkillContextVariables.IsProducer(owner) || GameplaySkillContextVariables.IsReader(owner)) continue;
+                        kind = GameplayReferenceKind.Tag;
+                        field = "Name";
+                    }
                     else if (property.type == nameof(GameplayAttributeReference))
                     { kind = GameplayReferenceKind.Attribute; field = "Value"; }
                     else continue;
                     SerializedProperty child = property.FindPropertyRelative(field);
                     if (child != null && child.propertyType == SerializedPropertyType.String)
-                        result.Add(new GameplaySerializedReference(assetPath, child.propertyPath, child.stringValue, kind));
+                        result.Add(new GameplaySerializedReference(asset, assetPath, child.propertyPath, child.stringValue, kind));
                 }
             }
             return result;
@@ -142,7 +151,7 @@ namespace FRFrame.Gameplay.Editor
 
         private static IEnumerable<string> ProductionSourceFiles()
         {
-            foreach (string root in new[] { "Assets/FRFrame/Gameplay", "Assets/Scripts/AzurLane" })
+            foreach (string root in new[] { "Assets/FRFrame/Gameplay", "Assets/Scripts" })
             {
                 if (!Directory.Exists(root)) continue;
                 foreach (string file in Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.Ordinal))

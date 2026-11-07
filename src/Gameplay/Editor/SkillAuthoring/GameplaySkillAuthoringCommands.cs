@@ -36,7 +36,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var preserve=preservedTemplateReferences??Array.Empty<string>();
             if(preserve.Any(p=>references==null||!references.Any(r=>r.IsSelf&&r.Path==p)))throw new ArgumentException("复制引用选择已失效；请重新打开复制向导。");
             if(references!=null&&references.Where(r=>r.CooldownGroup!=null).GroupBy(r=>r.CooldownGroup).Any(g=>g.Any(r=>preserve.Contains(r.Path))&&g.Any(r=>!preserve.Contains(r.Path))))throw new ArgumentException("本地冷却的授予、门禁和业务引用必须整组独立化或整组共享。");
-            var catalog=GameplayReferenceCatalogProvider.Find(out _);string catalogPath=catalog?AssetDatabase.GetAssetPath(catalog):null;
+            var catalogScope=GameplayReferenceCatalogProvider.Scope(path,scope);
+            var catalog=GameplayReferenceCatalogProvider.Find(catalogScope,out string catalogError);
+            if(!catalog)throw new InvalidOperationException(catalogError);
+            string catalogPath=AssetDatabase.GetAssetPath(catalog);
             if(catalog&&EditorUtility.IsDirty(catalog))throw new InvalidOperationException("Tag Catalog 有未保存修改；没有创建主技能。");
             string catalogJson=catalog?EditorJsonUtility.ToJson(catalog):null;
             byte[] catalogBytes=catalog&&System.IO.File.Exists(catalogPath)?System.IO.File.ReadAllBytes(catalogPath):null;
@@ -44,7 +47,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             Undo.IncrementCurrentGroup();int undoGroup=Undo.GetCurrentGroup();bool catalogTouched=false,created=false;
             try
             {
-            document.name = name; document.DisplayName = name; document.SkillId = id; document.CastEvent = new GameplayTagReference("Event.Created.S" + id);
+            document.name = name; document.DisplayName = name; document.SkillId = id;
+            document.CastEvent = new GameplayTagReference(GeneratedSkillTag(catalogScope,"Event.Created.","S"+id));
             using (var serialized = new SerializedObject(document)) { serialized.FindProperty("definitionId").stringValue = id + ".Skill"; serialized.ApplyModifiedPropertiesWithoutUndo(); }
             var graph = new GameplayAuthoringGraph { Scope = scope };
             var ability = new GameplayAuthoringNode { Title = "技能施放", Position = new Vector2(30,40), Payload = new GameplayAbilityNodePayload { Settings = new GameplayAbilityDefinitionData() } };
@@ -67,11 +71,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             if(template)graph=CopyGraph(template,document);
             document.SetAuthoringGraph(graph);
-                var generatedTags=template?GameplaySkillCopyReferences.Apply(template,document,references,preserve):new List<string>();
+                var generatedTags=template?GameplaySkillCopyReferences.Apply(document,references,preserve,catalogScope):new List<string>();
                 generatedTags.Add(document.CastEvent.Name);
+                var nextTags=GameplayReferenceCatalogProvider.WithRegistrations(catalog,generatedTags);
                 document.Build(new GameplayAuthoringBuildContext()); AssetDatabase.CreateAsset(document,path);created=true; AssetDatabase.SaveAssetIfDirty(document);
                 CreationFailureInjection?.Invoke("after-create");
-                if (catalog != null && generatedTags.Any(t=>!catalog.Tags.Contains(t))) { Undo.RecordObject(catalog,"登记复制身份与施放事件");catalogTouched=true; catalog.Tags = catalog.Tags.Concat(generatedTags).Distinct().ToArray(); EditorUtility.SetDirty(catalog);CreationFailureInjection?.Invoke("catalog-save"); AssetDatabase.SaveAssetIfDirty(catalog); }
+                if (!nextTags.SequenceEqual(catalog.Tags)) { Undo.RecordObject(catalog,"登记复制身份与施放事件");catalogTouched=true; catalog.Tags = nextTags; EditorUtility.SetDirty(catalog);CreationFailureInjection?.Invoke("catalog-save"); AssetDatabase.SaveAssetIfDirty(catalog); }
                 CreationFailureInjection?.Invoke("after-catalog-save");
                 Undo.RegisterCreatedObjectUndo(document,"新建正式技能");Undo.CollapseUndoOperations(undoGroup);
                 return document;
@@ -83,6 +88,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(document&&!AssetDatabase.Contains(document))UnityEngine.Object.DestroyImmediate(document);throw;
             }
         }
+
+        internal static string GeneratedSkillTag(string scope,string prefix,string suffix) =>
+            prefix+(scope==GameplayReferenceCatalogProvider.Framework?"":scope+".")+suffix;
 
         /// <summary>Reference viewing is a workbench mode, never a second skill runtime source.</summary>
         internal static GameplaySkillDocumentAsset ReadOnlyDocument;
@@ -123,10 +131,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             GameplayGraphCompiler.ValidateStructure(graph, validation, label, false);
             if (validation.HasErrors) throw new InvalidOperationException(string.Join("\n", validation.Issues));
             GameplayGraphCompiler.ValidateActionOrder(graph);
-            var catalog=generatedTags==null?null:GameplayReferenceCatalogProvider.Find(out _);
+            GameplayReferenceCatalogAsset catalog=null;string[] nextTags=null;
+            if(generatedTags!=null){
+                catalog=GameplayReferenceCatalogProvider.Find(GameplayReferenceCatalogProvider.Scope(document),out string error);
+                if(!catalog)throw new InvalidOperationException(error);
+                nextTags=GameplayReferenceCatalogProvider.WithRegistrations(catalog,generatedTags);
+            }
             if(catalog&&EditorUtility.IsDirty(catalog))throw new InvalidOperationException("Tag Catalog 有未保存修改；先保存后创建自动Tag。");
             Undo.RegisterCompleteObjectUndo(document, label);
-            if(catalog){Undo.RecordObject(catalog,label);catalog.Tags=catalog.Tags.Concat(generatedTags).Distinct().ToArray();EditorUtility.SetDirty(catalog);AssetDatabase.SaveAssetIfDirty(catalog);}
+            if(catalog&&!nextTags.SequenceEqual(catalog.Tags)){Undo.RecordObject(catalog,label);catalog.Tags=nextTags;EditorUtility.SetDirty(catalog);AssetDatabase.SaveAssetIfDirty(catalog);}
             document.SetAuthoringGraph(graph); EditorUtility.SetDirty(document);
             Publish(document,invalidation??GameplaySkillAuthoringChange.Full(structural));
         }

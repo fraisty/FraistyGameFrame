@@ -5,10 +5,16 @@ using UnityEngine;
 
 namespace FRFrame.Gameplay.Authoring
 {
-    /// <summary>Project authoring registry of canonical strings; Runtime identity remains GameplayTag/GameplayAttributeId.</summary>
+    /// <summary>Authoring registry for one scope. Catalog ownership has no effect on Runtime identity.</summary>
     [CreateAssetMenu(menuName = "FRFrame Gameplay/Reference Catalog")]
     public sealed class GameplayReferenceCatalogAsset : ScriptableObject
     {
+        [Tooltip("Tag owner. Use FRFrame for framework contracts or Shared for shared game content.")]
+        public string Scope;
+        [Tooltip("Other authoring scopes hosted by this same game.")]
+        public string[] ScopeAliases = Array.Empty<string>();
+        [Tooltip("Optional project folder that owns standalone authoring assets, e.g. Assets/GameRes/MyGame.")]
+        public string AssetRoot;
         public string[] Tags = Array.Empty<string>();
         public string[] Attributes = Array.Empty<string>();
 

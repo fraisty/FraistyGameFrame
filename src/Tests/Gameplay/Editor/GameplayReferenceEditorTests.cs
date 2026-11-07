@@ -52,6 +52,11 @@ namespace FRFrame.Tests.Gameplay.Editor
             Assert.That(ProductionCatalog.Attributes, Does.Contain("AzurLane.MaxHealth"));
             Assert.That(GameplayReferenceCatalogProvider.Find(out string error), Is.SameAs(ProductionCatalog));
             Assert.That(error, Is.Null);
+            var xh = GameplayReferenceCatalogProvider.Find("XH", out _);
+            Assert.That(xh.Tags, Does.Contain("CD.横扫").And.Contain("Event.Created.S2013"));
+            Assert.That(ProductionCatalog.Tags, Does.Not.Contain("CD.横扫"));
+            Assert.That(GameplayReferenceCatalogProvider.Find("LogicGrid", out _),
+                Is.SameAs(GameplayReferenceCatalogProvider.Find("SkillLab", out _)));
             var report = GameplayReferenceDiagnostics.Scan();
             Assert.That(report.AssetCount, Is.GreaterThanOrEqualTo(3));
             Assert.That(report.SourceLiteralCount, Is.GreaterThanOrEqualTo(22));
@@ -151,15 +156,17 @@ namespace FRFrame.Tests.Gameplay.Editor
         [Test]
         public void RealCodeLiteralBlocksRenameAndReferencedDelete()
         {
-            var rename = GameplayTagRefactorService.PreviewRename(ProductionCatalog,
+            var rename = GameplayTagRefactorService.PreviewProjectRename(
                 "Event.Combat.Battle.Start", "Event.Combat.Battle.Begin");
             Assert.That(rename.CanApply, Is.False);
             Assert.That(rename.AffectedCode.Any(x => x.SourcePath.EndsWith("CombatEvents.cs") &&
                                                       x.Value == "Event.Combat.Battle.Start"), Is.True);
             Assert.Throws<InvalidOperationException>(() => GameplayTagRefactorService.Apply(rename));
-            var delete = GameplayTagRefactorService.PreviewDelete(ProductionCatalog, "Event.Combat.Battle.Start");
+            var delete = GameplayTagRefactorService.PreviewProjectDelete("Event.Combat.Battle.Start");
             Assert.That(delete.CanApply, Is.False);
             Assert.That(delete.AffectedReferences.Count, Is.GreaterThan(0));
+            var collision = GameplayTagRefactorService.PreviewProjectRename("Event.Created.S2013","Event.Lab.Hit");
+            Assert.That(collision.Errors, Does.Contain("Target collision: Event.Lab.Hit"));
         }
 
         private static void SetId(GameplayDefinitionAsset asset, string id)

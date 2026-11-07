@@ -537,6 +537,7 @@ Gameplay/
       GameplaySkillAuthoringCommands.cs
       GameplaySkillBusinessLabels.cs
       GameplaySkillCardFields.cs
+      GameplaySkillContextVariables.cs
       GameplaySkillCopyReferences.cs
       GameplaySkillCreationMenu.cs
       GameplaySkillDefinitionSemantics.cs
@@ -63050,10 +63051,16 @@ using UnityEngine;
 
 namespace FRFrame.Gameplay.Authoring
 {
-    /// <summary>Project authoring registry of canonical strings; Runtime identity remains GameplayTag/GameplayAttributeId.</summary>
+    /// <summary>Authoring registry for one scope. Catalog ownership has no effect on Runtime identity.</summary>
     [CreateAssetMenu(menuName = "FRFrame Gameplay/Reference Catalog")]
     public sealed class GameplayReferenceCatalogAsset : ScriptableObject
     {
+        [Tooltip("Tag owner. Use FRFrame for framework contracts or Shared for shared game content.")]
+        public string Scope;
+        [Tooltip("Other authoring scopes hosted by this same game.")]
+        public string[] ScopeAliases = Array.Empty<string>();
+        [Tooltip("Optional project folder that owns standalone authoring assets, e.g. Assets/GameRes/MyGame.")]
+        public string AssetRoot;
         public string[] Tags = Array.Empty<string>();
         public string[] Attributes = Array.Empty<string>();
 
@@ -65470,50 +65477,101 @@ namespace FRFrame.Gameplay.Editor
 ## File: Gameplay/Editor/Reference/GameplayReferenceCatalogProvider.cs
 ````csharp
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using FRFrame.Gameplay.Authoring;
 using UnityEditor;
+using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace FRFrame.Gameplay.Editor
 {
-    /// <summary>Discovers exactly one project authoring catalog; never supplies Runtime identities.</summary>
+    /// <summary>Editor ownership and visibility for canonical Tag registrations.</summary>
     [InitializeOnLoad]
     public static class GameplayReferenceCatalogProvider
     {
-        private static bool _cached;
-        private static GameplayReferenceCatalogAsset _catalog;
-        private static string _error;
+        public const string Framework = "FRFrame";
+        public const string Shared = "Shared";
+        private static GameplayReferenceCatalogAsset[] _catalogs;
 
-        static GameplayReferenceCatalogProvider()
+        static GameplayReferenceCatalogProvider() => EditorApplication.projectChanged += () => _catalogs = null;
+
+        public static IReadOnlyList<GameplayReferenceCatalogAsset> Catalogs =>
+            _catalogs ??= AssetDatabase.FindAssets("t:GameplayReferenceCatalogAsset", new[] { "Assets" })
+                .Select(guid => AssetDatabase.LoadAssetAtPath<GameplayReferenceCatalogAsset>(AssetDatabase.GUIDToAssetPath(guid)))
+                .Where(asset => asset != null)
+                .OrderBy(OwnerScope, StringComparer.Ordinal).ToArray();
+
+        public static string OwnerScope(GameplayReferenceCatalogAsset catalog) =>
+            string.IsNullOrEmpty(catalog.Scope) ? Framework : catalog.Scope;
+
+        /// <summary>Retains the framework registry entry point for project-wide Attributes.</summary>
+        public static GameplayReferenceCatalogAsset Find(out string error) => Find(Framework, out error);
+
+        public static GameplayReferenceCatalogAsset Find(string scope, out string error)
         {
-            // Membership changes invalidate discovery. Editing catalog contents does not:
-            // drawers read the live asset, so typing must never trigger another project scan.
-            EditorApplication.projectChanged += Invalidate;
+            var matches = Catalogs.Where(catalog => OwnerScope(catalog) == scope || catalog.ScopeAliases.Contains(scope)).ToArray();
+            // A single pre-split registry has no serialized scope and still serves its project.
+            if (matches.Length == 0 && Catalogs.Count == 1 && string.IsNullOrEmpty(Catalogs[0].Scope))
+            { error = null; return Catalogs[0]; }
+            error = matches.Length == 1 ? null : matches.Length == 0
+                ? $"Scope「{scope}」没有 Reference Catalog。"
+                : $"Scope「{scope}」有多个 Reference Catalog。";
+            return matches.Length == 1 ? matches[0] : null;
         }
 
-        private static void Invalidate() => _cached = false;
-
-        public static GameplayReferenceCatalogAsset Find(out string error)
+        public static string Scope(Object asset)
         {
-            if (_cached && (_error != null || _catalog != null))
+            if (asset == null) return null;
+            var path = AssetDatabase.GetAssetPath(asset);
+            var document = asset as GameplaySkillDocumentAsset ?? AssetDatabase.LoadMainAssetAtPath(path) as GameplaySkillDocumentAsset;
+            return Scope(path, document != null && document.AuthoringSchemaVersion == 2 ? document.AuthoringGraph?.Scope : null);
+        }
+
+        internal static string Scope(string assetPath, string declaredScope)
+        {
+            if (!string.IsNullOrEmpty(declaredScope) && declaredScope != Framework)
+                return Find(declaredScope, out _) is GameplayReferenceCatalogAsset declared ? OwnerScope(declared) : declaredScope;
+            // Legacy framework sample documents use FRFrame for node availability and live in the Lab.
+            var folderOwner = Catalogs.Where(catalog => !string.IsNullOrWhiteSpace(catalog.AssetRoot) &&
+                    assetPath.StartsWith(catalog.AssetRoot.TrimEnd('/') + "/", StringComparison.Ordinal))
+                .OrderByDescending(catalog => catalog.AssetRoot.Length).FirstOrDefault();
+            return folderOwner != null ? OwnerScope(folderOwner) : declaredScope;
+        }
+
+        internal static bool CanRead(string sourceScope, string ownerScope) =>
+            ownerScope == Framework || ownerScope == sourceScope || (ownerScope == Shared && sourceScope != Framework);
+
+        internal static IEnumerable<GameplayReferenceCatalogAsset> Visible(string scope) =>
+            Catalogs.Where(catalog => CanRead(scope, OwnerScope(catalog)));
+
+        /// <summary>Preflights one write against every owner before changing any catalog or document.</summary>
+        internal static string[] WithRegistrations(GameplayReferenceCatalogAsset catalog, IEnumerable<string> tags)
+        {
+            var additions = tags.Distinct(StringComparer.Ordinal).ToArray();
+            foreach (string tag in additions)
             {
-                error = _error;
-                return _catalog;
+                if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, tag))
+                    throw new InvalidOperationException("无效的 Gameplay Tag · " + tag);
+                var other = Catalogs.FirstOrDefault(candidate => candidate != catalog && candidate.Tags.Contains(tag, StringComparer.Ordinal));
+                if (other != null)
+                    throw new InvalidOperationException($"{tag} 已由「{OwnerScope(other)}」登记。");
             }
-            GameplayReferenceCatalogAsset found = null;
-            int count = 0;
-            foreach (string guid in AssetDatabase.FindAssets("t:GameplayReferenceCatalogAsset"))
-            {
-                var asset = AssetDatabase.LoadAssetAtPath<GameplayReferenceCatalogAsset>(AssetDatabase.GUIDToAssetPath(guid));
-                if (asset == null || asset.GetType() != typeof(GameplayReferenceCatalogAsset)) continue;
-                count++;
-                found = asset;
-            }
-            _error = count == 0 ? "No GameplayReferenceCatalogAsset found. Raw reference editing remains available." :
-                count > 1 ? $"Found {count} GameplayReferenceCatalogAsset assets; choose one by removing duplicates." : null;
-            _catalog = count == 1 ? found : null;
-            _cached = true;
-            error = _error;
-            return _catalog;
+            return catalog.Tags.Concat(additions).Distinct(StringComparer.Ordinal).ToArray();
+        }
+
+        /// <summary>Registers game-owned Tags from standalone content builders.</summary>
+        public static void RegisterTags(string scope, IEnumerable<string> tags)
+        {
+            var catalog = Find(scope, out string error);
+            if (catalog == null) throw new InvalidOperationException(error);
+            var visible = new HashSet<string>(Visible(OwnerScope(catalog)).SelectMany(owner => owner.Tags), StringComparer.Ordinal);
+            var next = WithRegistrations(catalog, tags.Where(tag => !visible.Contains(tag)));
+            if (next.SequenceEqual(catalog.Tags, StringComparer.Ordinal)) return;
+            Undo.RecordObject(catalog, "登记 Gameplay Tag");
+            catalog.Tags = next;
+            EditorUtility.SetDirty(catalog);
+            AssetDatabase.SaveAssetIfDirty(catalog);
         }
     }
 }
@@ -65550,6 +65608,7 @@ namespace FRFrame.Gameplay.Editor
         public int SourceLiteralCount;
         public int AuthoringValidationErrors;
         public int MissingTagReferences;
+        public int OutOfScopeTagReferences;
         public int MissingAttributeReferences;
         public int MissingCodeLiterals;
     }
@@ -65562,11 +65621,10 @@ namespace FRFrame.Gameplay.Editor
             IReadOnlyList<GameplayCodeLiteralReference> selectedLiterals = null)
         {
             var report = new GameplayReferenceDiagnosticReport();
-            if (catalog == null)
-            {
-                catalog = GameplayReferenceCatalogProvider.Find(out string discoveryError);
-                if (catalog == null) report.Errors.Add(new GameplayReferenceDiagnostic("Catalog", discoveryError));
-            }
+            bool project = catalog == null;
+            var catalogs = project ? GameplayReferenceCatalogProvider.Catalogs : new[] { catalog };
+            if (project) catalog = GameplayReferenceCatalogProvider.Find(out _);
+            if (catalog == null) report.Errors.Add(new GameplayReferenceDiagnostic("Catalog", "需要唯一的 FRFrame Catalog。"));
             var assets = (selectedAssets ?? GameplayReferenceScanner.FindDefinitionAssets()).ToArray();
             var references = GameplayReferenceScanner.ScanAssets(assets);
             var literals = selectedLiterals ?? GameplayReferenceScanner.ScanProductionCode();
@@ -65575,11 +65633,24 @@ namespace FRFrame.Gameplay.Editor
             report.SourceLiteralCount = literals.Count;
             report.SourceFileCount = GameplayReferenceScanner.CountProductionSourceFiles();
 
-            if (catalog != null)
-                foreach (var issue in catalog.Validate())
-                    report.Errors.Add(new GameplayReferenceDiagnostic(AssetDatabase.GetAssetPath(catalog) + "." + issue.Path, issue.Message));
-            var tags = new HashSet<string>(catalog?.Tags ?? Array.Empty<string>(), StringComparer.Ordinal);
+            var owners = new Dictionary<string, string>(StringComparer.Ordinal);
+            var scopes = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var entry in catalogs)
+            {
+                string owner = GameplayReferenceCatalogProvider.OwnerScope(entry);
+                string path = AssetDatabase.GetAssetPath(entry);
+                foreach (string scope in entry.ScopeAliases.Prepend(owner))
+                    if (!IsValid(GameplayReferenceKind.Tag, scope) || scope.Contains(".") || !scopes.Add(scope))
+                        report.Errors.Add(new GameplayReferenceDiagnostic(path + ".Scope", "无效或重复的 Scope · " + scope));
+                foreach (var issue in entry.Validate())
+                    report.Errors.Add(new GameplayReferenceDiagnostic(path + "." + issue.Path, issue.Message));
+                foreach (string tag in entry.Tags ?? Array.Empty<string>())
+                    if (tag != null && !owners.TryAdd(tag, owner) && owners[tag] != owner)
+                        report.Errors.Add(new GameplayReferenceDiagnostic(path + ".Tags", $"重复登记 {tag} · {owners[tag]} / {owner}"));
+            }
             var attributes = new HashSet<string>(catalog?.Attributes ?? Array.Empty<string>(), StringComparer.Ordinal);
+            var sourceScopes = project ? references.Select(reference=>reference.Source).Concat(assets).Distinct()
+                .ToDictionary(source=>source,source=>GameplayReferenceCatalogProvider.Scope(source)) : null;
             foreach (GameplayDefinitionAsset asset in assets)
             {
                 var validation = new GameplayAuthoringValidationContext();
@@ -65599,20 +65670,35 @@ namespace FRFrame.Gameplay.Editor
             foreach (var reference in references)
             {
                 if (!IsValid(reference.Kind, reference.Value)) continue; // 12A already reports invalid authoring values.
-                if (reference.Kind == GameplayReferenceKind.Tag && !tags.Contains(reference.Value))
-                { report.Errors.Add(new GameplayReferenceDiagnostic(reference.AssetPath + "." + reference.PropertyPath, "Unregistered Tag: " + reference.Value)); report.MissingTagReferences++; }
+                if (reference.Kind == GameplayReferenceKind.Tag)
+                {
+                    string location = reference.AssetPath + "." + reference.PropertyPath;
+                    if (!owners.TryGetValue(reference.Value, out string owner))
+                    { report.Errors.Add(new GameplayReferenceDiagnostic(location, "Unregistered Tag: " + reference.Value)); report.MissingTagReferences++; }
+                    else if (project && sourceScopes[reference.Source] is string scope && !GameplayReferenceCatalogProvider.CanRead(scope,owner))
+                    { report.Errors.Add(new GameplayReferenceDiagnostic(location,$"{scope} 无法引用 {owner} 的私有 Tag · {reference.Value}")); report.OutOfScopeTagReferences++; }
+                }
                 if (reference.Kind == GameplayReferenceKind.Attribute && !attributes.Contains(reference.Value))
                 { report.Errors.Add(new GameplayReferenceDiagnostic(reference.AssetPath + "." + reference.PropertyPath, "Unregistered Attribute: " + reference.Value)); report.MissingAttributeReferences++; }
             }
             foreach (var literal in literals)
             {
                 bool valid = IsValid(literal.Kind, literal.Value);
-                bool present = literal.Kind == GameplayReferenceKind.Tag ? tags.Contains(literal.Value) : attributes.Contains(literal.Value);
+                bool present = literal.Kind == GameplayReferenceKind.Tag ? owners.ContainsKey(literal.Value) : attributes.Contains(literal.Value);
                 if (valid && present) continue;
                 report.Errors.Add(new GameplayReferenceDiagnostic(literal.SourcePath + ":" + literal.Line,
                     (valid ? "Unregistered" : "Invalid") + " production " + literal.Kind + " literal: " + literal.Value));
                 report.MissingCodeLiterals++;
             }
+            if (project)
+                foreach (string sourcePath in sourceScopes.Where(pair=>pair.Value==GameplayReferenceCatalogProvider.Shared)
+                    .Select(pair=>AssetDatabase.GetAssetPath(pair.Key)).Where(path=>path.Length>0).Distinct(StringComparer.Ordinal))
+                    foreach (string dependency in AssetDatabase.GetDependencies(sourcePath,false))
+                    {
+                        string scope=GameplayReferenceCatalogProvider.Scope(AssetDatabase.LoadMainAssetAtPath(dependency));
+                        if(scope!=null&&!GameplayReferenceCatalogProvider.CanRead(GameplayReferenceCatalogProvider.Shared,scope))
+                            report.Errors.Add(new GameplayReferenceDiagnostic(sourcePath,$"Shared 内容引用了 {scope} 的私有资产 · {dependency}"));
+                    }
             return report;
         }
 
@@ -65648,7 +65734,7 @@ namespace FRFrame.Gameplay.Editor
         private enum Tab { Tags, Attributes, Diagnostics }
         private Tab _tab;
         private GameplayReferenceCatalogAsset _catalog;
-        private string _discoveryError;
+        [SerializeField] private string _scope;
         private string _search = string.Empty;
         private string _selectedTag;
         private string _newTag = string.Empty;
@@ -65660,29 +65746,51 @@ namespace FRFrame.Gameplay.Editor
         private IReadOnlyList<GameplayCodeLiteralReference> _literals = Array.Empty<GameplayCodeLiteralReference>();
         private readonly Dictionary<string, bool> _expanded = new Dictionary<string, bool>(StringComparer.Ordinal);
         private Vector2 _scroll;
+        private Vector2 _tagDetailScroll;
 
         [MenuItem("FRFrame/Gameplay/References")]
-        public static void Open() => GetWindow<GameplayReferenceEditorWindow>("Gameplay References");
+        public static void Open()
+        {
+            var source = (focusedWindow as SkillAuthoring.GameplaySkillWorkbench)?.Document ?? Selection.activeObject;
+            OpenForScope(GameplayReferenceCatalogProvider.Scope(source));
+        }
+
+        internal static void OpenForScope(string scope)
+        {
+            var window = GetWindow<GameplayReferenceEditorWindow>("Gameplay References");
+            window.minSize = new Vector2(580,320);
+            if(scope!=null)window.SelectScope(scope);
+            window.Focus();
+        }
 
         private void OnEnable()
         {
             EditorApplication.projectChanged += OnProjectChanged;
-            Refresh();
+            Undo.undoRedoPerformed += OnProjectChanged;
         }
-        private void OnDisable() => EditorApplication.projectChanged -= OnProjectChanged;
+        private void OnDisable()
+        {
+            EditorApplication.projectChanged -= OnProjectChanged;
+            Undo.undoRedoPerformed -= OnProjectChanged;
+        }
         private void OnProjectChanged()
         {
-            _catalog = null; _report = null;
-            EditorApplication.delayCall += () => { if (this != null) Refresh(); };
+            _report = null; _preview = null;
+            Repaint();
+        }
+
+        private void SelectScope(string scope)
+        {
+            _scope = scope; _selectedTag = null; _preview = null;
+            _expanded.Clear(); _scroll = _tagDetailScroll = Vector2.zero;
         }
 
         private void Refresh()
         {
-            _catalog = GameplayReferenceCatalogProvider.Find(out _discoveryError);
             var assets = GameplayReferenceScanner.FindDefinitionAssets();
             _references = GameplayReferenceScanner.ScanAssets(assets);
             _literals = GameplayReferenceScanner.ScanProductionCode();
-            _report = GameplayReferenceDiagnostics.Scan(_catalog, assets, _literals);
+            _report = GameplayReferenceDiagnostics.Scan(null, assets, _literals);
             _preview = null;
             Repaint();
         }
@@ -65693,57 +65801,99 @@ namespace FRFrame.Gameplay.Editor
             _tab = (Tab)GUILayout.Toolbar((int)_tab, new[] { "Tags", "Attributes", "Diagnostics" }, EditorStyles.toolbarButton);
             if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(65))) Refresh();
             EditorGUILayout.EndHorizontal();
-            if (_catalog == null) _catalog = GameplayReferenceCatalogProvider.Find(out _discoveryError);
+            _catalog = GameplayReferenceCatalogProvider.Find(out string error);
             if (_catalog == null)
             {
-                EditorGUILayout.HelpBox(_discoveryError ?? "Catalog unavailable.", MessageType.Error);
+                EditorGUILayout.HelpBox(error, MessageType.Error);
                 return;
             }
-            EditorGUILayout.ObjectField("Catalog", _catalog, typeof(GameplayReferenceCatalogAsset), false);
-            _search = EditorGUILayout.TextField("Search", _search);
-            _scroll = EditorGUILayout.BeginScrollView(_scroll);
-            switch (_tab)
+            if(_tab==Tab.Tags)
             {
-                case Tab.Tags: DrawTags(); break;
-                case Tab.Attributes: DrawAttributes(); break;
-                default: DrawDiagnostics(); break;
+                var scopes = GameplayReferenceCatalogProvider.Catalogs.Select(GameplayReferenceCatalogProvider.OwnerScope)
+                    .Distinct(StringComparer.Ordinal).Prepend("").ToArray();
+                int selected = Math.Max(0,Array.IndexOf(scopes,_scope??""));
+                int next = EditorGUILayout.Popup("Tag Scope",selected,scopes.Select(scope=>scope==""?"全工程":scope).ToArray());
+                if(next!=selected)SelectScope(scopes[next]);
             }
+            _search = EditorGUILayout.TextField("Search", _search);
+            if(_tab==Tab.Tags){DrawTags();return;}
+            _scroll = EditorGUILayout.BeginScrollView(_scroll);
+            if(_tab==Tab.Attributes)DrawAttributes();else DrawDiagnostics();
             EditorGUILayout.EndScrollView();
         }
 
         private void DrawTags()
         {
-            EditorGUILayout.HelpBox("Full Tag paths are canonical identities. Indented groups are derived, not stored.", MessageType.Info);
-            var tags = _catalog.Tags ?? Array.Empty<string>();
-            if (string.IsNullOrEmpty(_search))
-                foreach (var child in GameplayReferenceTree.Project(tags).Children.Values) DrawTreeNode(child, 0);
-            else foreach (string tag in tags.Where(x => x != null && x.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0)
-                         .OrderBy(x => x, StringComparer.Ordinal)) DrawTagRow(tag, tag, 0);
-            EditorGUILayout.Space(8);
+            var catalogs = GameplayReferenceCatalogProvider.Catalogs;
+            var visible = string.IsNullOrEmpty(_scope) ? catalogs : GameplayReferenceCatalogProvider.Visible(_scope);
+            var owners = visible.SelectMany(catalog=>catalog.Tags.Select(tag=>(tag,catalog)))
+                .Where(entry=>!string.IsNullOrEmpty(entry.tag))
+                .ToLookup(entry=>entry.tag,entry=>entry.catalog,StringComparer.Ordinal);
+            var tags = owners.Select(group=>group.Key).ToArray();
+            EditorGUILayout.HelpBox(string.IsNullOrEmpty(_scope)?"全工程浏览。选择具体 Scope 后可登记。":
+                $"显示 {_scope} 和可引用的共享 Tag。新 Tag 登记到 {_scope}。", MessageType.Info);
+            float detailWidth=Mathf.Clamp(position.width*.38f,290,440);
+            using(new EditorGUILayout.HorizontalScope())
+            {
+                using(var list=new EditorGUILayout.ScrollViewScope(_scroll,GUILayout.Width(position.width-detailWidth-8)))
+                {
+                    _scroll=list.scrollPosition;
+                    if (string.IsNullOrEmpty(_search))
+                        foreach (var child in GameplayReferenceTree.Project(tags).Children.Values) DrawTreeNode(child, 0,owners);
+                    else foreach (string tag in tags.Where(x => x.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0)
+                                 .OrderBy(x => x, StringComparer.Ordinal)) DrawTagRow(tag,owners[tag]);
+                }
+                using(var details=new EditorGUILayout.ScrollViewScope(_tagDetailScroll,GUILayout.Width(detailWidth)))
+                {
+                    _tagDetailScroll=details.scrollPosition;
+                    DrawTagDetails(owners);
+                }
+            }
+        }
+
+        private void DrawTagDetails(ILookup<string,GameplayReferenceCatalogAsset> owners)
+        {
             _newTag = EditorGUILayout.TextField("New Tag / Child", _newTag);
+            var target = string.IsNullOrEmpty(_scope)?null:GameplayReferenceCatalogProvider.Find(_scope,out _);
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Add Tag")) AddTag(_newTag);
-            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_selectedTag)))
-                if (GUILayout.Button("Add Child")) AddTag(_selectedTag + "." + _newTag);
+            using (new EditorGUI.DisabledScope(target==null))
+            {
+                if (GUILayout.Button("Add Tag")) AddTag(target,_newTag);
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_selectedTag)))
+                    if (GUILayout.Button("Add Child")) AddTag(target,_selectedTag + "." + _newTag);
+            }
             EditorGUILayout.EndHorizontal();
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("Selected", _selectedTag ?? "(none)");
             if (string.IsNullOrEmpty(_selectedTag)) return;
-            EditorGUILayout.LabelField("Serialized references (subtree)",
-                _references.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
-            EditorGUILayout.LabelField("Code literals (subtree)",
-                _literals.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
+            var selectedOwners=owners[_selectedTag].ToArray();
+            if(selectedOwners.Length==1)
+            {
+                var owner=selectedOwners[0];
+                using(new EditorGUI.DisabledScope(true))EditorGUILayout.ObjectField("所属 Catalog",owner,typeof(GameplayReferenceCatalogAsset),false);
+                string ownerScope=GameplayReferenceCatalogProvider.OwnerScope(owner);
+                if(ownerScope!=GameplayReferenceCatalogProvider.Shared&&ownerScope!=GameplayReferenceCatalogProvider.Framework&&
+                    GUILayout.Button(new GUIContent("提升此 Tag 到 Shared","移动登记归属，各游戏可引用同一个原字符串。")))
+                    Promote(owner,_selectedTag);
+            }
+            if(_report!=null)
+            {
+                EditorGUILayout.LabelField("Serialized references (subtree)",
+                    _references.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
+                EditorGUILayout.LabelField("Code literals (subtree)",
+                    _literals.Count(x => x.Kind == GameplayReferenceKind.Tag && GameplayTagRefactorService.Matches(x.Value, _selectedTag)).ToString());
+            }
             _renameTarget = EditorGUILayout.TextField("Rename to", _renameTarget);
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Preview Rename"))
-                _preview = GameplayTagRefactorService.PreviewRename(_catalog, _selectedTag, _renameTarget);
-            if (GUILayout.Button("Preview Delete"))
-                _preview = GameplayTagRefactorService.PreviewDelete(_catalog, _selectedTag);
+            if (GUILayout.Button("预览全工程重命名"))
+                _preview = GameplayTagRefactorService.PreviewProjectRename(_selectedTag, _renameTarget);
+            if (GUILayout.Button("预览全工程删除"))
+                _preview = GameplayTagRefactorService.PreviewProjectDelete(_selectedTag);
             EditorGUILayout.EndHorizontal();
             DrawPreview();
         }
 
-        private void DrawTreeNode(GameplayReferenceTreeNode node, int depth)
+        private void DrawTreeNode(GameplayReferenceTreeNode node, int depth,ILookup<string,GameplayReferenceCatalogAsset> owners)
         {
             EditorGUILayout.BeginHorizontal(); GUILayout.Space(depth * 14f);
             if (node.Children.Count > 0)
@@ -65755,24 +65905,29 @@ namespace FRFrame.Gameplay.Editor
             if (GUILayout.Button(new GUIContent(node.Segment + (node.IsDefined ? "" : " (group)"), node.FullPath),
                     _selectedTag == node.FullPath ? EditorStyles.toolbarButton : EditorStyles.linkLabel))
             { _selectedTag = node.FullPath; _renameTarget = node.FullPath; _preview = null; }
-            if (node.IsDefined) GUILayout.Label("defined", EditorStyles.miniLabel, GUILayout.Width(45f));
+            if (node.IsDefined) DrawOwners(owners[node.FullPath]);
             EditorGUILayout.EndHorizontal();
             if (node.Children.Count > 0 && _expanded[node.FullPath])
-                foreach (var child in node.Children.Values) DrawTreeNode(child, depth + 1);
+                foreach (var child in node.Children.Values) DrawTreeNode(child, depth + 1,owners);
         }
-        private void DrawTagRow(string label, string path, int depth)
+        private void DrawTagRow(string path,IEnumerable<GameplayReferenceCatalogAsset> owners)
         {
-            EditorGUILayout.BeginHorizontal(); GUILayout.Space(depth * 14f);
-            if (GUILayout.Button(new GUIContent(label, path), EditorStyles.linkLabel))
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(new GUIContent(path, path), EditorStyles.linkLabel))
             { _selectedTag = path; _renameTarget = path; _preview = null; }
+            DrawOwners(owners);
             EditorGUILayout.EndHorizontal();
         }
+        private static void DrawOwners(IEnumerable<GameplayReferenceCatalogAsset> owners) =>
+            GUILayout.Label(string.Join(" / ",owners.Select(GameplayReferenceCatalogProvider.OwnerScope)),EditorStyles.miniLabel);
         private void DrawPreview()
         {
             if (_preview == null) return;
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField(_preview.IsDelete ? "Delete preview" : "Rename preview", EditorStyles.boldLabel);
             EditorGUILayout.LabelField("Catalog entries", _preview.AffectedCatalogTags.Count.ToString());
+            foreach(var pair in _preview.CatalogChanges)
+                EditorGUILayout.LabelField(GameplayReferenceCatalogProvider.OwnerScope(pair.Key),pair.Value.Length.ToString());
             EditorGUILayout.LabelField("Serialized references", _preview.AffectedReferences.Count.ToString());
             EditorGUILayout.LabelField("C# literals", _preview.AffectedCode.Count.ToString());
             foreach (string error in _preview.Errors) EditorGUILayout.HelpBox(error, MessageType.Error);
@@ -65800,8 +65955,10 @@ namespace FRFrame.Gameplay.Editor
             {
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.LabelField(value, GUILayout.MinWidth(150));
-                GUILayout.Label("assets " + CountSerialized(GameplayReferenceKind.Attribute, value), GUILayout.Width(75));
-                GUILayout.Label("code " + CountCode(GameplayReferenceKind.Attribute, value), GUILayout.Width(70));
+                if(_report!=null){
+                    GUILayout.Label("assets " + CountSerialized(GameplayReferenceKind.Attribute, value), GUILayout.Width(75));
+                    GUILayout.Label("code " + CountCode(GameplayReferenceKind.Attribute, value), GUILayout.Width(70));
+                }
                 if (GUILayout.Button("Remove", GUILayout.Width(65))) RemoveAttribute(value);
                 EditorGUILayout.EndHorizontal();
             }
@@ -65815,7 +65972,7 @@ namespace FRFrame.Gameplay.Editor
             EditorGUILayout.LabelField($"Assets {_report.AssetCount}, serialized references {_report.SerializedReferenceCount}, " +
                 $"source files {_report.SourceFileCount}, code literals {_report.SourceLiteralCount}", EditorStyles.boldLabel);
             EditorGUILayout.LabelField($"Errors {_report.Errors.Count}: 12A {_report.AuthoringValidationErrors}, " +
-                $"missing Tag {_report.MissingTagReferences}, missing Attribute {_report.MissingAttributeReferences}, " +
+                $"missing Tag {_report.MissingTagReferences}, out of scope {_report.OutOfScopeTagReferences}, missing Attribute {_report.MissingAttributeReferences}, " +
                 $"code literal {_report.MissingCodeLiterals}");
             if (_report.Errors.Count == 0) EditorGUILayout.HelpBox("All project references are valid.", MessageType.Info);
             foreach (GameplayReferenceDiagnostic warning in _report.Warnings)
@@ -65837,14 +65994,29 @@ namespace FRFrame.Gameplay.Editor
         private int CountCode(GameplayReferenceKind kind, string value) =>
             _literals.Count(x => x.Kind == kind && StringComparer.Ordinal.Equals(x.Value, value));
 
-        private void AddTag(string value)
+        private void AddTag(GameplayReferenceCatalogAsset catalog,string value)
         {
-            if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, value))
-            { EditorUtility.DisplayDialog("Invalid Tag", "Enter a valid dot-separated Tag path.", "OK"); return; }
-            if ((_catalog.Tags ?? Array.Empty<string>()).Contains(value, StringComparer.Ordinal)) return;
-            Undo.RecordObject(_catalog, "Add Gameplay Tag");
-            _catalog.Tags = (_catalog.Tags ?? Array.Empty<string>()).Concat(new[] { value }).ToArray();
-            EditorUtility.SetDirty(_catalog); AssetDatabase.SaveAssets(); Refresh();
+            try
+            {
+                var next = GameplayReferenceCatalogProvider.WithRegistrations(catalog,new[]{value});
+                if(next.SequenceEqual(catalog.Tags,StringComparer.Ordinal))return;
+                Undo.RecordObject(catalog,"登记 Gameplay Tag");
+                catalog.Tags=next;
+                EditorUtility.SetDirty(catalog);AssetDatabase.SaveAssetIfDirty(catalog);
+                _selectedTag=value;_renameTarget=value;OnProjectChanged();
+            }
+            catch(InvalidOperationException error){EditorUtility.DisplayDialog("登记 Gameplay Tag",error.Message,"关闭");}
+        }
+        private void Promote(GameplayReferenceCatalogAsset owner,string tag)
+        {
+            var shared=GameplayReferenceCatalogProvider.Find(GameplayReferenceCatalogProvider.Shared,out string error);
+            if(shared==null||GameplayReferenceCatalogProvider.Catalogs.Count(catalog=>catalog.Tags.Contains(tag,StringComparer.Ordinal))!=1)
+            {EditorUtility.DisplayDialog("提升到 Shared",error??"Tag 归属存在冲突。","关闭");return;}
+            Undo.RecordObjects(new UnityEngine.Object[]{owner,shared},"提升 Gameplay Tag 到 Shared");
+            owner.Tags=owner.Tags.Where(value=>value!=tag).ToArray();
+            shared.Tags=shared.Tags.Append(tag).ToArray();
+            EditorUtility.SetDirty(owner);EditorUtility.SetDirty(shared);
+            AssetDatabase.SaveAssetIfDirty(owner);AssetDatabase.SaveAssetIfDirty(shared);OnProjectChanged();
         }
         private void AddAttribute(string value)
         {
@@ -65884,6 +66056,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
 
@@ -65892,23 +66065,24 @@ namespace FRFrame.Gameplay.Editor
     internal sealed class GameplayReferencePickerPopup : PopupWindowContent
     {
         private readonly GameplayReferenceCatalogAsset _catalog;
+        private readonly string _scope;
         private readonly GameplayReferenceKind _kind;
         private readonly Action<string> _choose;
         private readonly Dictionary<string, bool> _expanded = new Dictionary<string, bool>(StringComparer.Ordinal);
         private string _search = string.Empty;
         private Vector2 _scroll;
 
-        internal GameplayReferencePickerPopup(GameplayReferenceCatalogAsset catalog, GameplayReferenceKind kind, Action<string> choose)
-        { _catalog = catalog; _kind = kind; _choose = choose; }
+        internal GameplayReferencePickerPopup(GameplayReferenceCatalogAsset catalog, GameplayReferenceKind kind, string scope, Action<string> choose)
+        { _catalog = catalog; _kind = kind; _scope = scope; _choose = choose; }
         public override Vector2 GetWindowSize() => new Vector2(390f, 370f);
         public override void OnGUI(Rect rect)
         {
-            GUILayout.Label(_kind == GameplayReferenceKind.Tag ? "已定义标签" : "已注册属性", EditorStyles.boldLabel);
+            GUILayout.Label(_kind == GameplayReferenceKind.Tag ? "标签 · "+(_scope ?? "共享范围") : "已注册属性", EditorStyles.boldLabel);
             _search = EditorGUILayout.TextField("搜索", _search);
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             if (_kind == GameplayReferenceKind.Tag)
             {
-                string[] tags = _catalog.Tags ?? Array.Empty<string>();
+                var tags = GameplayReferenceCatalogProvider.Visible(_scope).SelectMany(catalog=>catalog.Tags).Distinct(StringComparer.Ordinal).ToArray();
                 if (string.IsNullOrEmpty(_search))
                     foreach (var child in GameplayReferenceTree.Project(tags).Children.Values) DrawNode(child, 0);
                 else foreach (string tag in tags.Where(x => x != null && x.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0)
@@ -65918,6 +66092,8 @@ namespace FRFrame.Gameplay.Editor
                          .Where(x => x != null && x.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0)
                          .OrderBy(x => x, StringComparer.Ordinal)) DrawChoice(attribute, attribute, 0);
             EditorGUILayout.EndScrollView();
+            if (_kind == GameplayReferenceKind.Tag && GUILayout.Button("打开 Reference 管理"))
+            { GameplayReferenceEditorWindow.OpenForScope(_scope); editorWindow.Close(); }
         }
         private void DrawNode(GameplayReferenceTreeNode node, int depth)
         {
@@ -65962,9 +66138,13 @@ namespace FRFrame.Gameplay.Editor
             var pick = new Rect(raw.xMax + 3f, content.y, 48f, height);
             var clear = new Rect(pick.xMax + 3f, content.y, 29f, height);
             var catalog = GameplayReferenceCatalogProvider.Find(out string discoveryError);
+            var targets = property.serializedObject.targetObjects;
+            var scopes = kind == GameplayReferenceKind.Tag ? targets.Select(GameplayReferenceCatalogProvider.Scope).Distinct().ToArray() : Array.Empty<string>();
+            string scope = scopes.Length == 1 ? scopes[0] : null;
+            bool TagAvailable(string tag) => scopes.All(source => GameplayReferenceCatalogProvider.Visible(source).Any(owner => owner.Tags.Contains(tag,StringComparer.Ordinal)));
             string value = child.stringValue;
             bool known = catalog != null && (kind == GameplayReferenceKind.Tag
-                ? (catalog.Tags ?? Array.Empty<string>()).Contains(value, StringComparer.Ordinal)
+                ? TagAvailable(value)
                 : (catalog.Attributes ?? Array.Empty<string>()).Contains(value, StringComparer.Ordinal));
             bool invalid = !string.IsNullOrEmpty(value) && (!GameplayReferenceDiagnostics.IsValid(kind, value) || !known);
             Color old = GUI.color;
@@ -65974,13 +66154,17 @@ namespace FRFrame.Gameplay.Editor
             EditorGUI.showMixedValue = false;
             GUI.color = old;
             if (catalog == null) GUI.Label(pick, new GUIContent("!", discoveryError));
-            else if (GUI.Button(pick, new GUIContent("选择", invalid ? "未知或无效引用；选择已定义值或修正文本。" : value)))
+            else if (GUI.Button(pick, new GUIContent("选择", invalid ? "当前 Scope 不可用或未登记。可在 Reference 检查归属。" : value)))
             {
-                string path=child.propertyPath;var targets=property.serializedObject.targetObjects;
+                string path=child.propertyPath;
                 property.serializedObject.ApplyModifiedProperties();
                 var handles=targets.Select(target=>GameplaySourceHandle.Capture(target,path)).ToArray();
-                PopupWindow.Show(pick, new GameplayReferencePickerPopup(catalog, kind,
-                    selected => {try{ApplyChoice(handles,selected);}catch(InvalidOperationException e){EditorUtility.DisplayDialog("引用位置已变化",e.Message,"关闭");}}));
+                PopupWindow.Show(pick, new GameplayReferencePickerPopup(catalog, kind, scope,
+                    selected => {try{
+                        if(kind==GameplayReferenceKind.Tag&&handles.Any(handle=>!GameplayReferenceCatalogProvider.Visible(GameplayReferenceCatalogProvider.Scope(handle.Owner))
+                            .Any(owner=>owner.Tags.Contains(selected,StringComparer.Ordinal))))throw new InvalidOperationException("此 Tag 已不在当前 Scope 中。");
+                        ApplyChoice(handles,selected);
+                    }catch(InvalidOperationException e){EditorUtility.DisplayDialog("引用位置已变化",e.Message,"关闭");}}));
             }
             if (GUI.Button(clear, new GUIContent("×", "清空此引用"))) child.stringValue = string.Empty;
             EditorGUI.EndProperty();
@@ -66006,8 +66190,99 @@ namespace FRFrame.Gameplay.Editor
     [CustomPropertyDrawer(typeof(GameplayTagReference))]
     public sealed class GameplayTagReferenceDrawer : PropertyDrawer
     {
-        public override void OnGUI(Rect position, SerializedProperty property, GUIContent label) =>
-            GameplayReferenceDrawerGUI.Draw(position, property, label, GameplayReferenceKind.Tag, "Name");
+        private const int VisibleChoices = 6;
+        private GameplaySkillDocumentAsset _openDocument;
+        private string _openPath, _search = "";
+
+        private static bool IsContextKey(SerializedProperty property, out bool producer)
+        {
+            var owner = GameplaySkillContextVariables.FieldOwner(property);
+            producer = GameplaySkillContextVariables.IsProducer(owner);
+            return producer || GameplaySkillContextVariables.IsReader(owner);
+        }
+
+        private bool IsOpen(GameplaySkillDocumentAsset document, string path) => _openDocument == document && _openPath == path;
+
+        private (string Key, string Label)[] Filter((string Key, string Label)[] choices) => choices.Where(choice =>
+            choice.Key.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0 ||
+            choice.Label.IndexOf(_search, StringComparison.OrdinalIgnoreCase) >= 0).Take(VisibleChoices).ToArray();
+
+        public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
+        {
+            if (!IsContextKey(property, out bool producer)) return base.GetPropertyHeight(property, label);
+            int rows = 2;
+            var document = (GameplaySkillDocumentAsset)property.serializedObject.targetObject;
+            string path = property.propertyPath;
+            if (!producer && IsOpen(document, path))
+                rows += 1 + Math.Max(1, Filter(GameplaySkillContextVariables.For(document).Choices(path)).Length);
+            return rows * EditorGUIUtility.singleLineHeight + (rows - 1) * EditorGUIUtility.standardVerticalSpacing;
+        }
+
+        public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
+        {
+            if (!IsContextKey(property, out bool producer))
+            {
+                GameplayReferenceDrawerGUI.Draw(position, property, label, GameplayReferenceKind.Tag, "Name");
+                return;
+            }
+            var document = (GameplaySkillDocumentAsset)property.serializedObject.targetObject;
+            var child = property.FindPropertyRelative("Name");
+            string path = property.propertyPath;
+            var variables = GameplaySkillContextVariables.For(document);
+            string warning = producer
+                ? (GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, child.stringValue) ? null : "请输入有效的 Context 键。")
+                : variables.Warning(path, child.stringValue);
+            float height = EditorGUIUtility.singleLineHeight;
+            float step = height + EditorGUIUtility.standardVerticalSpacing;
+            var row = new Rect(position.x, position.y, position.width, height);
+            label = new GUIContent(producer ? "定义局部变量" : "Context 变量", "局部变量无需登记全局 Tag。");
+            EditorGUI.BeginProperty(position, label, property);
+            var input = EditorGUI.PrefixLabel(row, label);
+            if (!producer) input.width -= 49f;
+            child.stringValue = EditorGUI.DelayedTextField(input, child.stringValue);
+            var choices = producer ? Array.Empty<(string Key, string Label)>() : variables.Choices(path);
+            bool open = IsOpen(document, path);
+            if (!producer)
+            {
+                var button = new Rect(input.xMax + 3f, input.y, 46f, height);
+                bool changed = GUI.changed;
+                using (new EditorGUI.DisabledScope(choices.Length == 0 && !open))
+                    if (GUI.Button(button, new GUIContent(open ? "收起" : "选择", "搜索当前路径可读取的技能变量")))
+                    {
+                        _openDocument = open ? null : document;
+                        _openPath = open ? null : path;
+                        _search = "";
+                    }
+                GUI.changed = changed;
+            }
+            string caption = warning ?? (producer ? "技能局部定义 · 仅沿实际执行链传递" :
+                choices.FirstOrDefault(choice => choice.Key == child.stringValue).Label);
+            row.y += step;
+            EditorGUI.LabelField(row,
+                new GUIContent(caption, caption), warning == null ? EditorStyles.miniLabel : EditorStyles.boldLabel);
+            if (open && !producer)
+            {
+                row.y += step;
+                var visible = Filter(choices);
+                bool changed = GUI.changed;
+                _search = EditorGUI.TextField(row, new GUIContent("搜索变量", "输入名称或完整键过滤当前路径的变量"), _search);
+                GUI.changed = changed;
+                if (visible.Length == 0)
+                {
+                    row.y += step;
+                    EditorGUI.LabelField(row, "没有匹配的可读变量", EditorStyles.miniLabel);
+                }
+                foreach (var choice in visible)
+                {
+                    row.y += step;
+                    if (!GUI.Button(row, new GUIContent(choice.Label, choice.Key), EditorStyles.miniButton)) continue;
+                    child.stringValue = choice.Key;
+                    _openDocument = null;
+                    _openPath = null;
+                }
+            }
+            EditorGUI.EndProperty();
+        }
     }
 
     [CustomPropertyDrawer(typeof(GameplayAttributeReference))]
@@ -66027,6 +66302,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 
 namespace FRFrame.Gameplay.Editor
@@ -66040,8 +66316,11 @@ namespace FRFrame.Gameplay.Editor
         public readonly string PropertyPath;
         public readonly string Value;
         public readonly GameplayReferenceKind Kind;
+        public readonly GameplayDefinitionAsset Source;
         public GameplaySerializedReference(string assetPath, string propertyPath, string value, GameplayReferenceKind kind)
-        { AssetPath = assetPath; PropertyPath = propertyPath; Value = value; Kind = kind; }
+            : this(null,assetPath,propertyPath,value,kind) { }
+        internal GameplaySerializedReference(GameplayDefinitionAsset source, string assetPath, string propertyPath, string value, GameplayReferenceKind kind)
+        { Source = source; AssetPath = assetPath; PropertyPath = propertyPath; Value = value; Kind = kind; }
     }
 
     public readonly struct GameplayCodeLiteralReference
@@ -66068,7 +66347,7 @@ namespace FRFrame.Gameplay.Editor
     public static class GameplayReferenceScanner
     {
         private static readonly Regex LiteralPattern = new Regex(
-            @"\bnew\s+Gameplay(Tag|AttributeId)\s*\(\s*""([^""\r\n]*)""\s*\)", RegexOptions.Compiled);
+            @"\bnew\s+(?:(?:global::)?FRFrame\.Gameplay\.)?Gameplay(Tag|AttributeId)\s*\(\s*""([^""\r\n]*)""\s*\)", RegexOptions.Compiled);
 
         public static IReadOnlyList<GameplayDefinitionAsset> FindDefinitionAssets()
         {
@@ -66108,13 +66387,18 @@ namespace FRFrame.Gameplay.Editor
                     GameplayReferenceKind kind;
                     string field;
                     if (property.type == nameof(GameplayTagReference))
-                    { kind = GameplayReferenceKind.Tag; field = "Name"; }
+                    {
+                        var owner = GameplaySkillContextVariables.FieldOwner(property);
+                        if (GameplaySkillContextVariables.IsProducer(owner) || GameplaySkillContextVariables.IsReader(owner)) continue;
+                        kind = GameplayReferenceKind.Tag;
+                        field = "Name";
+                    }
                     else if (property.type == nameof(GameplayAttributeReference))
                     { kind = GameplayReferenceKind.Attribute; field = "Value"; }
                     else continue;
                     SerializedProperty child = property.FindPropertyRelative(field);
                     if (child != null && child.propertyType == SerializedPropertyType.String)
-                        result.Add(new GameplaySerializedReference(assetPath, child.propertyPath, child.stringValue, kind));
+                        result.Add(new GameplaySerializedReference(asset, assetPath, child.propertyPath, child.stringValue, kind));
                 }
             }
             return result;
@@ -66165,7 +66449,7 @@ namespace FRFrame.Gameplay.Editor
 
         private static IEnumerable<string> ProductionSourceFiles()
         {
-            foreach (string root in new[] { "Assets/FRFrame/Gameplay", "Assets/Scripts/AzurLane" })
+            foreach (string root in new[] { "Assets/FRFrame/Gameplay", "Assets/Scripts" })
             {
                 if (!Directory.Exists(root)) continue;
                 foreach (string file in Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.Ordinal))
@@ -66694,6 +66978,7 @@ namespace FRFrame.Gameplay.Editor
         public IReadOnlyList<GameplaySerializedReference> AffectedReferences { get; internal set; }
         public IReadOnlyList<GameplayCodeLiteralReference> AffectedCode { get; internal set; }
         public IReadOnlyList<string> AffectedCatalogTags { get; internal set; }
+        internal IReadOnlyDictionary<GameplayReferenceCatalogAsset,string[]> CatalogChanges { get; set; }
         public IReadOnlyList<string> Errors { get; internal set; }
         internal bool UseProjectAssets { get; set; }
         internal bool UseProductionCode { get; set; }
@@ -66713,27 +66998,35 @@ namespace FRFrame.Gameplay.Editor
             IReadOnlyList<GameplayCodeLiteralReference> codeLiterals = null) =>
             Preview(catalog, path, null, true, assets, codeLiterals);
 
+        public static GameplayTagRefactorPreview PreviewProjectRename(string oldPath, string newPath) =>
+            Preview(null, oldPath, newPath, false, null, null);
+
+        public static GameplayTagRefactorPreview PreviewProjectDelete(string path) =>
+            Preview(null, path, null, true, null, null);
+
         private static GameplayTagRefactorPreview Preview(GameplayReferenceCatalogAsset catalog,
             string oldPath, string newPath, bool delete, IEnumerable<GameplayDefinitionAsset> selectedAssets,
             IReadOnlyList<GameplayCodeLiteralReference> selectedLiterals)
         {
             var assets = (selectedAssets ?? GameplayReferenceScanner.FindDefinitionAssets()).ToArray();
             var literals = selectedLiterals ?? GameplayReferenceScanner.ScanProductionCode();
-            var catalogTags = (catalog?.Tags ?? Array.Empty<string>()).Where(tag => Matches(tag, oldPath)).ToArray();
+            var catalogs = catalog != null ? new[] { catalog } : GameplayReferenceCatalogProvider.Catalogs;
+            var changes = catalogs.ToDictionary(entry=>entry,entry=>entry.Tags.Where(tag=>Matches(tag,oldPath)).ToArray())
+                .Where(pair=>pair.Value.Length>0).ToDictionary(pair=>pair.Key,pair=>pair.Value);
+            var catalogTags = changes.Values.SelectMany(tags=>tags).ToArray();
             var references = GameplayReferenceScanner.ScanAssets(assets)
                 .Where(reference => reference.Kind == GameplayReferenceKind.Tag && Matches(reference.Value, oldPath)).ToArray();
             var code = literals.Where(literal => literal.Kind == GameplayReferenceKind.Tag && Matches(literal.Value, oldPath)).ToArray();
             var errors = new List<string>();
-            if (catalog == null) errors.Add("A unique catalog is required.");
             if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, oldPath)) errors.Add("Old Tag path is invalid.");
             if (!delete && !GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, newPath)) errors.Add("New Tag path is invalid.");
             if (!delete && StringComparer.Ordinal.Equals(oldPath, newPath)) errors.Add("New Tag path equals old path.");
             if (catalogTags.Length == 0) errors.Add("No exact or descendant catalog Tag exists.");
             if (code.Length > 0) errors.Add($"{code.Length} production C# literal(s) still use the old Tag; update code manually first.");
             if (delete && references.Length > 0) errors.Add($"{references.Length} serialized reference(s) still use the Tag.");
-            if (!delete && catalog != null)
+            if (!delete)
             {
-                var final = catalog.Tags.Select(tag => Matches(tag, oldPath) ? Map(tag, oldPath, newPath) : tag).ToArray();
+                var final = catalogs.SelectMany(entry=>entry.Tags).Select(tag => Matches(tag, oldPath) ? Map(tag, oldPath, newPath) : tag);
                 var seen = new HashSet<string>(StringComparer.Ordinal);
                 foreach (string tag in final)
                 {
@@ -66745,7 +67038,7 @@ namespace FRFrame.Gameplay.Editor
             {
                 Catalog = catalog, OldPath = oldPath, NewPath = newPath, IsDelete = delete,
                 Assets = assets, CodeLiterals = literals, AffectedReferences = references,
-                AffectedCode = code, AffectedCatalogTags = catalogTags, Errors = errors,
+                AffectedCode = code, AffectedCatalogTags = catalogTags, CatalogChanges = changes, Errors = errors,
                 UseProjectAssets = selectedAssets == null,
                 UseProductionCode = selectedLiterals == null
             };
@@ -66763,9 +67056,10 @@ namespace FRFrame.Gameplay.Editor
             var fresh = Preview(preview.Catalog, preview.OldPath, preview.NewPath, preview.IsDelete,
                 freshAssets, freshLiterals);
             if (!fresh.CanApply) throw new InvalidOperationException(string.Join(" | ", fresh.Errors));
-            if (!preview.AffectedCatalogTags.SequenceEqual(fresh.AffectedCatalogTags, StringComparer.Ordinal) ||
-                !preview.AffectedReferences.Select(x => x.AssetPath + "|" + x.PropertyPath + "|" + x.Value)
-                    .SequenceEqual(fresh.AffectedReferences.Select(x => x.AssetPath + "|" + x.PropertyPath + "|" + x.Value), StringComparer.Ordinal))
+            if (preview.CatalogChanges.Count != fresh.CatalogChanges.Count ||
+                preview.CatalogChanges.Any(pair=>!fresh.CatalogChanges.TryGetValue(pair.Key,out var tags)||!pair.Value.SequenceEqual(tags,StringComparer.Ordinal)) ||
+                !preview.AffectedReferences.Select(x => (x.Source,x.PropertyPath,x.Value))
+                    .SequenceEqual(fresh.AffectedReferences.Select(x => (x.Source,x.PropertyPath,x.Value))))
                 throw new InvalidOperationException("Catalog or serialized references changed since Preview; preview again.");
             int group = Undo.GetCurrentGroup();
             Undo.IncrementCurrentGroup();
@@ -66775,12 +67069,11 @@ namespace FRFrame.Gameplay.Editor
             {
                 if (!fresh.IsDelete)
                 {
-                    foreach (var byAsset in fresh.AffectedReferences.GroupBy(x => x.AssetPath, StringComparer.Ordinal))
+                    foreach (var byAsset in fresh.AffectedReferences.GroupBy(x => x.Source))
                     {
-                        var asset = AssetDatabase.LoadAssetAtPath<GameplayDefinitionAsset>(byAsset.Key);
-                        if (asset == null) throw new InvalidOperationException("Asset disappeared: " + byAsset.Key);
+                        var asset = byAsset.Key;
                         Undo.RecordObject(asset, "Rename Gameplay Tag references");
-                        var serialized = new SerializedObject(asset);
+                        using var serialized = new SerializedObject(asset);
                         serialized.Update();
                         foreach (GameplaySerializedReference reference in byAsset)
                         {
@@ -66794,18 +67087,21 @@ namespace FRFrame.Gameplay.Editor
                         EditorUtility.SetDirty(asset);
                     }
                 }
-                Undo.RecordObject(fresh.Catalog, "Update Gameplay Tag catalog");
-                fresh.Catalog.Tags = fresh.IsDelete
-                    ? fresh.Catalog.Tags.Where(tag => !Matches(tag, fresh.OldPath)).ToArray()
-                    : fresh.Catalog.Tags.Select(tag => Matches(tag, fresh.OldPath) ? Map(tag, fresh.OldPath, fresh.NewPath) : tag).ToArray();
-                EditorUtility.SetDirty(fresh.Catalog);
-                if (fresh.Catalog.Validate().Count > 0)
-                    throw new InvalidOperationException("Catalog validation failed after refactor.");
+                foreach(var entry in fresh.CatalogChanges.Keys)
+                {
+                    Undo.RecordObject(entry, "Update Gameplay Tag catalog");
+                    entry.Tags = fresh.IsDelete
+                        ? entry.Tags.Where(tag => !Matches(tag, fresh.OldPath)).ToArray()
+                        : entry.Tags.Select(tag => Matches(tag, fresh.OldPath) ? Map(tag, fresh.OldPath, fresh.NewPath) : tag).ToArray();
+                    EditorUtility.SetDirty(entry);
+                }
                 var post = GameplayReferenceDiagnostics.Scan(fresh.Catalog, fresh.Assets,
                     preview.UseProductionCode ? fresh.CodeLiterals : preview.CodeLiterals);
                 if (post.Errors.Count > 0)
                     throw new InvalidOperationException("Post-refactor diagnostics: " + string.Join(" | ", post.Errors.Take(5)));
-                AssetDatabase.SaveAssets();
+                foreach(var entry in fresh.CatalogChanges.Keys)AssetDatabase.SaveAssetIfDirty(entry);
+                foreach(var asset in fresh.AffectedReferences.Select(reference=>reference.Source).Distinct())
+                    AssetDatabase.SaveAssetIfDirty(asset);
                 Undo.CollapseUndoOperations(group);
             }
             catch
@@ -68237,11 +68533,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var current=(GameplayAbilityDefinitionData)AbilityPayload.Settings;
             if(!replace&&(charge?current.Charge!=null:AbilityPayload.Definitions.Any(b=>b.PropertyPath=="CooldownEffect"))){PolicySelected?.Invoke("Recharge");return;}
             if(!ConfirmPolicyReplacement("Recharge",charge?"新建默认充能（2次 / 3秒）":"新建普通冷却（3秒）"))return;
-            Try(()=>{Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"切换冷却或充能");GameplaySkillAuthoringCommands.Transaction(_document,"切换冷却或充能",g=>{
+            Try(()=>{string tag=charge?null:GameplaySkillAuthoringCommands.GeneratedSkillTag(GameplayReferenceCatalogProvider.Scope(_document),"Cooldown.Skill.",_document.SkillId.ToString());
+                Undo.RegisterCompleteObjectUndo(ConfigurationOwner,"切换冷却或充能");GameplaySkillAuthoringCommands.Transaction(_document,"切换冷却或充能",g=>{
                 var ability=(GameplayAbilityNodePayload)g.Nodes.Single(n=>n.Id==g.AbilityNodeId).Payload;var settings=(GameplayAbilityDefinitionData)ability.Settings;
                 ability.Definitions.RemoveAll(b=>b.PropertyPath=="CooldownEffect");settings.Charge=charge?new GameplayAbilityChargeAuthoring{MaxCharges=2,RechargeDuration=3}:null;
-                if(!charge){var local=new GameplayLocalDefinition{Name="技能冷却",SourceDefinitionId=_document.DefinitionId,Payload=new GameplayEffectDefinitionData{DurationPolicy=GameplayEffectDurationPolicy.Duration,Duration=3,GrantedTags=new[]{new GameplayTagReference("Cooldown.Skill."+_document.SkillId)}}};g.LocalDefinitions.Add(local);ability.Definitions.Add(new GameplayDefinitionBinding{PropertyPath="CooldownEffect",LocalId=local.Id});}
-            },generatedTags:charge?null:new[]{"Cooldown.Skill."+_document.SkillId});_policyDrafts.RemoveAll(p=>p.Key==PolicyKey("Recharge"));});
+                if(!charge){var local=new GameplayLocalDefinition{Name="技能冷却",SourceDefinitionId=_document.DefinitionId,Payload=new GameplayEffectDefinitionData{DurationPolicy=GameplayEffectDurationPolicy.Duration,Duration=3,GrantedTags=new[]{new GameplayTagReference(tag)}}};g.LocalDefinitions.Add(local);ability.Definitions.Add(new GameplayDefinitionBinding{PropertyPath="CooldownEffect",LocalId=local.Id});}
+            },generatedTags:charge?null:new[]{tag});_policyDrafts.RemoveAll(p=>p.Key==PolicyKey("Recharge"));});
         }
         private bool ConfirmPolicyReplacement(string role,string operation,bool detach=false)
         {
@@ -69051,7 +69348,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var preserve=preservedTemplateReferences??Array.Empty<string>();
             if(preserve.Any(p=>references==null||!references.Any(r=>r.IsSelf&&r.Path==p)))throw new ArgumentException("复制引用选择已失效；请重新打开复制向导。");
             if(references!=null&&references.Where(r=>r.CooldownGroup!=null).GroupBy(r=>r.CooldownGroup).Any(g=>g.Any(r=>preserve.Contains(r.Path))&&g.Any(r=>!preserve.Contains(r.Path))))throw new ArgumentException("本地冷却的授予、门禁和业务引用必须整组独立化或整组共享。");
-            var catalog=GameplayReferenceCatalogProvider.Find(out _);string catalogPath=catalog?AssetDatabase.GetAssetPath(catalog):null;
+            var catalogScope=GameplayReferenceCatalogProvider.Scope(path,scope);
+            var catalog=GameplayReferenceCatalogProvider.Find(catalogScope,out string catalogError);
+            if(!catalog)throw new InvalidOperationException(catalogError);
+            string catalogPath=AssetDatabase.GetAssetPath(catalog);
             if(catalog&&EditorUtility.IsDirty(catalog))throw new InvalidOperationException("Tag Catalog 有未保存修改；没有创建主技能。");
             string catalogJson=catalog?EditorJsonUtility.ToJson(catalog):null;
             byte[] catalogBytes=catalog&&System.IO.File.Exists(catalogPath)?System.IO.File.ReadAllBytes(catalogPath):null;
@@ -69059,7 +69359,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             Undo.IncrementCurrentGroup();int undoGroup=Undo.GetCurrentGroup();bool catalogTouched=false,created=false;
             try
             {
-            document.name = name; document.DisplayName = name; document.SkillId = id; document.CastEvent = new GameplayTagReference("Event.Created.S" + id);
+            document.name = name; document.DisplayName = name; document.SkillId = id;
+            document.CastEvent = new GameplayTagReference(GeneratedSkillTag(catalogScope,"Event.Created.","S"+id));
             using (var serialized = new SerializedObject(document)) { serialized.FindProperty("definitionId").stringValue = id + ".Skill"; serialized.ApplyModifiedPropertiesWithoutUndo(); }
             var graph = new GameplayAuthoringGraph { Scope = scope };
             var ability = new GameplayAuthoringNode { Title = "技能施放", Position = new Vector2(30,40), Payload = new GameplayAbilityNodePayload { Settings = new GameplayAbilityDefinitionData() } };
@@ -69082,11 +69383,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             if(template)graph=CopyGraph(template,document);
             document.SetAuthoringGraph(graph);
-                var generatedTags=template?GameplaySkillCopyReferences.Apply(template,document,references,preserve):new List<string>();
+                var generatedTags=template?GameplaySkillCopyReferences.Apply(document,references,preserve,catalogScope):new List<string>();
                 generatedTags.Add(document.CastEvent.Name);
+                var nextTags=GameplayReferenceCatalogProvider.WithRegistrations(catalog,generatedTags);
                 document.Build(new GameplayAuthoringBuildContext()); AssetDatabase.CreateAsset(document,path);created=true; AssetDatabase.SaveAssetIfDirty(document);
                 CreationFailureInjection?.Invoke("after-create");
-                if (catalog != null && generatedTags.Any(t=>!catalog.Tags.Contains(t))) { Undo.RecordObject(catalog,"登记复制身份与施放事件");catalogTouched=true; catalog.Tags = catalog.Tags.Concat(generatedTags).Distinct().ToArray(); EditorUtility.SetDirty(catalog);CreationFailureInjection?.Invoke("catalog-save"); AssetDatabase.SaveAssetIfDirty(catalog); }
+                if (!nextTags.SequenceEqual(catalog.Tags)) { Undo.RecordObject(catalog,"登记复制身份与施放事件");catalogTouched=true; catalog.Tags = nextTags; EditorUtility.SetDirty(catalog);CreationFailureInjection?.Invoke("catalog-save"); AssetDatabase.SaveAssetIfDirty(catalog); }
                 CreationFailureInjection?.Invoke("after-catalog-save");
                 Undo.RegisterCreatedObjectUndo(document,"新建正式技能");Undo.CollapseUndoOperations(undoGroup);
                 return document;
@@ -69098,6 +69400,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(document&&!AssetDatabase.Contains(document))UnityEngine.Object.DestroyImmediate(document);throw;
             }
         }
+
+        internal static string GeneratedSkillTag(string scope,string prefix,string suffix) =>
+            prefix+(scope==GameplayReferenceCatalogProvider.Framework?"":scope+".")+suffix;
 
         /// <summary>Reference viewing is a workbench mode, never a second skill runtime source.</summary>
         internal static GameplaySkillDocumentAsset ReadOnlyDocument;
@@ -69138,10 +69443,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             GameplayGraphCompiler.ValidateStructure(graph, validation, label, false);
             if (validation.HasErrors) throw new InvalidOperationException(string.Join("\n", validation.Issues));
             GameplayGraphCompiler.ValidateActionOrder(graph);
-            var catalog=generatedTags==null?null:GameplayReferenceCatalogProvider.Find(out _);
+            GameplayReferenceCatalogAsset catalog=null;string[] nextTags=null;
+            if(generatedTags!=null){
+                catalog=GameplayReferenceCatalogProvider.Find(GameplayReferenceCatalogProvider.Scope(document),out string error);
+                if(!catalog)throw new InvalidOperationException(error);
+                nextTags=GameplayReferenceCatalogProvider.WithRegistrations(catalog,generatedTags);
+            }
             if(catalog&&EditorUtility.IsDirty(catalog))throw new InvalidOperationException("Tag Catalog 有未保存修改；先保存后创建自动Tag。");
             Undo.RegisterCompleteObjectUndo(document, label);
-            if(catalog){Undo.RecordObject(catalog,label);catalog.Tags=catalog.Tags.Concat(generatedTags).Distinct().ToArray();EditorUtility.SetDirty(catalog);AssetDatabase.SaveAssetIfDirty(catalog);}
+            if(catalog&&!nextTags.SequenceEqual(catalog.Tags)){Undo.RecordObject(catalog,label);catalog.Tags=nextTags;EditorUtility.SetDirty(catalog);AssetDatabase.SaveAssetIfDirty(catalog);}
             document.SetAuthoringGraph(graph); EditorUtility.SetDirty(document);
             Publish(document,invalidation??GameplaySkillAuthoringChange.Full(structural));
         }
@@ -69826,9 +70136,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(value is GameplayCooldownActionAuthoring cooldown){yield return new GameplaySkillCardField("SkillId","技能 ID（0当前）");yield return new GameplaySkillCardField("Operation","冷却操作");if(cooldown.Operation!=Standard.GameplayCooldownOperation.Restart)yield return new GameplaySkillCardField("Value","变化数值",true);}
             if(value is GameplayCaptureCombatRollActionAuthoring){yield return new GameplaySkillCardField("CriticalChance","暴击概率",true);yield return new GameplaySkillCardField("MissChance","未命中概率",true);}
             if (value is GameplayCaptureValueActionAuthoring)
-            { yield return new GameplaySkillCardField("Key", "快照键"); yield return new GameplaySkillCardField("Value", "捕获数值", true); }
+            { yield return new GameplaySkillCardField("Key", "定义局部变量"); yield return new GameplaySkillCardField("Value", "捕获数值", true); }
             if (value is GameplaySkillSetContextValueActionAuthoring)
-            { yield return new GameplaySkillCardField("Key", "上下文键"); yield return new GameplaySkillCardField("Value", "数值"); }
+            { yield return new GameplaySkillCardField("Key", "定义局部变量"); yield return new GameplaySkillCardField("Value", "数值"); }
             if (value is GameplayChangeStateActionAuthoring) yield return new GameplaySkillCardField("State", "行为状态");
             if (value is GameplayEndAbilityActionAuthoring) yield return new GameplaySkillCardField("Cancel", "以取消结束");
         }
@@ -69962,7 +70272,32 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             Bind(select,path,q=>names[Math.Max(0,Array.IndexOf(types,q.managedReferenceValue.GetType()))],(q,v)=>q.managedReferenceValue=Activator.CreateInstance(types[names.IndexOf(v)]));
                         }break;
                     case SerializedPropertyType.Generic:
-                        if(p.boxedValue is GameplayTagReference)Bind(new TextField(field.Label){isDelayed=path.Contains(".Trigger.EventTag")},path+".Name",q=>q.stringValue,(q,v)=>q.stringValue=v);
+                        if(p.boxedValue is GameplayTagReference){
+                            bool local=GameplaySkillContextVariables.IsProducer(GameplaySkillContextVariables.FieldOwner(p));
+                            var control=new TextField(field.Label){isDelayed=local||path.Contains(".Trigger.EventTag")};
+                            var row=local?null:new VisualElement{style={flexDirection=FlexDirection.Row}};
+                            Bind(control,path+".Name",q=>q.stringValue,(q,v)=>q.stringValue=v,row);
+                            if(local)control.tooltip="在当前 Context 中定义变量，无需登记全局 Tag。改名会同步此定义唯一绑定的读取。";
+                            else{
+                                control.style.flexGrow=1;
+                                var button=new Button{ text="选",tooltip="按当前 Scope 搜索已登记的 Tag" };
+                                button.clicked+=()=>{
+                                    string scope=GameplayReferenceCatalogProvider.Scope(_document);
+                                    var canvas=GetFirstAncestorOfType<GameplayBehaviorGraphView>();
+                                    if(canvas==null)return;
+                                    GameplaySkillCreationMenu.Show(canvas,"选择 Gameplay Tag",menu=>{
+                                        menu.AddItem(new GUIContent("管理 Reference"),false,()=>GameplayReferenceEditorWindow.OpenForScope(scope));
+                                        foreach(var catalog in GameplayReferenceCatalogProvider.Visible(scope))
+                                            foreach(string tag in catalog.Tags.OrderBy(value=>value,StringComparer.Ordinal))
+                                                menu.AddItem(new GUIContent(GameplayReferenceCatalogProvider.OwnerScope(catalog)+"/"+tag,tag),tag==control.value,()=>{
+                                                    if(control.panel!=null&&GameplayReferenceCatalogProvider.Visible(GameplayReferenceCatalogProvider.Scope(_document))
+                                                        .Any(owner=>owner.Tags.Contains(tag,StringComparer.Ordinal)))control.value=tag;
+                                                });
+                                    },button.worldBound.center);
+                                };
+                                row.Add(button);Add(row);
+                            }
+                        }
                         else if(p.boxedValue is GameplayAttributeReference)Bind(new TextField(field.Label),path+".Value",q=>q.stringValue,(q,v)=>q.stringValue=v);
                         break;
                 }
@@ -69980,12 +70315,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         // Reject stale FocusOut writes while bindings are being resolved again. Keep the
         // rendered appearance intact; a pending structural refresh must not grey the canvas.
         internal void Invalidate(){_current=false;}
-        private void Bind<T>(BaseField<T> control,string path,Func<SerializedProperty,T> read,Action<SerializedProperty,T> write)
+        private void Bind<T>(BaseField<T> control,string path,Func<SerializedProperty,T> read,Action<SerializedProperty,T> write,VisualElement row=null)
         {
             control.name=path;var source=_serialized.FindProperty(path);control.tooltip=source.propertyType==SerializedPropertyType.Enum?string.Join(" / ",source.enumNames)+"\n"+path:path;control.style.fontSize=12;
             float labelWidth=_compact?(control is Toggle?35:70):92;
             control.labelElement.style.minWidth=labelWidth;control.labelElement.style.maxWidth=labelWidth;
-            if(_compact){control.style.width=control is Toggle?75:155;control.style.marginRight=6;control.style.flexShrink=0;_playbackRow.Add(control);}else Add(control);
+            if(row!=null)row.Add(control);
+            else if(_compact){control.style.width=control is Toggle?75:155;control.style.marginRight=6;control.style.flexShrink=0;_playbackRow.Add(control);}else Add(control);
             _sync.Add(()=>{var p=_serialized.FindProperty(path);if(p==null)return;var value=read(p);if(!EqualityComparer<T>.Default.Equals(control.value,value))control.SetValueWithoutNotify(value);});
             var sourceGuard=_fields.First(f=>f.Path==path||path.StartsWith(f.Path+".",StringComparison.Ordinal)).SourceGuard;
             control.RegisterValueChangedCallback(e=>{
@@ -69996,6 +70332,282 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 _error.text=error==null?"":control.label+" · "+error;_error.style.display=error==null?DisplayStyle.None:DisplayStyle.Flex;
                 e.StopPropagation();
             });
+        }
+    }
+}
+````
+
+## File: Gameplay/Editor/SkillAuthoring/GameplaySkillContextVariables.cs
+````csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
+using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
+using FRFrame.Gameplay.Standard;
+using UnityEditor;
+
+namespace FRFrame.Gameplay.Editor.SkillAuthoring
+{
+    /// <summary>Editor projection of scalar bindings along the same ordered arrays the compiler builds.
+    /// A binding is available only on every invocation of the field. Producer paths are retained
+    /// to distinguish an unambiguous rename from a same-name write on an independent path.</summary>
+    internal sealed class GameplaySkillContextVariables
+    {
+        private static ConditionalWeakTable<GameplaySkillDocumentAsset, GameplaySkillContextVariables> Cache = new();
+        private static readonly Regex FormulaTokens = new(@"(?<![\w.])(?:Context|Caller)\.([\p{L}\p{Nd}_.]+)");
+        private static readonly IReadOnlyDictionary<string, HashSet<string>> Empty =
+            new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        private readonly Dictionary<string, IReadOnlyDictionary<string, HashSet<string>>> _inputs = new();
+        private readonly Dictionary<string, (string Key, string Title)> _producers = new();
+        private readonly Dictionary<string, string> _references = new();
+        private readonly Dictionary<string, string> _locations = new();
+        private readonly HashSet<string> _formulaPaths = new();
+
+        static GameplaySkillContextVariables()
+        {
+            GameplaySkillAuthoringCommands.DetailedChanged += (document, change) => { if (!change.Layout) Cache.Remove(document); };
+            Undo.undoRedoPerformed += () => Cache = new();
+        }
+
+        internal static GameplaySkillContextVariables For(GameplaySkillDocumentAsset document) =>
+            Cache.GetValue(document, source => new GameplaySkillContextVariables(source));
+
+        internal static bool IsProducer(Type type) =>
+            type == typeof(GameplayCaptureValueActionAuthoring) || type == typeof(GameplaySkillSetContextValueActionAuthoring);
+
+        internal static bool IsReader(Type type) =>
+            type == typeof(GameplaySkillContextValueConditionAuthoring) || type == typeof(GameplayContextFloatValueAuthoring) ||
+            type == typeof(GameplaySetByCallerFloatValueAuthoring);
+
+        internal static Type FieldOwner(SerializedProperty property)
+        {
+            if (property.name != "Key" || property.serializedObject.isEditingMultipleObjects ||
+                !(property.serializedObject.targetObject is GameplaySkillDocumentAsset document) ||
+                document.AuthoringSchemaVersion != 2) return null;
+            string path = property.propertyPath;
+            var owner = property.serializedObject.FindProperty(path.Substring(0, path.Length - 4));
+            return owner?.propertyType == SerializedPropertyType.ManagedReference ? owner.managedReferenceValue?.GetType() : null;
+        }
+
+        private GameplaySkillContextVariables(GameplaySkillDocumentAsset document)
+        {
+            var graph = document.AuthoringGraph;
+            var nodes = graph.Nodes.Select((node, i) => (node, path: $"authoringGraph.Nodes.Array.data[{i}].Payload"))
+                .ToDictionary(item => item.node.Id);
+            var definitions = graph.LocalDefinitions.Select((definition, i) => (definition, path: $"authoringGraph.LocalDefinitions.Array.data[{i}].Payload"))
+                .ToDictionary(item => item.definition.Id);
+            var timelines = graph.Timelines.Select((timeline, i) => (timeline, path: $"authoringGraph.Timelines.Array.data[{i}].Events"))
+                .ToDictionary(item => item.timeline.Id);
+            var edges = graph.Connections.ToLookup(edge => (edge.FromNodeId, edge.OutputPortKey));
+            var active = new HashSet<string>();
+            foreach (var (node, path) in nodes.Values)
+            {
+                var action = (node.Payload as GameplayActionNodePayload)?.Action;
+                var key = action is GameplayCaptureValueActionAuthoring capture ? capture.Key.Name :
+                    (action as GameplaySkillSetContextValueActionAuthoring)?.Key.Name;
+                if (action != null && IsProducer(action.GetType()))
+                    _producers[path + ".Action.Key"] = (key, node.Title);
+            }
+
+            var defaults = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            for (int i = 0; i < document.Defaults.Length; i++)
+            {
+                string key = document.Defaults[i].Key.Name;
+                if (string.IsNullOrEmpty(key)) continue;
+                string path = $"Defaults.Array.data[{i}].Key";
+                _producers[path] = (key, "技能默认输入");
+                defaults[key] = new HashSet<string> { path };
+            }
+            string triggerMagnitude = GameplayContextValues.TriggerMagnitudeKey.Name;
+            _producers[triggerMagnitude] = (triggerMagnitude, "触发事件强度");
+            defaults[triggerMagnitude] = new HashSet<string> { triggerMagnitude };
+
+            foreach (var id in graph.AdditionalRuleNodeIds.Prepend(graph.PrimaryRuleNodeId))
+            {
+                if (string.IsNullOrEmpty(id) || !nodes.TryGetValue(id, out var rule)) continue;
+                // Rule conditions see the incoming trigger. Installed defaults are merged for Actions.
+                Observe(rule.path, id, rule.node.Payload, Empty);
+                RunOutput(id, "Actions", defaults);
+            }
+
+            IReadOnlyDictionary<string, HashSet<string>> RunOutput(string id, string port,
+                IReadOnlyDictionary<string, HashSet<string>> input)
+            {
+                foreach (var edge in edges[(id, port)].OrderBy(edge => edge.Order))
+                    if (edge.InputPortKey == "Execute") input = RunAction(edge.ToNodeId, input);
+                return input;
+            }
+
+            IReadOnlyDictionary<string, HashSet<string>> RunAction(string id, IReadOnlyDictionary<string, HashSet<string>> input)
+            {
+                if (!nodes.TryGetValue(id, out var item) || !(item.node.Payload is GameplayActionNodePayload payload) ||
+                    payload.Action == null || !active.Add(id)) return input;
+                string path = item.path + ".Action";
+                Observe(path, id, payload.Action, input);
+                foreach (var binding in payload.Definitions) VisitDefinition(binding.LocalId, input);
+                if (_producers.TryGetValue(path + ".Key", out var producer) && !string.IsNullOrEmpty(producer.Key))
+                    input = new Dictionary<string, HashSet<string>>(input, StringComparer.Ordinal)
+                        { [producer.Key] = new HashSet<string> { path + ".Key" } };
+                else if (payload.Action is GameplayCaptureCombatRollActionAuthoring roll)
+                {
+                    var captured = new Dictionary<string, HashSet<string>>(input, StringComparer.Ordinal);
+                    foreach (string key in new[] { GameplayDamageExecution.CriticalKey.Name, GameplayDamageExecution.MissKey.Name })
+                    {
+                        if (roll.PreserveExisting && captured.ContainsKey(key)) continue;
+                        string source = path + "." + key;
+                        _producers[source] = (key, "捕获暴击 / 未命中");
+                        captured[key] = new HashSet<string> { source };
+                    }
+                    input = captured;
+                }
+                else if (payload.Action is GameplaySkillBranchActionAuthoring)
+                    input = Merge(RunOutput(id, "TrueActions", input), RunOutput(id, "FalseActions", input));
+                else if (payload.Action is GameplaySearchTargetActionAuthoring)
+                {
+                    RunOutput(id, "EachTarget", input);
+                    RunOutput(id, "NoTargets", input);
+                    input = RunOutput(id, "Completed", input);
+                }
+                else
+                    foreach (var slot in GameplayGraphFields.ActionArrays(payload.Action))
+                        RunOutput(id, slot.Path, payload.Action is GameplayMoveTargetsActionAuthoring ? input : Empty);
+
+                input = RunOutput(id, "Then", input);
+                active.Remove(id);
+                return input;
+            }
+
+            void VisitDefinition(string id, IReadOnlyDictionary<string, HashSet<string>> input)
+            {
+                if (string.IsNullOrEmpty(id) || !active.Add(id)) return;
+                if (timelines.TryGetValue(id, out var schedule))
+                    for (int i = 0; i < schedule.timeline.Events.Count; i++)
+                    {
+                        var entry = schedule.timeline.Events[i];
+                        // Each marker starts with the Context captured when the sequence started.
+                        Observe($"{schedule.path}.Array.data[{i}]", entry.Id, entry, input);
+                        if (!string.IsNullOrEmpty(entry.EntryNodeId)) RunAction(entry.EntryNodeId, input);
+                    }
+                else if (definitions.TryGetValue(id, out var item))
+                {
+                    var payload = item.definition.Payload;
+                    Observe(item.path, id, payload, input);
+                    foreach (var binding in item.definition.Definitions) VisitDefinition(binding.LocalId, input);
+                    bool spatial = payload is GameplayAreaDefinitionData || payload is GameplayProjectileDefinitionData ||
+                        payload is GameplaySummonDefinitionData;
+                    foreach (var slot in GameplayGraphFields.ActionArrays(payload))
+                        RunOutput(id, slot.Path, spatial ? input : Empty);
+                    foreach (var slot in GameplayGraphEffectCallbacks.Slots(payload))
+                        foreach (var edge in edges[(id, slot.Key)])
+                            VisitDefinition(GameplayGraphEffectCallbacks.EffectBinding(nodes[edge.ToNodeId].node)?.LocalId, input);
+                }
+                active.Remove(id);
+            }
+        }
+
+        private void Observe(string root, string id, object payload, IReadOnlyDictionary<string, HashSet<string>> input)
+        {
+            if (_inputs.TryGetValue(root, out var previous))
+            {
+                _inputs[root] = Merge(previous, input);
+                return;
+            }
+            _inputs[root] = input;
+            foreach (var pair in GameplayGraphFields.ObjectPaths(payload))
+            {
+                string path = string.IsNullOrEmpty(pair.Value) ? root : root + "." + pair.Value;
+                if (IsReader(pair.Key.GetType()))
+                    _locations[path] = string.IsNullOrEmpty(pair.Value) ? id : id + "." + pair.Value;
+                switch (pair.Key)
+                {
+                    case GameplaySkillContextValueConditionAuthoring condition: _references[path + ".Key"] = condition.Key.Name; break;
+                    case GameplayContextFloatValueAuthoring context: _references[path + ".Key"] = context.Key.Name; break;
+                    case GameplaySetByCallerFloatValueAuthoring caller: _references[path + ".Key"] = caller.Key.Name; break;
+                    case GameplayFormulaFloatValueAuthoring _: _formulaPaths.Add(path + ".Expression"); break;
+                }
+            }
+        }
+
+        private static IReadOnlyDictionary<string, HashSet<string>> Merge(
+            IReadOnlyDictionary<string, HashSet<string>> left, IReadOnlyDictionary<string, HashSet<string>> right) =>
+            left.Where(pair => right.ContainsKey(pair.Key)).ToDictionary(pair => pair.Key,
+                pair => new HashSet<string>(pair.Value.Concat(right[pair.Key])), StringComparer.Ordinal);
+
+        private IReadOnlyDictionary<string, HashSet<string>> Input(string path)
+        {
+            for (int end = path.LastIndexOf('.'); end >= 0; end = path.LastIndexOf('.', end - 1))
+                if (_inputs.TryGetValue(path.Substring(0, end), out var result)) return result;
+            return Empty;
+        }
+
+        internal (string Key, string Label)[] Choices(string path) => Input(path)
+            .Where(pair => GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, pair.Key))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair =>
+            {
+                string name = ObjectNames.NicifyVariableName(pair.Key.Substring(pair.Key.LastIndexOf('.') + 1));
+                string source = string.Join(" / ", pair.Value.Select(id => _producers[id].Title).Where(title => !string.IsNullOrEmpty(title)).Distinct());
+                return (pair.Key, source.Length == 0 ? name : name + " · " + source);
+            }).ToArray();
+
+        internal string Warning(string path, string key)
+        {
+            if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, key)) return "请输入有效的 Context 键。";
+            if (Input(path).ContainsKey(key)) return null;
+            return _producers.Values.Any(producer => producer.Key == key)
+                ? "此键在技能中有定义，但并非每条到达路径都携带该值。"
+                : "此处没有可达的生产者。若由外部传入，需由调用方保证有值。";
+        }
+
+        internal IEnumerable<GameplayAuthoringValidationIssue> Diagnostics()
+        {
+            foreach (var pair in _references)
+            {
+                if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, pair.Value)) continue;
+                string warning = Warning(pair.Key, pair.Value);
+                if (warning != null)
+                    yield return new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,
+                        _locations[pair.Key.Substring(0, pair.Key.Length - 4)] + ".Key", pair.Value + " · " + warning);
+            }
+        }
+
+        /// <summary>Stages the declaration and its uniquely bound reads in the same Undo edit.</summary>
+        internal void StageRenames(SerializedObject serialized, HashSet<string> paths)
+        {
+            foreach (string changed in paths.ToArray())
+            {
+                string path = changed.EndsWith(".Name", StringComparison.Ordinal) ? changed.Substring(0, changed.Length - 5) : changed;
+                if (!_producers.TryGetValue(path, out var producer) || !path.StartsWith("authoringGraph.Nodes.", StringComparison.Ordinal)) continue;
+                string key = serialized.FindProperty(path + ".Name").stringValue;
+                if (key == producer.Key) continue;
+                if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, key))
+                    throw new InvalidOperationException("请输入有效的 Context 键。");
+                if (string.IsNullOrEmpty(producer.Key)) continue;
+                bool Bound(string reader) => Input(reader).TryGetValue(producer.Key, out var sources) &&
+                    sources.Count == 1 && sources.Contains(path);
+                var readers = _references.Where(pair => pair.Value == producer.Key && Bound(pair.Key)).Select(pair => pair.Key + ".Name").ToArray();
+                var formulas = _formulaPaths.Where(Bound).Select(serialized.FindProperty).Where(property => property != null &&
+                    FormulaTokens.Matches(property.stringValue).Cast<Match>().Any(match => match.Groups[1].Value == producer.Key)).ToArray();
+                if (readers.Length == 0 && formulas.Length == 0) continue;
+                if (_producers.Any(pair => pair.Key != path && pair.Value.Key == key))
+                    throw new InvalidOperationException("已有同名定义。请先选一个新键，避免改名后读取其它来源。");
+                if (formulas.Length != 0 && key.Any(c => !char.IsLetterOrDigit(c) && c != '_' && c != '.'))
+                    throw new InvalidOperationException("此键用于公式，改名时只可使用字母、数字、下划线和点。");
+                foreach (string reader in readers)
+                {
+                    serialized.FindProperty(reader).stringValue = key;
+                    paths.Add(reader);
+                }
+                foreach (var formula in formulas)
+                {
+                    formula.stringValue = FormulaTokens.Replace(formula.stringValue, match => match.Groups[1].Value == producer.Key
+                        ? match.Value.Substring(0, match.Value.IndexOf('.') + 1) + key : match.Value);
+                    paths.Add(formula.propertyPath);
+                }
+            }
         }
     }
 }
@@ -70019,12 +70631,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             internal string Path, Description, CooldownGroup, TagSuffix;
             internal bool IsSelf, IsTag;
-            internal string TargetTag(int id)=>CooldownGroup!=null?"Cooldown.Skill."+id+TagSuffix:"Event.Created.S"+id;
+            internal string TargetTag(int id,string scope)=>CooldownGroup!=null
+                ? GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Cooldown.Skill.",id+TagSuffix)
+                : GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Event.Created.","S"+id);
         }
 
         internal static List<Reference> Audit(GameplaySkillDocumentAsset source)
         {
             var result=new List<Reference>();
+            string scopedCooldown=GameplaySkillAuthoringCommands.GeneratedSkillTag(GameplayReferenceCatalogProvider.Scope(source),"Cooldown.Skill.",source.SkillId.ToString());
             var ability=(GameplayAbilityNodePayload)source.AuthoringGraph.Nodes.Single(n=>n.Id==source.AuthoringGraph.AbilityNodeId).Payload;
             var binding=ability.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect");
             var cooldown=source.AuthoringGraph.LocalDefinitions.SingleOrDefault(d=>d.Id==binding?.LocalId)?.Payload as GameplayEffectDefinitionData;
@@ -70048,7 +70663,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         var tag=field.FindPropertyRelative("Name");string value=tag.stringValue;
                         // Retained, detached authoring drafts still keep the established
                         // explicit self-ID contract (e.g. 7002); arbitrary names require a binding.
-                        int at=privateTags.IndexOf(value);bool cooldownTag=at>=0||value=="Cooldown.Skill."+source.SkillId;
+                        int at=privateTags.IndexOf(value);bool cooldownTag=at>=0||value=="Cooldown.Skill."+source.SkillId||value==scopedCooldown;
                         bool own=(value==source.CastEvent.Name||cooldownTag)&&!sharedTags.Contains(value);
                         if(!string.IsNullOrEmpty(value))result.Add(new Reference{Path=tag.propertyPath,IsSelf=own,IsTag=true,CooldownGroup=own&&cooldownTag?value:null,TagSuffix=at>=0&&privateTags.Count>1?".Tag"+(at+1):"",Description="Tag = "+value+(own&&cooldownTag?"（自身冷却及其全部引用）":sharedTags.Contains(value)?"（外部冷却，共享只读）":"")});
                     }
@@ -70064,14 +70679,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             return result;
         }
 
-        internal static List<string> Apply(GameplaySkillDocumentAsset source,GameplaySkillDocumentAsset copy,List<Reference> references,ICollection<string> preserve)
+        internal static List<string> Apply(GameplaySkillDocumentAsset copy,List<Reference> references,ICollection<string> preserve,string scope)
         {
             var tags=new List<string>();
             using(var so=new SerializedObject(copy)){
                 foreach(var reference in references){
                     if(!reference.IsSelf||preserve.Contains(reference.Path))continue;
                     var field=so.FindProperty(reference.Path);
-                    if(reference.IsTag){field.stringValue=reference.TargetTag(copy.SkillId);tags.Add(field.stringValue);}
+                    if(reference.IsTag){field.stringValue=reference.TargetTag(copy.SkillId,scope);tags.Add(field.stringValue);}
                     else if(field.propertyType==SerializedPropertyType.Integer)field.intValue=copy.SkillId;
                     else field.floatValue=copy.SkillId;
                 }
@@ -70686,6 +71301,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(GameplaySkillAuthoringCommands.IsReadOnly(document)){serialized.Update();return false;}
             if(!serialized.hasModifiedProperties)return false;
             try{
+                if(changedPaths!=null&&changedPaths.Any(path=>path.EndsWith(".Action.Key",StringComparison.Ordinal)||path.EndsWith(".Action.Key.Name",StringComparison.Ordinal))){
+                    var paths=new HashSet<string>(changedPaths);
+                    GameplaySkillContextVariables.For(document).StageRenames(serialized,paths);
+                    changedPaths=paths;
+                }
                 var invalidation=GameplaySkillAuthoringChange.Fields(document,changedPaths,validateStructure);
                 if(GameplayBehaviorGraphView.FollowsMainAnimation(document)){
                     var followed=(GameplayAuthoringGraph)PendingValue(serialized.FindProperty("authoringGraph"));
@@ -71966,12 +72586,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private List<GameplaySkillCopyReferences.Reference> _references;
         private readonly HashSet<string> _preserveReferences=new HashSet<string>();
         private Vector2 _referenceScroll;
-        private readonly string[] _scopes={"SkillLab","XH","AzurLane","FRFrame","LogicGrid","TurnBased"};
+        private string[] _scopes;
         private int _scope,_fps=30,_id,_start;private string _name="我的技能",_error;private bool _allowDuplicate,_turns;
         private GameplayActorProfileAsset _profile;
         internal static void Open(GameplaySkillWorkbench owner,GameplaySkillDocumentAsset template=null)
         {
             var wizard=CreateInstance<GameplaySkillWizard>();wizard._owner=owner;wizard._template=template;if(template)wizard._name=template.DisplayName+" 副本";wizard._id=GameplaySkillWorkbench.Documents().Select(d=>d.SkillId).DefaultIfEmpty(2009).Max()+1;
+            string current=template?template.AuthoringGraph.Scope:owner.Document?.AuthoringGraph?.Scope??GameplayReferenceCatalogProvider.Framework;
+            wizard._scopes=GameplayReferenceCatalogProvider.Catalogs.SelectMany(catalog=>catalog.ScopeAliases.Prepend(GameplayReferenceCatalogProvider.OwnerScope(catalog)))
+                .Append(current).Distinct(StringComparer.Ordinal).ToArray();
             if(template)wizard._references=GameplaySkillCopyReferences.Audit(template);
             wizard._scope=Mathf.Max(0,Array.IndexOf(wizard._scopes,template?template.AuthoringGraph.Scope:owner.Document?.AuthoringGraph?.Scope??"FRFrame"));wizard.titleContent=new GUIContent("新建正式技能");wizard.minSize=template?new Vector2(540,650):new Vector2(440,400);wizard.ShowUtility();
         }
@@ -71989,6 +72612,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool duplicate=GameplaySkillWorkbench.Documents().Any(d=>d.SkillId==_id);
             if(duplicate){EditorGUILayout.HelpBox("已有同 ID 技能；不同 Host 中复用 ID 需要作者明确确认。",MessageType.Warning);_allowDuplicate=EditorGUILayout.Toggle("明确允许跨 Host 重号",_allowDuplicate);}
             if(_template){
+                string tagScope=GameplayReferenceCatalogProvider.Scope(_template);
                 EditorGUILayout.HelpBox("新GUID/ID/局部StableIds；保持原Scope与Host限制。逐项确认自身身份：勾选重映射至新ID；取消勾选表示有意引用源技能（可能共同冷却/续接归属源技能）。其它ID、普通数值与外部SO保持原引用，外部SO不会被修改。",MessageType.Info);
                 _referenceScroll=EditorGUILayout.BeginScrollView(_referenceScroll,GUILayout.MinHeight(100),GUILayout.MaxHeight(230));
                 var drawnCooldowns=new HashSet<string>();
@@ -71997,10 +72621,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         if(!drawnCooldowns.Add(reference.CooldownGroup))continue;
                         var group=_references.Where(r=>r.CooldownGroup==reference.CooldownGroup).ToArray();
                         bool independent=!group.Any(r=>_preserveReferences.Contains(r.Path));
-                        bool next=EditorGUILayout.ToggleLeft(new GUIContent("独立冷却："+reference.CooldownGroup+" → "+reference.TargetTag(_id)+"（"+group.Length+"处）",string.Join("\n",group.Select(r=>r.Path))+"\n取消勾选：有意与源技能共享这组冷却及业务标签。"),independent);
+                        bool next=EditorGUILayout.ToggleLeft(new GUIContent("独立冷却："+reference.CooldownGroup+" → "+reference.TargetTag(_id,tagScope)+"（"+group.Length+"处）",string.Join("\n",group.Select(r=>r.Path))+"\n取消勾选：有意与源技能共享这组冷却及业务标签。"),independent);
                         foreach(var item in group)if(next)_preserveReferences.Remove(item.Path);else _preserveReferences.Add(item.Path);
                     }
-                    else if(reference.IsSelf){string target=reference.IsTag?reference.TargetTag(_id):_id.ToString();bool remap=!_preserveReferences.Contains(reference.Path);bool next=EditorGUILayout.ToggleLeft(new GUIContent("重映射："+reference.Description+" → "+target,reference.Path),remap);if(next)_preserveReferences.Remove(reference.Path);else _preserveReferences.Add(reference.Path);}
+                    else if(reference.IsSelf){string target=reference.IsTag?reference.TargetTag(_id,tagScope):_id.ToString();bool remap=!_preserveReferences.Contains(reference.Path);bool next=EditorGUILayout.ToggleLeft(new GUIContent("重映射："+reference.Description+" → "+target,reference.Path),remap);if(next)_preserveReferences.Remove(reference.Path);else _preserveReferences.Add(reference.Path);}
                     else EditorGUILayout.LabelField(new GUIContent("保留："+reference.Description,reference.Path));
                 }
                 EditorGUILayout.EndScrollView();
@@ -72156,6 +72780,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var tools=_documentTools=new VisualElement{name="DocumentTools",style={flexDirection=FlexDirection.Row,flexWrap=Wrap.Wrap}};toolbar.Add(tools);
             tools.Add(new ToolbarButton(() => Canvas.ShowMenu()) { text = "+ 节点" });
             tools.Add(new ToolbarButton(() => Attempt(() => { if (_document) ValidateDocument(); })) { text = "校验" });
+            tools.Add(new ToolbarButton(() => GameplayReferenceEditorWindow.OpenForScope(GameplayReferenceCatalogProvider.Scope(_document))) { text = "Reference" });
             tools.Add(new ToolbarButton(SaveDocument) { text = "保存" });
             tools.Add(readingView);tools.Add(viewCaption);
             tools.Add(new ToolbarButton(() => Canvas.FrameAll()) { text = "全图概览" });
@@ -72476,6 +73101,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>!active.Contains(n.Id)))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"未接入执行流程，不参与执行："+GameplaySkillFieldSchema.NodeName(node)));
             foreach(var node in _document.AuthoringGraph.Nodes.Where(n=>active.Contains(n.Id)&&(n.Payload as GameplayRuleNodePayload)?.Target is GameplaySkillContextTargetAuthoring))
                 _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"调用者输入契约：此规则保留 TriggerEvent.Context；宿主须提供下游所需 Actor / Point。地点回调之后仍按实际来源检查，不能假定自身。"));
+            if(!_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error))
+                _diagnostics.AddRange(GameplaySkillContextVariables.For(_document).Diagnostics());
             _feedback=_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error)?"编译未通过；点击校验条目定位同源字段。":"正式运行图编译通过；未接入流程的节点提示另列。";
             _detailTab=3;_details?.MarkDirtyRepaint();Repaint();
         }
@@ -73671,12 +74298,15 @@ namespace FRFrame.Gameplay.Editor.Timeline
             issues.AddRange(validation.Issues.Select(issue => issue.ToString()));
             var catalog = GameplayReferenceCatalogProvider.Find(out string error);
             if (catalog == null) { issues.Add(error); return issues; }
-            var tags = new HashSet<string>(catalog.Tags, StringComparer.Ordinal);
             var attributes = new HashSet<string>(catalog.Attributes, StringComparer.Ordinal);
+            var owners = GameplayReferenceCatalogProvider.Catalogs.SelectMany(owner=>owner.Tags.Select(tag=>(tag,owner)))
+                .ToLookup(entry=>entry.tag,entry=>GameplayReferenceCatalogProvider.OwnerScope(entry.owner),StringComparer.Ordinal);
             foreach (var reference in GameplayReferenceScanner.ScanAssets(new[] { sequence }))
             {
+                string scope=GameplayReferenceCatalogProvider.Scope(reference.Source);
                 bool present = reference.Kind == GameplayReferenceKind.Tag
-                    ? tags.Contains(reference.Value) : attributes.Contains(reference.Value);
+                    ? owners[reference.Value].Any(owner=>scope==null||GameplayReferenceCatalogProvider.CanRead(scope,owner))
+                    : attributes.Contains(reference.Value);
                 if (GameplayReferenceDiagnostics.IsValid(reference.Kind, reference.Value) && !present)
                     issues.Add(reference.AssetPath + "." + reference.PropertyPath + ": Unregistered " +
                         reference.Kind + " " + reference.Value);
@@ -77638,7 +78268,9 @@ namespace FRFrame.Gameplay.Unity
         public Vector3 Acceleration,VelocitySpread;
         [Range(0,.99f)]public float FadeStartRatio;
         public bool Follow=true;
-        public string Binding,DamagePrefix="",NumberFormat="0.##";
+        public string Binding;
+        [Tooltip("伤害数值前的文字，例如 - 或 处决。")] public string DamagePrefix="";
+        [Tooltip("0 显示整数，0.## 最多显示两位小数。只影响飘字。")] public string NumberFormat="0.##";
         public bool RequestedHealing,SuppressEmptyHealing,FixedPoint;
         public Vector3 Point;
         public string CriticalPrefix="CRIT ",MissText="MISS",ImmuneText="IMMUNE",ShieldPrefix="盾 ";
@@ -78245,7 +78877,9 @@ namespace FRFrame.Gameplay.Unity
 
         public bool Follow=true;
 
-        public string Binding,DamagePrefix="",NumberFormat="0.##";
+        public string Binding;
+        [Tooltip("伤害数值前的文字，例如 - 或 处决。")] public string DamagePrefix="";
+        [Tooltip("0 显示整数，0.## 最多显示两位小数。只影响飘字。")] public string NumberFormat="0.##";
 
         public bool RequestedHealing,SuppressEmptyHealing,FixedPoint;
 
@@ -78317,14 +78951,16 @@ namespace FRFrame.Gameplay.Unity
         private Color _color;
         private TMP_FontAsset _font;
         private Material _material;
+        internal TMP_FontAsset FontOverride { get; set; }
         public string DisplayText=>_text==null?string.Empty:_text.text;
         protected override void OnInit()
         {
             _text=GetComponentInChildren<TMP_Text>(true);if(_text==null)throw new InvalidOperationException("Floating widget requires TMP text.");
             // Preview and learning scenes must not add glyphs or atlas pixels to a shared asset.
             // A pooled widget keeps its own dynamic font/atlas until the widget is destroyed.
-            if(_text.font!=null){
-                var source=_text.font;
+            var source=FontOverride!=null?FontOverride:_text.font;
+            if(source!=null){
+                if(FontOverride!=null)_text.font=source;
                 if(source.sourceFontFile!=null){
                     _font=TMP_FontAsset.CreateFontAsset(source.sourceFontFile,(int)source.faceInfo.pointSize,source.atlasPadding,source.atlasRenderMode,source.atlasWidth,source.atlasHeight,AtlasPopulationMode.Dynamic);
                 }
@@ -78567,8 +79203,8 @@ using UnityEngine.Scripting;
 
 namespace FRFrame.Gameplay.Unity
 {
-    /// <summary>Explicit presentation action after a committed hit on the same target/source/root.
-    /// Leave automatic FloatingText null when using this action to avoid showing a hit twice.</summary>
+    /// <summary>Overrides automatic feedback for a pending result on the same target and source.
+    /// Connect after the combat action in its execution chain, before the next presentation step.</summary>
     [Serializable,Preserve]
     public sealed class GameplayShowCombatTextActionAuthoring:GameplaySkillActionAuthoring
     {
@@ -78583,10 +79219,8 @@ namespace FRFrame.Gameplay.Unity
             public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
             {
                 if(!(host is GameplayStandardActor actor)||!actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target)||
-                    !(target.Presentation is GameplayUnityAnimationController controller)||!target.LastCombatOutcome.HasValue)return GameplaySkillActionResult.Rejected;
-                var outcome=target.LastCombatOutcome.Value;
-                if(outcome.Context.EffectiveSourceId!=context.EffectiveSourceId||outcome.Context.OriginSourceId!=context.OriginSourceId)return GameplaySkillActionResult.Rejected;
-                return controller.ShowFloatingText(_definition,outcome)?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;
+                    !(target.Presentation is GameplayUnityAnimationController controller))return GameplaySkillActionResult.Rejected;
+                return controller.TryShowAuthoredCombatText(_definition,context)?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;
             }
         }
     }
@@ -78937,6 +79571,7 @@ namespace FRFrame.Gameplay.Unity
             foreach(var playback in new List<Playback>(_channels.Values))playback.Advance(amount);
             foreach(var cue in cues)cue.Advance(amount);
             foreach(var text in floating)text.Advance(amount);
+            FlushCombatText();
             _ownedAudio?.Update(amount,amount);
         }
         public void Dispose()
@@ -78944,6 +79579,7 @@ namespace FRFrame.Gameplay.Unity
             if(_disposed)return;_disposed=true;
             Controllers.Remove(this);
             Actor.CombatChanged-=OnFloatingCombat;
+            _pendingCombatText.Clear();
             foreach(var playback in new List<Playback>(_channels.Values))playback.Dispose();_channels.Clear();
             DisposeQueues();
             foreach(var cue in _cues.ToArray())cue.Dispose();
@@ -79127,23 +79763,76 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using FRFrame.Gameplay.Standard;
+using TMPro;
 using UnityEngine;
 
 namespace FRFrame.Gameplay.Unity
 {
+    /// <summary>Presentation policy for committed combat outcomes on this actor.</summary>
+    public enum GameplayCombatTextMode
+    {
+        [InspectorName("自动 · 技能显式优先")] AutomaticWithOverrides,
+        [InspectorName("仅技能显式")] ExplicitOnly,
+        [InspectorName("关闭反馈")] Disabled
+    }
+
     public sealed partial class GameplayUnityAnimationController
     {
         private readonly List<FloatingLease> _floating=new List<FloatingLease>();
-        /// <summary>Optional automatic feedback binding. Set null when authored explicit actions
-        /// produce text, preventing duplicate presentation. Feedback never authorizes a gameplay hit.</summary>
+        private readonly List<(GameplayCombatOutcome Outcome, bool Shown)> _pendingCombatText =
+            new List<(GameplayCombatOutcome, bool)>();
+        /// <summary>Automatic feedback fills unclaimed outcomes at the next presentation step.</summary>
+        public GameplayCombatTextMode CombatTextMode { get; set; }
+        /// <summary>Fallback style for automatic feedback when the selector has no style.</summary>
         public GameplayFloatingTextDefinition FloatingText {get;set;}
         /// <summary>Optional game-side resource selection over a committed outcome, never a rule or clock.</summary>
         public Func<GameplayCombatOutcome,GameplayFloatingTextDefinition> FloatingTextSelector {get;set;}
+        /// <summary>Optional host font for text the authored prefab font cannot render.</summary>
+        public TMP_FontAsset FloatingTextFallbackFont {get;set;}
         public Camera FloatingTextCamera {get;set;}
         public int ActiveFloatingTextCount=>_floating.Count;
         private void OnFloatingCombat(GameplayCombatOutcome outcome)
         {
-            try{var definition=FloatingTextSelector?.Invoke(outcome)??FloatingText;if(definition!=null)ShowFloatingText(definition,outcome);}catch(Exception ex){Debug.LogException(ex,Subject);}
+            _pendingCombatText.Add((outcome, false));
+        }
+
+        // Only a current, still pending result may be claimed. Independent commits stay in
+        // the queue even when an authored action claims the last result on this actor.
+        internal bool TryShowAuthoredCombatText(GameplayFloatingTextDefinition definition, GameplayContext context)
+        {
+            if (!Actor.LastCombatOutcome.HasValue) return false;
+            var outcome = Actor.LastCombatOutcome.Value;
+            if (!ReferenceEquals(outcome.ExecutionContext, context) ||
+                outcome.Context.EffectiveSourceId != context.EffectiveSourceId ||
+                outcome.Context.OriginSourceId != context.OriginSourceId ||
+                outcome.Context.ActivationSourceId != context.ActivationSourceId) return false;
+
+            for (int i = _pendingCombatText.Count - 1; i >= 0; i--)
+            {
+                var pending = _pendingCombatText[i];
+                if (!ReferenceEquals(pending.Outcome.Context, outcome.Context) || !pending.Outcome.Equals(outcome)) continue;
+                if (pending.Shown || CombatTextMode == GameplayCombatTextMode.Disabled) return true;
+                if (!ShowFloatingText(definition, outcome)) return false;
+                _pendingCombatText[i] = (outcome, true);
+                return true;
+            }
+            return false;
+        }
+
+        private void FlushCombatText()
+        {
+            if (CombatTextMode == GameplayCombatTextMode.AutomaticWithOverrides)
+                foreach (var pending in _pendingCombatText)
+                {
+                    if (pending.Shown) continue;
+                    try
+                    {
+                        var definition = FloatingTextSelector?.Invoke(pending.Outcome) ?? FloatingText;
+                        if (definition != null) ShowFloatingText(definition, pending.Outcome);
+                    }
+                    catch (Exception ex) { Debug.LogException(ex, Subject); }
+                }
+            _pendingCombatText.Clear();
         }
         /// <summary>Actor-owned short feedback over an already committed outcome. It can outlive
         /// the instigator cast; target disposal and presentation disposal always release it.</summary>
@@ -79153,14 +79842,31 @@ namespace FRFrame.Gameplay.Unity
             if(outcome.Context==null)throw new ArgumentException("Committed feedback context required.",nameof(outcome));
             if(_disposed||Subject==null||Actor.IsDisposed||outcome.Context.TargetData.PrimaryTargetId!=Actor.Id)return false;
             if(definition.SuppressEmptyHealing&&outcome.Kind==GameplayCombatOutcomeKind.Heal&&outcome.Applied==0)return false;
-            var pool=SpatialViewPool;var key=new ResourceKey("Gameplay.FloatingText",definition.Prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
+            var content=definition.Format(outcome);
+            TMP_FontAsset fontOverride=null;
+            if(FloatingTextFallbackFont!=null&&!string.IsNullOrEmpty(content.Text))
+            {
+                var font=definition.Prefab.GetComponentInChildren<TMP_Text>(true).font;
+                foreach(char character in content.Text)
+                    if(font==null||!font.HasCharacter(character,true))
+                    {
+                        fontOverride=FloatingTextFallbackFont;
+                        break;
+                    }
+            }
+            var pool=SpatialViewPool;
+            string viewId=definition.Prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture);
+            if(fontOverride!=null)viewId+="/"+fontOverride.GetInstanceID().ToString(CultureInfo.InvariantCulture);
+            var key=new ResourceKey("Gameplay.FloatingText",viewId);
             var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
             try
             {
                 foreach(var child in view.GetComponentsInChildren<Transform>(true))child.gameObject.layer=Subject.layer;
                 var anchor=string.IsNullOrEmpty(definition.Binding)?Subject.transform:Subject.transform.Find(definition.Binding)??Subject.transform;
                 view.transform.SetParent(definition.Follow&&!definition.Point.HasValue?anchor:null,false);view.transform.position=(definition.Point??anchor.position)+definition.Offset+Vector3.up*(_floating.Count*.5f);
-                var widget=view.GetComponent<GameplayFloatingTextWidget>();widget.OpenStandalone(definition.Format(outcome));
+                var widget=view.GetComponent<GameplayFloatingTextWidget>();
+                widget.FontOverride=fontOverride;
+                widget.OpenStandalone(content);
                 var camera=FloatingTextCamera!=null?FloatingTextCamera:Camera.main;
                 if(camera!=null){view.transform.rotation=camera.transform.rotation;var canvas=view.GetComponent<Canvas>();if(canvas!=null)canvas.worldCamera=camera;}
                 _floating.Add(new FloatingLease(this,pool,key,view,widget,definition));return true;
@@ -80680,6 +81386,9 @@ namespace FRFrame.Gameplay.Standard
     public readonly struct GameplayCombatOutcome
     {
         public GameplayContext Context { get; }
+        /// <summary>Input of the action that committed this result. Per-target effect application
+        /// may derive a separate Context for the actual recipient.</summary>
+        public GameplayContext ExecutionContext { get; }
         public GameplayCombatOutcomeKind Kind { get; }
         public DamageResult Damage { get; }
         public float Applied { get; }
@@ -80688,7 +81397,17 @@ namespace FRFrame.Gameplay.Standard
         public float After { get; }
         public GameplayDamageType DamageType {get;}
         public GameplayCombatOutcome(GameplayContext context, GameplayCombatOutcomeKind kind, DamageResult damage, float applied, float overflow, float before, float after,GameplayDamageType damageType=GameplayDamageType.Physical)
-        { Context = context; Kind = kind; Damage = damage; Applied = applied; Overflow = overflow; Before = before; After = after;DamageType=damageType; }
+            : this(context, kind, damage, applied, overflow, before, after, damageType, context) { }
+
+        private GameplayCombatOutcome(GameplayContext context, GameplayCombatOutcomeKind kind, DamageResult damage,
+            float applied, float overflow, float before, float after, GameplayDamageType damageType, GameplayContext executionContext)
+        {
+            Context = context; ExecutionContext = executionContext; Kind = kind; Damage = damage;
+            Applied = applied; Overflow = overflow; Before = before; After = after; DamageType = damageType;
+        }
+
+        internal GameplayCombatOutcome WithExecutionContext(GameplayContext executionContext) =>
+            new GameplayCombatOutcome(Context, Kind, Damage, Applied, Overflow, Before, After, DamageType, executionContext);
     }
     public enum GameplayDamageStageKind { Immunity, Miss, Defense, Critical, Shield, Minimum, Scale }
     public sealed class GameplayDamageStage
@@ -82232,7 +82951,7 @@ namespace FRFrame.Gameplay.Standard
                 if (canContinue != null && !canContinue()) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
                 if (!actor.World.TryGetActor(id, out var target)) continue;
                 var targeted = context.WithTarget(new GameplayTargetData(id, target.Position, null, new[] { id }));
-                var result = actor.ApplyEffect(targeted, Effect);
+                var result = actor.ApplyEffect(targeted, Effect, null, context);
                 if (!result.Succeeded) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
                 if (owner.IsValid && GameplayEffectLease.TryCapture(target.Effects, result, out var lease))
                 {
@@ -83063,6 +83782,7 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Timed consumable shield contributions over the actual resource and Effect clock.</summary>
         public GameplayShieldContributions Shields { get; }
         public GameplayCombatOutcome? LastCombatOutcome { get; private set; }
+        private (GameplayContext Targeted, GameplayContext Input) _effectExecution;
         /// <summary>Optional view driver. The scene/game binding supplies it; no presentation object is stored in definitions.</summary>
         public IGameplayPresentationDriver Presentation { get; set; }
         /// <summary>Optional behaviour driver over an existing host FSM/controller. World supplies
@@ -83071,6 +83791,8 @@ namespace FRFrame.Gameplay.Standard
         public event Action<GameplayCombatOutcome> CombatChanged;
         public void ReportCombat(GameplayCombatOutcome outcome)
         {
+            if (_effectExecution.Input != null && ReferenceEquals(_effectExecution.Targeted, outcome.Context))
+                outcome = outcome.WithExecutionContext(_effectExecution.Input);
             LastCombatOutcome = outcome;
             World.PublishCombat(this,outcome);
             CombatChanged?.Invoke(outcome);
@@ -83129,12 +83851,21 @@ namespace FRFrame.Gameplay.Standard
         public bool UninstallSkill(GameplaySkillRuntime runtime) { if (!_skills.Remove(runtime)) return false; runtime.Dispose(); return true; }
         /// <summary>Applies to this World using an explicit Caller snapshot, or a detached copy
         /// of the captured chain inputs when omitted. Explicit Empty remains an empty override.</summary>
-        public GameplayEffectApplicationResult ApplyEffect(GameplayContext context, GameplayEffectDefinition effect, GameplaySetByCallerValues values=null)
+        public GameplayEffectApplicationResult ApplyEffect(GameplayContext context, GameplayEffectDefinition effect, GameplaySetByCallerValues values=null) =>
+            ApplyEffect(context, effect, values, null);
+
+        internal GameplayEffectApplicationResult ApplyEffect(GameplayContext context, GameplayEffectDefinition effect,
+            GameplaySetByCallerValues values, GameplayContext executionContext)
         {
             if (IsDisposed || context.InstigatorId != Id) throw new InvalidOperationException("Effect instigator must be this active actor.");
             if (!World.TryGetActor(context.TargetData.PrimaryTargetId, out var target)) throw new InvalidOperationException("Effect target left the world.");
-            return target.Effects.Apply(effect, new GameplayEffectApplicationContext(context, target,
-                values ?? context.Values.AsSetByCallerValues(), Attributes, Id, instigatorTarget: this));
+            var application = new GameplayEffectApplicationContext(context, target,
+                values ?? context.Values.AsSetByCallerValues(), Attributes, Id, instigatorTarget: this);
+            if (executionContext == null) return target.Effects.Apply(effect, application);
+            var previous = target._effectExecution;
+            target._effectExecution = (context, executionContext);
+            try { return target.Effects.Apply(effect, application); }
+            finally { target._effectExecution = previous; }
         }
         internal void AdvanceSkills(float amount)
         {
@@ -89812,6 +90543,11 @@ namespace FRFrame.Tests.Gameplay.Editor
             Assert.That(ProductionCatalog.Attributes, Does.Contain("AzurLane.MaxHealth"));
             Assert.That(GameplayReferenceCatalogProvider.Find(out string error), Is.SameAs(ProductionCatalog));
             Assert.That(error, Is.Null);
+            var xh = GameplayReferenceCatalogProvider.Find("XH", out _);
+            Assert.That(xh.Tags, Does.Contain("CD.横扫").And.Contain("Event.Created.S2013"));
+            Assert.That(ProductionCatalog.Tags, Does.Not.Contain("CD.横扫"));
+            Assert.That(GameplayReferenceCatalogProvider.Find("LogicGrid", out _),
+                Is.SameAs(GameplayReferenceCatalogProvider.Find("SkillLab", out _)));
             var report = GameplayReferenceDiagnostics.Scan();
             Assert.That(report.AssetCount, Is.GreaterThanOrEqualTo(3));
             Assert.That(report.SourceLiteralCount, Is.GreaterThanOrEqualTo(22));
@@ -89911,15 +90647,17 @@ namespace FRFrame.Tests.Gameplay.Editor
         [Test]
         public void RealCodeLiteralBlocksRenameAndReferencedDelete()
         {
-            var rename = GameplayTagRefactorService.PreviewRename(ProductionCatalog,
+            var rename = GameplayTagRefactorService.PreviewProjectRename(
                 "Event.Combat.Battle.Start", "Event.Combat.Battle.Begin");
             Assert.That(rename.CanApply, Is.False);
             Assert.That(rename.AffectedCode.Any(x => x.SourcePath.EndsWith("CombatEvents.cs") &&
                                                       x.Value == "Event.Combat.Battle.Start"), Is.True);
             Assert.Throws<InvalidOperationException>(() => GameplayTagRefactorService.Apply(rename));
-            var delete = GameplayTagRefactorService.PreviewDelete(ProductionCatalog, "Event.Combat.Battle.Start");
+            var delete = GameplayTagRefactorService.PreviewProjectDelete("Event.Combat.Battle.Start");
             Assert.That(delete.CanApply, Is.False);
             Assert.That(delete.AffectedReferences.Count, Is.GreaterThan(0));
+            var collision = GameplayTagRefactorService.PreviewProjectRename("Event.Created.S2013","Event.Lab.Hit");
+            Assert.That(collision.Errors, Does.Contain("Target collision: Event.Lab.Hit"));
         }
 
         private static void SetId(GameplayDefinitionAsset asset, string id)
@@ -90646,6 +91384,7 @@ using FRFrame.Gameplay;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Standard;
 using FRFrame.Gameplay.Unity;
+using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -90653,6 +91392,46 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
 {
     public sealed class GameplayFloatingTextOwnershipTests
     {
+        [Test]
+        public void AuthoredFeedbackClaimsOnlyItsOutcomeAndUnclaimedResultsKeepTheirDefault()
+        {
+            var subject = new GameObject("Combat text target");
+            var asset = Object.Instantiate(UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayFloatingTextAsset>(
+                "Assets/GameRes/GameplayValidation/XH/Gameplay/Standard/Feedback1001.asset"));
+            asset.Follow = true;
+            var authored = Object.Instantiate(asset);
+            try
+            {
+                authored.DamagePrefix = "Execute ";
+                authored.NumberFormat = "0.##";
+                using var world = new GameplayStandardWorld();
+                var attacker = world.CreateActor(default);
+                var target = world.CreateActor(default);
+                var build = new GameplayAuthoringBuildContext();
+                var controller = new GameplayUnityAnimationController(target, subject) { FloatingText = asset.Build(build) };
+                target.Presentation = controller;
+                var action = new GameplayShowCombatTextActionAuthoring { Source = authored }.Build(build);
+                var targetData = new GameplayTargetData(target.Id);
+                var first = new GameplayContext(attacker.Id, targetData);
+                var second = new GameplayContext(attacker.Id, targetData);
+                target.ReportCombat(new GameplayCombatOutcome(first, GameplayCombatOutcomeKind.Damage, default, 5.4f, 0, 100, 94.6f));
+                target.ReportCombat(new GameplayCombatOutcome(second, GameplayCombatOutcomeKind.Damage, default, 12.25f, 0, 94.6f, 82.35f));
+                Assert.That(action.Execute(first, default, attacker), Is.EqualTo(GameplaySkillActionResult.Rejected),
+                    "A separate callback can share source IDs without owning the latest result.");
+                Assert.That(action.Execute(second.WithSource(target.Id), default, attacker), Is.EqualTo(GameplaySkillActionResult.Rejected));
+                Assert.That(action.Execute(second, default, attacker), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+                Assert.That(action.Execute(second, default, attacker), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+                Assert.That(controller.ActiveFloatingTextCount, Is.EqualTo(1));
+                world.Advance(0);
+                var labels = subject.GetComponentsInChildren<GameplayFloatingTextWidget>().Select(widget => widget.DisplayText);
+                Assert.That(labels, Is.EquivalentTo(new[] { "Execute 12.25", "-5" }));
+                Assert.That(action.Execute(second, default, attacker), Is.EqualTo(GameplaySkillActionResult.Rejected));
+                world.Advance(2);
+                Assert.That(controller.ActiveFloatingTextCount, Is.Zero);
+            }
+            finally { Object.DestroyImmediate(authored); Object.DestroyImmediate(asset); Object.DestroyImmediate(subject); }
+        }
+
         /// <summary>Regression from real XH Stop Play: TMP destroys a cloned static font's borrowed
         /// asset atlas. Static fonts must remain borrowed; dynamic fonts must release their private atlas.</summary>
         [TestCase(false)][TestCase(true)]

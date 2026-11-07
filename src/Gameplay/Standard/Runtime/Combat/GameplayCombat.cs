@@ -42,6 +42,9 @@ namespace FRFrame.Gameplay.Standard
     public readonly struct GameplayCombatOutcome
     {
         public GameplayContext Context { get; }
+        /// <summary>Input of the action that committed this result. Per-target effect application
+        /// may derive a separate Context for the actual recipient.</summary>
+        public GameplayContext ExecutionContext { get; }
         public GameplayCombatOutcomeKind Kind { get; }
         public DamageResult Damage { get; }
         public float Applied { get; }
@@ -50,7 +53,17 @@ namespace FRFrame.Gameplay.Standard
         public float After { get; }
         public GameplayDamageType DamageType {get;}
         public GameplayCombatOutcome(GameplayContext context, GameplayCombatOutcomeKind kind, DamageResult damage, float applied, float overflow, float before, float after,GameplayDamageType damageType=GameplayDamageType.Physical)
-        { Context = context; Kind = kind; Damage = damage; Applied = applied; Overflow = overflow; Before = before; After = after;DamageType=damageType; }
+            : this(context, kind, damage, applied, overflow, before, after, damageType, context) { }
+
+        private GameplayCombatOutcome(GameplayContext context, GameplayCombatOutcomeKind kind, DamageResult damage,
+            float applied, float overflow, float before, float after, GameplayDamageType damageType, GameplayContext executionContext)
+        {
+            Context = context; ExecutionContext = executionContext; Kind = kind; Damage = damage;
+            Applied = applied; Overflow = overflow; Before = before; After = after; DamageType = damageType;
+        }
+
+        internal GameplayCombatOutcome WithExecutionContext(GameplayContext executionContext) =>
+            new GameplayCombatOutcome(Context, Kind, Damage, Applied, Overflow, Before, After, DamageType, executionContext);
     }
     public enum GameplayDamageStageKind { Immunity, Miss, Defense, Critical, Shield, Minimum, Scale }
     public sealed class GameplayDamageStage

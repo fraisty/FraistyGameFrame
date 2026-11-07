@@ -217,9 +217,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(value is GameplayCooldownActionAuthoring cooldown){yield return new GameplaySkillCardField("SkillId","技能 ID（0当前）");yield return new GameplaySkillCardField("Operation","冷却操作");if(cooldown.Operation!=Standard.GameplayCooldownOperation.Restart)yield return new GameplaySkillCardField("Value","变化数值",true);}
             if(value is GameplayCaptureCombatRollActionAuthoring){yield return new GameplaySkillCardField("CriticalChance","暴击概率",true);yield return new GameplaySkillCardField("MissChance","未命中概率",true);}
             if (value is GameplayCaptureValueActionAuthoring)
-            { yield return new GameplaySkillCardField("Key", "快照键"); yield return new GameplaySkillCardField("Value", "捕获数值", true); }
+            { yield return new GameplaySkillCardField("Key", "定义局部变量"); yield return new GameplaySkillCardField("Value", "捕获数值", true); }
             if (value is GameplaySkillSetContextValueActionAuthoring)
-            { yield return new GameplaySkillCardField("Key", "上下文键"); yield return new GameplaySkillCardField("Value", "数值"); }
+            { yield return new GameplaySkillCardField("Key", "定义局部变量"); yield return new GameplaySkillCardField("Value", "数值"); }
             if (value is GameplayChangeStateActionAuthoring) yield return new GameplaySkillCardField("State", "行为状态");
             if (value is GameplayEndAbilityActionAuthoring) yield return new GameplaySkillCardField("Cancel", "以取消结束");
         }
@@ -353,7 +353,32 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             Bind(select,path,q=>names[Math.Max(0,Array.IndexOf(types,q.managedReferenceValue.GetType()))],(q,v)=>q.managedReferenceValue=Activator.CreateInstance(types[names.IndexOf(v)]));
                         }break;
                     case SerializedPropertyType.Generic:
-                        if(p.boxedValue is GameplayTagReference)Bind(new TextField(field.Label){isDelayed=path.Contains(".Trigger.EventTag")},path+".Name",q=>q.stringValue,(q,v)=>q.stringValue=v);
+                        if(p.boxedValue is GameplayTagReference){
+                            bool local=GameplaySkillContextVariables.IsProducer(GameplaySkillContextVariables.FieldOwner(p));
+                            var control=new TextField(field.Label){isDelayed=local||path.Contains(".Trigger.EventTag")};
+                            var row=local?null:new VisualElement{style={flexDirection=FlexDirection.Row}};
+                            Bind(control,path+".Name",q=>q.stringValue,(q,v)=>q.stringValue=v,row);
+                            if(local)control.tooltip="在当前 Context 中定义变量，无需登记全局 Tag。改名会同步此定义唯一绑定的读取。";
+                            else{
+                                control.style.flexGrow=1;
+                                var button=new Button{ text="选",tooltip="按当前 Scope 搜索已登记的 Tag" };
+                                button.clicked+=()=>{
+                                    string scope=GameplayReferenceCatalogProvider.Scope(_document);
+                                    var canvas=GetFirstAncestorOfType<GameplayBehaviorGraphView>();
+                                    if(canvas==null)return;
+                                    GameplaySkillCreationMenu.Show(canvas,"选择 Gameplay Tag",menu=>{
+                                        menu.AddItem(new GUIContent("管理 Reference"),false,()=>GameplayReferenceEditorWindow.OpenForScope(scope));
+                                        foreach(var catalog in GameplayReferenceCatalogProvider.Visible(scope))
+                                            foreach(string tag in catalog.Tags.OrderBy(value=>value,StringComparer.Ordinal))
+                                                menu.AddItem(new GUIContent(GameplayReferenceCatalogProvider.OwnerScope(catalog)+"/"+tag,tag),tag==control.value,()=>{
+                                                    if(control.panel!=null&&GameplayReferenceCatalogProvider.Visible(GameplayReferenceCatalogProvider.Scope(_document))
+                                                        .Any(owner=>owner.Tags.Contains(tag,StringComparer.Ordinal)))control.value=tag;
+                                                });
+                                    },button.worldBound.center);
+                                };
+                                row.Add(button);Add(row);
+                            }
+                        }
                         else if(p.boxedValue is GameplayAttributeReference)Bind(new TextField(field.Label),path+".Value",q=>q.stringValue,(q,v)=>q.stringValue=v);
                         break;
                 }
@@ -371,12 +396,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         // Reject stale FocusOut writes while bindings are being resolved again. Keep the
         // rendered appearance intact; a pending structural refresh must not grey the canvas.
         internal void Invalidate(){_current=false;}
-        private void Bind<T>(BaseField<T> control,string path,Func<SerializedProperty,T> read,Action<SerializedProperty,T> write)
+        private void Bind<T>(BaseField<T> control,string path,Func<SerializedProperty,T> read,Action<SerializedProperty,T> write,VisualElement row=null)
         {
             control.name=path;var source=_serialized.FindProperty(path);control.tooltip=source.propertyType==SerializedPropertyType.Enum?string.Join(" / ",source.enumNames)+"\n"+path:path;control.style.fontSize=12;
             float labelWidth=_compact?(control is Toggle?35:70):92;
             control.labelElement.style.minWidth=labelWidth;control.labelElement.style.maxWidth=labelWidth;
-            if(_compact){control.style.width=control is Toggle?75:155;control.style.marginRight=6;control.style.flexShrink=0;_playbackRow.Add(control);}else Add(control);
+            if(row!=null)row.Add(control);
+            else if(_compact){control.style.width=control is Toggle?75:155;control.style.marginRight=6;control.style.flexShrink=0;_playbackRow.Add(control);}else Add(control);
             _sync.Add(()=>{var p=_serialized.FindProperty(path);if(p==null)return;var value=read(p);if(!EqualityComparer<T>.Default.Equals(control.value,value))control.SetValueWithoutNotify(value);});
             var sourceGuard=_fields.First(f=>f.Path==path||path.StartsWith(f.Path+".",StringComparison.Ordinal)).SourceGuard;
             control.RegisterValueChangedCallback(e=>{

@@ -27,6 +27,7 @@ namespace FRFrame.Gameplay.Editor
         public int SourceLiteralCount;
         public int AuthoringValidationErrors;
         public int MissingTagReferences;
+        public int OutOfScopeTagReferences;
         public int MissingAttributeReferences;
         public int MissingCodeLiterals;
     }
@@ -39,11 +40,10 @@ namespace FRFrame.Gameplay.Editor
             IReadOnlyList<GameplayCodeLiteralReference> selectedLiterals = null)
         {
             var report = new GameplayReferenceDiagnosticReport();
-            if (catalog == null)
-            {
-                catalog = GameplayReferenceCatalogProvider.Find(out string discoveryError);
-                if (catalog == null) report.Errors.Add(new GameplayReferenceDiagnostic("Catalog", discoveryError));
-            }
+            bool project = catalog == null;
+            var catalogs = project ? GameplayReferenceCatalogProvider.Catalogs : new[] { catalog };
+            if (project) catalog = GameplayReferenceCatalogProvider.Find(out _);
+            if (catalog == null) report.Errors.Add(new GameplayReferenceDiagnostic("Catalog", "需要唯一的 FRFrame Catalog。"));
             var assets = (selectedAssets ?? GameplayReferenceScanner.FindDefinitionAssets()).ToArray();
             var references = GameplayReferenceScanner.ScanAssets(assets);
             var literals = selectedLiterals ?? GameplayReferenceScanner.ScanProductionCode();
@@ -52,11 +52,24 @@ namespace FRFrame.Gameplay.Editor
             report.SourceLiteralCount = literals.Count;
             report.SourceFileCount = GameplayReferenceScanner.CountProductionSourceFiles();
 
-            if (catalog != null)
-                foreach (var issue in catalog.Validate())
-                    report.Errors.Add(new GameplayReferenceDiagnostic(AssetDatabase.GetAssetPath(catalog) + "." + issue.Path, issue.Message));
-            var tags = new HashSet<string>(catalog?.Tags ?? Array.Empty<string>(), StringComparer.Ordinal);
+            var owners = new Dictionary<string, string>(StringComparer.Ordinal);
+            var scopes = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var entry in catalogs)
+            {
+                string owner = GameplayReferenceCatalogProvider.OwnerScope(entry);
+                string path = AssetDatabase.GetAssetPath(entry);
+                foreach (string scope in entry.ScopeAliases.Prepend(owner))
+                    if (!IsValid(GameplayReferenceKind.Tag, scope) || scope.Contains(".") || !scopes.Add(scope))
+                        report.Errors.Add(new GameplayReferenceDiagnostic(path + ".Scope", "无效或重复的 Scope · " + scope));
+                foreach (var issue in entry.Validate())
+                    report.Errors.Add(new GameplayReferenceDiagnostic(path + "." + issue.Path, issue.Message));
+                foreach (string tag in entry.Tags ?? Array.Empty<string>())
+                    if (tag != null && !owners.TryAdd(tag, owner) && owners[tag] != owner)
+                        report.Errors.Add(new GameplayReferenceDiagnostic(path + ".Tags", $"重复登记 {tag} · {owners[tag]} / {owner}"));
+            }
             var attributes = new HashSet<string>(catalog?.Attributes ?? Array.Empty<string>(), StringComparer.Ordinal);
+            var sourceScopes = project ? references.Select(reference=>reference.Source).Concat(assets).Distinct()
+                .ToDictionary(source=>source,source=>GameplayReferenceCatalogProvider.Scope(source)) : null;
             foreach (GameplayDefinitionAsset asset in assets)
             {
                 var validation = new GameplayAuthoringValidationContext();
@@ -76,20 +89,35 @@ namespace FRFrame.Gameplay.Editor
             foreach (var reference in references)
             {
                 if (!IsValid(reference.Kind, reference.Value)) continue; // 12A already reports invalid authoring values.
-                if (reference.Kind == GameplayReferenceKind.Tag && !tags.Contains(reference.Value))
-                { report.Errors.Add(new GameplayReferenceDiagnostic(reference.AssetPath + "." + reference.PropertyPath, "Unregistered Tag: " + reference.Value)); report.MissingTagReferences++; }
+                if (reference.Kind == GameplayReferenceKind.Tag)
+                {
+                    string location = reference.AssetPath + "." + reference.PropertyPath;
+                    if (!owners.TryGetValue(reference.Value, out string owner))
+                    { report.Errors.Add(new GameplayReferenceDiagnostic(location, "Unregistered Tag: " + reference.Value)); report.MissingTagReferences++; }
+                    else if (project && sourceScopes[reference.Source] is string scope && !GameplayReferenceCatalogProvider.CanRead(scope,owner))
+                    { report.Errors.Add(new GameplayReferenceDiagnostic(location,$"{scope} 无法引用 {owner} 的私有 Tag · {reference.Value}")); report.OutOfScopeTagReferences++; }
+                }
                 if (reference.Kind == GameplayReferenceKind.Attribute && !attributes.Contains(reference.Value))
                 { report.Errors.Add(new GameplayReferenceDiagnostic(reference.AssetPath + "." + reference.PropertyPath, "Unregistered Attribute: " + reference.Value)); report.MissingAttributeReferences++; }
             }
             foreach (var literal in literals)
             {
                 bool valid = IsValid(literal.Kind, literal.Value);
-                bool present = literal.Kind == GameplayReferenceKind.Tag ? tags.Contains(literal.Value) : attributes.Contains(literal.Value);
+                bool present = literal.Kind == GameplayReferenceKind.Tag ? owners.ContainsKey(literal.Value) : attributes.Contains(literal.Value);
                 if (valid && present) continue;
                 report.Errors.Add(new GameplayReferenceDiagnostic(literal.SourcePath + ":" + literal.Line,
                     (valid ? "Unregistered" : "Invalid") + " production " + literal.Kind + " literal: " + literal.Value));
                 report.MissingCodeLiterals++;
             }
+            if (project)
+                foreach (string sourcePath in sourceScopes.Where(pair=>pair.Value==GameplayReferenceCatalogProvider.Shared)
+                    .Select(pair=>AssetDatabase.GetAssetPath(pair.Key)).Where(path=>path.Length>0).Distinct(StringComparer.Ordinal))
+                    foreach (string dependency in AssetDatabase.GetDependencies(sourcePath,false))
+                    {
+                        string scope=GameplayReferenceCatalogProvider.Scope(AssetDatabase.LoadMainAssetAtPath(dependency));
+                        if(scope!=null&&!GameplayReferenceCatalogProvider.CanRead(GameplayReferenceCatalogProvider.Shared,scope))
+                            report.Errors.Add(new GameplayReferenceDiagnostic(sourcePath,$"Shared 内容引用了 {scope} 的私有资产 · {dependency}"));
+                    }
             return report;
         }
 

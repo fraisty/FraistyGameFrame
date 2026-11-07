@@ -134,6 +134,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var tools=_documentTools=new VisualElement{name="DocumentTools",style={flexDirection=FlexDirection.Row,flexWrap=Wrap.Wrap}};toolbar.Add(tools);
             tools.Add(new ToolbarButton(() => Canvas.ShowMenu()) { text = "+ 节点" });
             tools.Add(new ToolbarButton(() => Attempt(() => { if (_document) ValidateDocument(); })) { text = "校验" });
+            tools.Add(new ToolbarButton(() => GameplayReferenceEditorWindow.OpenForScope(GameplayReferenceCatalogProvider.Scope(_document))) { text = "Reference" });
             tools.Add(new ToolbarButton(SaveDocument) { text = "保存" });
             tools.Add(readingView);tools.Add(viewCaption);
             tools.Add(new ToolbarButton(() => Canvas.FrameAll()) { text = "全图概览" });

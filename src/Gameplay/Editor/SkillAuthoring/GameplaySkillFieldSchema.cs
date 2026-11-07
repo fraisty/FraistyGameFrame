@@ -135,6 +135,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(GameplaySkillAuthoringCommands.IsReadOnly(document)){serialized.Update();return false;}
             if(!serialized.hasModifiedProperties)return false;
             try{
+                if(changedPaths!=null&&changedPaths.Any(path=>path.EndsWith(".Action.Key",StringComparison.Ordinal)||path.EndsWith(".Action.Key.Name",StringComparison.Ordinal))){
+                    var paths=new HashSet<string>(changedPaths);
+                    GameplaySkillContextVariables.For(document).StageRenames(serialized,paths);
+                    changedPaths=paths;
+                }
                 var invalidation=GameplaySkillAuthoringChange.Fields(document,changedPaths,validateStructure);
                 if(GameplayBehaviorGraphView.FollowsMainAnimation(document)){
                     var followed=(GameplayAuthoringGraph)PendingValue(serialized.FindProperty("authoringGraph"));

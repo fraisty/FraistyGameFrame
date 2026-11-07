@@ -2,23 +2,76 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using FRFrame.Gameplay.Standard;
+using TMPro;
 using UnityEngine;
 
 namespace FRFrame.Gameplay.Unity
 {
+    /// <summary>Presentation policy for committed combat outcomes on this actor.</summary>
+    public enum GameplayCombatTextMode
+    {
+        [InspectorName("自动 · 技能显式优先")] AutomaticWithOverrides,
+        [InspectorName("仅技能显式")] ExplicitOnly,
+        [InspectorName("关闭反馈")] Disabled
+    }
+
     public sealed partial class GameplayUnityAnimationController
     {
         private readonly List<FloatingLease> _floating=new List<FloatingLease>();
-        /// <summary>Optional automatic feedback binding. Set null when authored explicit actions
-        /// produce text, preventing duplicate presentation. Feedback never authorizes a gameplay hit.</summary>
+        private readonly List<(GameplayCombatOutcome Outcome, bool Shown)> _pendingCombatText =
+            new List<(GameplayCombatOutcome, bool)>();
+        /// <summary>Automatic feedback fills unclaimed outcomes at the next presentation step.</summary>
+        public GameplayCombatTextMode CombatTextMode { get; set; }
+        /// <summary>Fallback style for automatic feedback when the selector has no style.</summary>
         public GameplayFloatingTextDefinition FloatingText {get;set;}
         /// <summary>Optional game-side resource selection over a committed outcome, never a rule or clock.</summary>
         public Func<GameplayCombatOutcome,GameplayFloatingTextDefinition> FloatingTextSelector {get;set;}
+        /// <summary>Optional host font for text the authored prefab font cannot render.</summary>
+        public TMP_FontAsset FloatingTextFallbackFont {get;set;}
         public Camera FloatingTextCamera {get;set;}
         public int ActiveFloatingTextCount=>_floating.Count;
         private void OnFloatingCombat(GameplayCombatOutcome outcome)
         {
-            try{var definition=FloatingTextSelector?.Invoke(outcome)??FloatingText;if(definition!=null)ShowFloatingText(definition,outcome);}catch(Exception ex){Debug.LogException(ex,Subject);}
+            _pendingCombatText.Add((outcome, false));
+        }
+
+        // Only a current, still pending result may be claimed. Independent commits stay in
+        // the queue even when an authored action claims the last result on this actor.
+        internal bool TryShowAuthoredCombatText(GameplayFloatingTextDefinition definition, GameplayContext context)
+        {
+            if (!Actor.LastCombatOutcome.HasValue) return false;
+            var outcome = Actor.LastCombatOutcome.Value;
+            if (!ReferenceEquals(outcome.ExecutionContext, context) ||
+                outcome.Context.EffectiveSourceId != context.EffectiveSourceId ||
+                outcome.Context.OriginSourceId != context.OriginSourceId ||
+                outcome.Context.ActivationSourceId != context.ActivationSourceId) return false;
+
+            for (int i = _pendingCombatText.Count - 1; i >= 0; i--)
+            {
+                var pending = _pendingCombatText[i];
+                if (!ReferenceEquals(pending.Outcome.Context, outcome.Context) || !pending.Outcome.Equals(outcome)) continue;
+                if (pending.Shown || CombatTextMode == GameplayCombatTextMode.Disabled) return true;
+                if (!ShowFloatingText(definition, outcome)) return false;
+                _pendingCombatText[i] = (outcome, true);
+                return true;
+            }
+            return false;
+        }
+
+        private void FlushCombatText()
+        {
+            if (CombatTextMode == GameplayCombatTextMode.AutomaticWithOverrides)
+                foreach (var pending in _pendingCombatText)
+                {
+                    if (pending.Shown) continue;
+                    try
+                    {
+                        var definition = FloatingTextSelector?.Invoke(pending.Outcome) ?? FloatingText;
+                        if (definition != null) ShowFloatingText(definition, pending.Outcome);
+                    }
+                    catch (Exception ex) { Debug.LogException(ex, Subject); }
+                }
+            _pendingCombatText.Clear();
         }
         /// <summary>Actor-owned short feedback over an already committed outcome. It can outlive
         /// the instigator cast; target disposal and presentation disposal always release it.</summary>
@@ -28,14 +81,31 @@ namespace FRFrame.Gameplay.Unity
             if(outcome.Context==null)throw new ArgumentException("Committed feedback context required.",nameof(outcome));
             if(_disposed||Subject==null||Actor.IsDisposed||outcome.Context.TargetData.PrimaryTargetId!=Actor.Id)return false;
             if(definition.SuppressEmptyHealing&&outcome.Kind==GameplayCombatOutcomeKind.Heal&&outcome.Applied==0)return false;
-            var pool=SpatialViewPool;var key=new ResourceKey("Gameplay.FloatingText",definition.Prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
+            var content=definition.Format(outcome);
+            TMP_FontAsset fontOverride=null;
+            if(FloatingTextFallbackFont!=null&&!string.IsNullOrEmpty(content.Text))
+            {
+                var font=definition.Prefab.GetComponentInChildren<TMP_Text>(true).font;
+                foreach(char character in content.Text)
+                    if(font==null||!font.HasCharacter(character,true))
+                    {
+                        fontOverride=FloatingTextFallbackFont;
+                        break;
+                    }
+            }
+            var pool=SpatialViewPool;
+            string viewId=definition.Prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture);
+            if(fontOverride!=null)viewId+="/"+fontOverride.GetInstanceID().ToString(CultureInfo.InvariantCulture);
+            var key=new ResourceKey("Gameplay.FloatingText",viewId);
             var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
             try
             {
                 foreach(var child in view.GetComponentsInChildren<Transform>(true))child.gameObject.layer=Subject.layer;
                 var anchor=string.IsNullOrEmpty(definition.Binding)?Subject.transform:Subject.transform.Find(definition.Binding)??Subject.transform;
                 view.transform.SetParent(definition.Follow&&!definition.Point.HasValue?anchor:null,false);view.transform.position=(definition.Point??anchor.position)+definition.Offset+Vector3.up*(_floating.Count*.5f);
-                var widget=view.GetComponent<GameplayFloatingTextWidget>();widget.OpenStandalone(definition.Format(outcome));
+                var widget=view.GetComponent<GameplayFloatingTextWidget>();
+                widget.FontOverride=fontOverride;
+                widget.OpenStandalone(content);
                 var camera=FloatingTextCamera!=null?FloatingTextCamera:Camera.main;
                 if(camera!=null){view.transform.rotation=camera.transform.rotation;var canvas=view.GetComponent<Canvas>();if(canvas!=null)canvas.worldCamera=camera;}
                 _floating.Add(new FloatingLease(this,pool,key,view,widget,definition));return true;

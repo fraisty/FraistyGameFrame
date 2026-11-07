@@ -18,12 +18,15 @@ namespace FRFrame.Gameplay.Editor.Timeline
             issues.AddRange(validation.Issues.Select(issue => issue.ToString()));
             var catalog = GameplayReferenceCatalogProvider.Find(out string error);
             if (catalog == null) { issues.Add(error); return issues; }
-            var tags = new HashSet<string>(catalog.Tags, StringComparer.Ordinal);
             var attributes = new HashSet<string>(catalog.Attributes, StringComparer.Ordinal);
+            var owners = GameplayReferenceCatalogProvider.Catalogs.SelectMany(owner=>owner.Tags.Select(tag=>(tag,owner)))
+                .ToLookup(entry=>entry.tag,entry=>GameplayReferenceCatalogProvider.OwnerScope(entry.owner),StringComparer.Ordinal);
             foreach (var reference in GameplayReferenceScanner.ScanAssets(new[] { sequence }))
             {
+                string scope=GameplayReferenceCatalogProvider.Scope(reference.Source);
                 bool present = reference.Kind == GameplayReferenceKind.Tag
-                    ? tags.Contains(reference.Value) : attributes.Contains(reference.Value);
+                    ? owners[reference.Value].Any(owner=>scope==null||GameplayReferenceCatalogProvider.CanRead(scope,owner))
+                    : attributes.Contains(reference.Value);
                 if (GameplayReferenceDiagnostics.IsValid(reference.Kind, reference.Value) && !present)
                     issues.Add(reference.AssetPath + "." + reference.PropertyPath + ": Unregistered " +
                         reference.Kind + " " + reference.Value);
