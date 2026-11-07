@@ -7,7 +7,9 @@ namespace FRFrame.Gameplay
     public enum GameplayEffectStackAggregation
     {
         AggregateByTarget,
-        AggregateBySource
+        AggregateBySource,
+        /// <summary>Groups contributions by the originating actor across independent casts.</summary>
+        AggregateByInstigator
     }
 
     /// <summary>成功重施加时是否重置共享 Duration。</summary>

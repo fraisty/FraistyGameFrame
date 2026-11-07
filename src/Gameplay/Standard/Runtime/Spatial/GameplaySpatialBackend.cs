@@ -28,10 +28,12 @@ namespace FRFrame.Gameplay.Standard
         public int MaxTargets { get; }
         public GameplayTargetOrder Order { get; }
         public bool IncludeSelf { get; }
+        private readonly Predicate<GameplaySourceId> _excluded;
         public GameplaySpatialSearchRequest(GameplayContext context, GameplaySearchGeometry geometry,
             int sourceFaction, GameplayFactionFilter faction = GameplayFactionFilter.Enemies,
             GameplayTagQuery tags = null, int layerMask = -1, int maxTargets = int.MaxValue,
-            GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false)
+            GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false,
+            Predicate<GameplaySourceId> excluded = null)
         {
             Context = context ?? throw new ArgumentNullException(nameof(context));
             Geometry = geometry ?? throw new ArgumentNullException(nameof(geometry));
@@ -40,6 +42,7 @@ namespace FRFrame.Gameplay.Standard
                 throw new ArgumentOutOfRangeException(nameof(faction));
             SourceFaction = sourceFaction; Faction = faction; Tags = tags ?? GameplayTagQuery.Empty;
             LayerMask = layerMask; MaxTargets = maxTargets; Order = order; IncludeSelf = includeSelf;
+            _excluded = excluded;
         }
         public GameplayTargetData Select(IEnumerable<IGameplaySpatialActor> candidates)
         {
@@ -51,7 +54,8 @@ namespace FRFrame.Gameplay.Standard
                     (!IncludeSelf && actor.Id == Context.InstigatorId) || (LayerMask & (1 << actor.Layer)) == 0 ||
                     (Faction == GameplayFactionFilter.Allies && actor.Faction != SourceFaction) ||
                     (Faction == GameplayFactionFilter.Enemies && actor.Faction == SourceFaction) ||
-                    !Tags.Matches(actor.Tags) || !Geometry.Contains(actor.Id, actor.Position) || !seen.Add(actor.Id)) continue;
+                    !Tags.Matches(actor.Tags) || !Geometry.Contains(actor.Id, actor.Position) ||
+                    _excluded?.Invoke(actor.Id) == true || !seen.Add(actor.Id)) continue;
                 selected.Add(actor);
             }
             selected.Sort((a, b) =>

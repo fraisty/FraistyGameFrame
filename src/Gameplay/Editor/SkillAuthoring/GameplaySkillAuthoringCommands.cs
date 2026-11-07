@@ -34,7 +34,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(template&&(template.AuthoringSchemaVersion!=2||template.AuthoringGraph.Scope!=scope))throw new ArgumentException("复制必须使用 Schema 2 源技能的原 Scope。");
             var references=template?GameplaySkillCopyReferences.Audit(template):null;
             var preserve=preservedTemplateReferences??Array.Empty<string>();
-            if(preserve.Any(p=>references==null||!references.Any(r=>r.IsSelf&&r.Path==p)))throw new ArgumentException("复制引用选择已失效；请重新打开复制向导。");
+            if(preserve.Any(p=>references==null||!references.Any(r=>r.IsSelf&&r.LocalStackOrdinal==0&&r.Path==p)))throw new ArgumentException("复制引用选择已失效；请重新打开复制向导。");
             if(references!=null&&references.Where(r=>r.CooldownGroup!=null).GroupBy(r=>r.CooldownGroup).Any(g=>g.Any(r=>preserve.Contains(r.Path))&&g.Any(r=>!preserve.Contains(r.Path))))throw new ArgumentException("本地冷却的授予、门禁和业务引用必须整组独立化或整组共享。");
             var catalogScope=GameplayReferenceCatalogProvider.Scope(path,scope);
             var catalog=GameplayReferenceCatalogProvider.Find(catalogScope,out string catalogError);

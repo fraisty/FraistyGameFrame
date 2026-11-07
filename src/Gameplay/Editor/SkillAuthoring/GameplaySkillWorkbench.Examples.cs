@@ -41,6 +41,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(values.OfType<GameplayEffectDefinitionData>().Any(e=>e.Period>0||e.PeriodValue!=null))mechanisms.Add("周期效果 Periodic");
                 if(values.OfType<GameplayEffectDefinitionData>().Any(e=>e.CompletionExecutions.Length>0)||graph.LocalDefinitions.Any(d=>GameplayGraphFields.ActionArrays(d.Payload).Any(s=>s.Path=="OnEnd")))mechanisms.Add("生命周期 自然结束 到期回调");
                 if(values.OfType<GameplayEffectDefinitionData>().Any(e=>e.Stacking!=null))mechanisms.Add("效果与叠层 Stack 溢出");
+                if(values.OfType<GameplaySearchTargetActionAuthoring>().Any(search=>search.RepeatFromResult))mechanisms.Add("连锁 · 最近未访问目标 · 每跳倍率");
+                if(values.OfType<GameplayDamageExecutionAuthoring>().Any(damage=>damage.HealInstigatorAmount!=null))mechanisms.Add("吸血 · 实际净 HP 伤害 · 治疗施法者");
+                if(values.OfType<GameplayGrantTimedShieldActionAuthoring>().Any(shield=>graph.Connections.Any(e=>e.OutputPortKey=="OnBroken"||e.OutputPortKey=="OnExpired")))mechanisms.Add("盾破反击 · 自然到期");
+                if(values.OfType<GameplaySpawnProjectileActionAuthoring>().Any(projectile=>projectile.LaunchFromTriggerPoint))mechanisms.Add("分裂弹 · 从命中点发射子弹");
                 if(doc.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Passive||graph.AdditionalRuleNodeIds.Count>0)mechanisms.Add("被动与条件 事件监听");
                 string mechanismIndex=string.Join(" · ",mechanisms.Distinct());
                 string category=Has("Animation")?"主动画与时间":Has("SpawnArea")?"周期领域":Has("SpawnSummon")?"召唤单位":Has("SpawnProjectile")?"弹体与命中":Has("Branch")||graph.AdditionalRuleNodeIds.Count>0?"被动与条件":graph.Timelines.Any(t=>t.Events.Count>3)?"多时点与复用":graph.LocalDefinitions.Any(d=>d.Payload is GameplayEffectDefinitionData e&&e.Stacking!=null)?"效果与叠层":"即时效果与控制";
@@ -60,9 +64,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(doc.SkillId==7008)route+=" 本例4秒/0.5秒周期、最多3层；层数不自动倍乘伤害。第四次应用触发溢出伤害，自然到期治疗50；OwnedByAbility=false，因此瞬时施放结束后DoT继续，驱散不等于自然完成。";
                 if(doc.SkillId==7009)route+=" 本例Mode=Passive，Subject=OwnerTarget，监听真实受击Hit；Owner当前Health<500才治疗当前目标50。试装面板发布者→敌人的测试事件不会冒充Owner受击；可让敌人安装7004面向Owner攻击验证。";
                 if(doc.SkillId==7010)route+=" 本例共享SpatialActorProfile与独立7004技能；AutoCast开启、存续4秒、OnEnd结束施放。召唤技能以新单位自己的属性和身份执行。";
+                bool u7=AssetDatabase.GetAssetPath(doc).Contains("/FRFrameSkillLab/U7Examples/");
+                if(u7){host="FRFrameGameplaySkillLab / 共用练习场";route+=" 进入共用练习场，或用 Scene / 调试 → 安装当前正式技能。剧毒爆发从零步骤与其余五例操作见 U7 Task。";}
                 var ability=graph.Nodes.Find(n=>n.Id==graph.AbilityNodeId)?.Payload as GameplayAbilityNodePayload;var settings=ability?.Settings as GameplayAbilityDefinitionData;
                 string tags=(settings?.Cost!=null?"消耗 ":"")+(settings?.Charge!=null?"充能 ":"")+(ability?.Definitions.Any(b=>b.PropertyPath=="CooldownEffect")==true?"冷却 ":"")+(graph.Nodes.Any(n=>n.Payload.Definitions.Any(b=>b.External))?"共享SO ":"");
-                return new SkillExample{Source=doc,Category=category,Host=host,Tags=tags,Mechanisms=mechanismIndex,Keywords=string.Join(" ",descriptions.Select(d=>d.Keywords)),Complexity=graph.Nodes.Count>15?3:graph.Nodes.Count>7?2:1,Status=privateHost?"特定样例Host；非通用能力":AssetDatabase.GetAssetPath(doc).Contains("/AuthoringExamples/H1/")?(doc.SkillId==7003?"已由 GUI 复制改造并在 Lab 验证":doc.SkillId==7002||doc.SkillId>=7004&&doc.SkillId<=7010?"已由 GUI 从零重建并在 Lab 运行验证":"已由 GUI 创作；运行验收待完成"):"既有正式Runtime内容；GUI复刻待验证",Lesson=route};
+                return new SkillExample{Source=doc,Category=category,Host=host,Tags=tags,Mechanisms=mechanismIndex,Keywords=string.Join(" ",descriptions.Select(d=>d.Keywords)),Complexity=graph.Nodes.Count>15?3:graph.Nodes.Count>7?2:1,Status=u7?"U7 标准范例 · Lab 可运行":privateHost?"特定样例Host；非通用能力":AssetDatabase.GetAssetPath(doc).Contains("/AuthoringExamples/H1/")?(doc.SkillId==7003?"已由 GUI 复制改造并在 Lab 验证":doc.SkillId==7002||doc.SkillId>=7004&&doc.SkillId<=7010?"已由 GUI 从零重建并在 Lab 运行验证":"已由 GUI 创作；运行验收待完成"):"既有正式Runtime内容；GUI复刻待验证",Lesson=route};
             }).OrderBy(e=>e.Category,StringComparer.Ordinal).ThenBy(e=>e.Source.SkillId).ToList();
             _examplePanel=new VisualElement{name="SkillExampleLibrary",style={position=Position.Absolute,left=12,right=12,top=38,bottom=12,backgroundColor=new Color(.14f,.16f,.19f)}};
             _examplePanel.Add(new IMGUIContainer(DrawExamples){style={flexGrow=1}});rootVisualElement.Add(_examplePanel);_examplePanel.BringToFront();

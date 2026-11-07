@@ -83,11 +83,16 @@ namespace FRFrame.Gameplay.Standard
     {
         public static readonly GameplayTag CriticalKey = new GameplayTag("Data.Standard.Critical");
         public static readonly GameplayTag MissKey = new GameplayTag("Data.Standard.Miss");
+        /// <summary>The net HP loss in this committed damage execution, available only to its heal.</summary>
+        public static readonly GameplayTag AppliedDamageKey = new GameplayTag("Data.Standard.Combat.AppliedDamage");
         private readonly IGameplayFloatValue _amount;
         private readonly IReadOnlyList<GameplayDamageStage> _stages;
         private readonly GameplayTagQuery _immunity;
+        private readonly GameplayHealExecution _healInstigator;
         public GameplayDamageType DamageType {get;}
-        public GameplayDamageExecution(IGameplayFloatValue amount, IEnumerable<GameplayDamageStage> stages, GameplayTagQuery immunity = null,GameplayDamageType damageType=GameplayDamageType.Physical)
+        public GameplayDamageExecution(IGameplayFloatValue amount, IEnumerable<GameplayDamageStage> stages,
+            GameplayTagQuery immunity = null, GameplayDamageType damageType = GameplayDamageType.Physical,
+            IGameplayFloatValue healInstigatorAmount = null)
         {
             _amount = amount ?? throw new ArgumentNullException(nameof(amount));
             if(!Enum.IsDefined(typeof(GameplayDamageType),damageType))throw new ArgumentOutOfRangeException(nameof(damageType));DamageType=damageType;
@@ -96,6 +101,7 @@ namespace FRFrame.Gameplay.Standard
             int shields = 0; foreach (var stage in copy) if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
             if (shields > 1) throw new ArgumentException("Only one shield stage may consume the captured capacity.");
             _stages = copy.AsReadOnly(); _immunity = immunity ?? GameplayTagQuery.Empty;
+            if (healInstigatorAmount != null) _healInstigator = new GameplayHealExecution(healInstigatorAmount);
         }
         public void Execute(GameplayEffectApplicationContext application)
         {
@@ -125,18 +131,29 @@ namespace FRFrame.Gameplay.Standard
             var result = pipeline.Calculate(new DamageContext(application.Context, initial, target.Attributes, application.InstigatorAttributes));
             if (!target.Resources.TryGetBalance(map.Health, out float health)) throw new InvalidOperationException("Health resource is missing.");
             float applied = Math.Min(Math.Max(0, health), result.FinalDamage);
-            Action commitShieldOwnership=null;
+            Func<Action> commitShieldOwnership=null;
             var balances = new Dictionary<GameplayAttributeId, float> { [map.Health] = Math.Max(0, health - applied) };
             if (result.AbsorbedDamage > 0)
             {
                 if (!target.Resources.TryGetBalance(map.Shield, out float shield)) throw new InvalidOperationException("Shield resource is missing.");
                 balances.Add(map.Shield, Math.Max(0, shield - result.AbsorbedDamage));
-                commitShieldOwnership=target.Shields.PrepareConsumption(result.AbsorbedDamage,shield);
+                commitShieldOwnership=target.Shields.PrepareConsumption(result.AbsorbedDamage,shield,application.Context);
             }
             target.Resources.SetBalancesAtomic(balances);
-            commitShieldOwnership?.Invoke();
+            var shieldBreakCallbacks = commitShieldOwnership?.Invoke();
+            if (applied > 0 && balances[map.Health] == 0) target.Shields.RemoveCallbackShieldsOnDeath();
             target.ReportCombat(new GameplayCombatOutcome(application.Context, GameplayCombatOutcomeKind.Damage, result,
                 applied, Math.Max(0, result.FinalDamage - applied), health, balances[map.Health],DamageType));
+            if (_healInstigator != null && applied > 0 &&
+                target.World.TryGetActor(application.Context.InstigatorId, out var instigator) &&
+                instigator.CombatAttributes != null && instigator.IsTargetable)
+            {
+                var heal = application.Context.WithTarget(new GameplayTargetData(instigator.Id, instigator.Position))
+                    .WithValues(application.Context.Values.WithValue(AppliedDamageKey, applied));
+                _healInstigator.Execute(new GameplayEffectApplicationContext(heal, instigator,
+                    heal.Values.AsSetByCallerValues(), instigator.Attributes, instigator.Id, instigatorTarget: instigator));
+            }
+            shieldBreakCallbacks?.Invoke();
         }
         private sealed class Stage : IDamageResultModifier
         {

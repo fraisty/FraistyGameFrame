@@ -124,15 +124,24 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 else if (payload.Action is GameplaySkillBranchActionAuthoring)
                     input = Merge(RunOutput(id, "TrueActions", input), RunOutput(id, "FalseActions", input));
-                else if (payload.Action is GameplaySearchTargetActionAuthoring)
+                else if (payload.Action is GameplaySearchTargetActionAuthoring search)
                 {
-                    RunOutput(id, "EachTarget", input);
+                    var each = input;
+                    if (search.RepeatFromResult)
+                    {
+                        string key = GameplaySearchTargetAction.SearchMultiplierKey.Name;
+                        string source = path + ".RepeatMultiplier";
+                        _producers[source] = (key, "逐次搜索倍率");
+                        each = new Dictionary<string, HashSet<string>>(input, StringComparer.Ordinal) { [key] = new HashSet<string> { source } };
+                    }
+                    RunOutput(id, "EachTarget", each);
                     RunOutput(id, "NoTargets", input);
                     input = RunOutput(id, "Completed", input);
                 }
                 else
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload.Action))
-                        RunOutput(id, slot.Path, payload.Action is GameplayMoveTargetsActionAuthoring ? input : Empty);
+                        RunOutput(id, slot.Path, payload.Action is GameplayMoveTargetsActionAuthoring ||
+                            payload.Action is GameplayGrantTimedShieldActionAuthoring ? input : Empty);
 
                 input = RunOutput(id, "Then", input);
                 active.Remove(id);

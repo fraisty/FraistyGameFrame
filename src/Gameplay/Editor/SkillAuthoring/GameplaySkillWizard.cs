@@ -55,6 +55,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         bool next=EditorGUILayout.ToggleLeft(new GUIContent("独立冷却："+reference.CooldownGroup+" → "+reference.TargetTag(_id,tagScope)+"（"+group.Length+"处）",string.Join("\n",group.Select(r=>r.Path))+"\n取消勾选：有意与源技能共享这组冷却及业务标签。"),independent);
                         foreach(var item in group)if(next)_preserveReferences.Remove(item.Path);else _preserveReferences.Add(item.Path);
                     }
+                    else if(reference.LocalStackOrdinal>0)
+                        EditorGUILayout.LabelField(new GUIContent("独立叠层："+reference.Description+" → "+reference.TargetTag(_id,tagScope),reference.Path));
                     else if(reference.IsSelf){string target=reference.IsTag?reference.TargetTag(_id,tagScope):_id.ToString();bool remap=!_preserveReferences.Contains(reference.Path);bool next=EditorGUILayout.ToggleLeft(new GUIContent("重映射："+reference.Description+" → "+target,reference.Path),remap);if(next)_preserveReferences.Remove(reference.Path);else _preserveReferences.Add(reference.Path);}
                     else EditorGUILayout.LabelField(new GUIContent("保留："+reference.Description,reference.Path));
                 }

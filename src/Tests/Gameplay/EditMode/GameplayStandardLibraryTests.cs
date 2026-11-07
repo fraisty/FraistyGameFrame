@@ -377,6 +377,76 @@ namespace FRFrame.Tests.Gameplay
         {private readonly Action<GameplayEffectApplicationContext> _action;internal CallbackExecution(Action<GameplayEffectApplicationContext> action)=>_action=action;public void Execute(GameplayEffectApplicationContext context)=>_action(context);}
         private sealed class CallbackCompletion:IGameplayEffectCompletionExecution
         {private readonly Action<GameplayEffectCompletionContext> _action;internal CallbackCompletion(Action<GameplayEffectCompletionContext> action)=>_action=action;public void Execute(GameplayEffectCompletionContext context)=>_action(context);}
+        [Test]
+        public void DamageFollowupUsesEachCommittedHpLossWithoutReusingEarlierResults()
+        {
+            using var world = new GameplayStandardWorld();
+            var source = world.CreateActor(default);
+            var first = world.CreateActor(default);
+            var second = world.CreateActor(default);
+            Configure(source);
+            Configure(first);
+            Configure(second);
+            source.Attributes.SetBaseValue(Health, 500);
+            first.Attributes.SetBaseValue(Health, 20);
+            first.Attributes.SetBaseValue(Shield, 0);
+            var execution = new GameplayDamageExecution(Number(40),
+                new[] { new GameplayDamageStage(GameplayDamageStageKind.Shield) },
+                healInstigatorAmount: GameplayFormula.Compile("Context.Data.Standard.Combat.AppliedDamage * 0.35"));
+            var heals = new List<GameplayCombatOutcome>();
+            source.CombatChanged += heals.Add;
+            var context = new GameplayContext(source.Id, new GameplayTargetData(first.Id), world.Sources.Allocate(),
+                GameplayContextValues.Empty.WithValue(GameplayDamageExecution.AppliedDamageKey, 1000));
+
+            void Hit(GameplayStandardActor target) => execution.Execute(new GameplayEffectApplicationContext(
+                context.WithTarget(new GameplayTargetData(target.Id)), target, GameplaySetByCallerValues.Empty,
+                source.Attributes, source.Id, instigatorTarget: source));
+
+            Hit(first);
+            Hit(second);
+            Hit(first);
+            Assert.That(heals.Count, Is.EqualTo(1));
+            Assert.That(heals[0].Applied, Is.EqualTo(7).Within(.001));
+            Assert.That(heals[0].Context.ActivationSourceId, Is.EqualTo(context.ActivationSourceId));
+            Assert.That(source.Attributes.GetCurrentValue(Health), Is.EqualTo(507).Within(.001));
+        }
+
+        [Test]
+        public void ShieldBreakConsumesTheLeaseAndUsesTheBreakerWithoutAnExpiryCallback()
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default);
+            var breaker = world.CreateActor(default);
+            Configure(owner);
+            Configure(breaker);
+            owner.Attributes.SetBaseValue(Shield, 0);
+            var broken = new List<GameplayContext>();
+            var expired = new List<GameplayContext>();
+            var grant = new GameplayGrantTimedShieldAction(Number(40), Number(1),
+                onBroken: new[] { new ObserveAction(broken.Add) },
+                onExpired: new[] { new ObserveAction(expired.Add) });
+            var self = new GameplayContext(owner.Id, new GameplayTargetData(owner.Id));
+            grant.Execute(self, default, owner);
+            var hit = new GameplayContext(breaker.Id, new GameplayTargetData(owner.Id));
+            var damage = new GameplayDamageExecution(Number(40), new[] { new GameplayDamageStage(GameplayDamageStageKind.Shield) });
+            damage.Execute(new GameplayEffectApplicationContext(hit, owner, GameplaySetByCallerValues.Empty));
+            Assert.That(owner.Shields.Snapshot(), Is.Empty);
+            Assert.That(broken.Count, Is.EqualTo(1));
+            Assert.That(broken[0].TargetData.PrimaryTargetId, Is.EqualTo(breaker.Id));
+            world.Advance(2);
+            Assert.That(expired, Is.Empty);
+
+            grant.Execute(self, default, owner);
+            world.Advance(1);
+            Assert.That(expired.Count, Is.EqualTo(1));
+            Assert.That(expired[0].TargetData.PrimaryTargetId, Is.EqualTo(owner.Id));
+            grant.Execute(self, default, owner);
+            owner.Effects.Remove(owner.Shields.Snapshot()[0].EffectHandle, GameplayEffectRemovalCause.Dispel);
+            world.Advance(1);
+            Assert.That(expired.Count, Is.EqualTo(1));
+            Assert.That(broken.Count, Is.EqualTo(1));
+        }
+
         private static IGameplayFloatValue Number(float value) => new GameplayConstantFloatValue(value);
         private sealed class ObserveAction : IGameplaySkillAction
         {

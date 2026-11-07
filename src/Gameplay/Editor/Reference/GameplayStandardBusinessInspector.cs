@@ -88,12 +88,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 dimensions.Add("Height");
                 yield return Group("正式范围数值","可用常量、等级表、公式；形状切换保留原有配置。",dimensions.ToArray());
                 yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf");
+                yield return Group("逐次重选","圆形查询从上一目标的位置选最近未访问目标，目标上限为总跳数。逐目标分支可读取 Context.Data.Standard.Search.Multiplier。",
+                    "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier");
                 yield return Group("正式续接","每个目标只有一个 Target；搜索完成收到完整结果，无目标分支收到空列表。","EachTarget","Completed","NoTargets");
             }
             else if(value is GameplayDamageExecutionAuthoring)
             {
                 yield return Group("伤害数值 / 类型","Physical读Defense，Magical读MagicDefense；True只跳过防御阶段。所有计算成功后一次提交HP/Shield。","Amount","DamageType");
                 yield return Group("结算阶段（列表顺序）","拖动重排；Critical/Miss读取捕获输入，可先接「捕获暴击/未命中」动作。","Stages","Immunity");
+                yield return Group("结算后治疗","只在本次实际扣除 HP 后求值。公式可读取 Context.Data.Standard.Combat.AppliedDamage。",
+                    "HealInstigatorAmount");
             }
             else if(value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring)
                 yield return Group("结算数值",value is GameplayHealExecutionAuthoring?"治疗受实际 MaxHealth 限制，结果保留溢出。":"瞬时增加实际 Shield；本动作不提供按来源的时限护盾。","Amount");
@@ -106,17 +110,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             else if((value is GameplayProjectileDefinitionAsset || value is GameplayProjectileDefinitionData))
             {
                 yield return Group("弹体轨迹 / 时间 / 数值","直线方向模式保持旧射程弹；固定终点捕获释放点/目标位置，不追踪。射程/时长先耗尽分别 Range/Completed；命中上限优先。弧线/抛物线/Bezier使用时长与逐段扫掠。","Motion","StraightDestination","Plane","Speed","Duration","HitRadius","MaxRange","CurveHeight","Control1Offset","Control2Offset","DirectionAngle","LaunchOffset","DestinationOffset","CancelOnAbilityEnd");
-                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消当前 cast 精确清理。","Faction","Tags","LayerMask","MaxHits");
+                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消清理以生命周期归属为准。","Faction","Tags","LayerMask","MaxHits","OnlyHitPrimaryTarget");
                 yield return Group("实际回调","使用既有规则动作；可以施效果、生成区域或执行后续编排。","OnHit","OnArrive","OnRange","OnCancelled");
                 yield return Group("可选场景资源","场景 Source 直接绑定实际 Prefab；逻辑 Source 无 Unity 表现依赖。","Prefab");
             }
             else if((value is GameplayAreaDefinitionAsset || value is GameplayAreaDefinitionData))
             {
                 yield return Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize","CancelOnAbilityEnd");
-                yield return Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura离开/到期/取消只移除本区域来源。","Duration","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","Faction","Tags","LayerMask","Aura");
+                yield return Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura在进入时应用，离开或区域结束时只移除本区域贡献。","Duration","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","EndOnOwnerDeath","Faction","Tags","LayerMask","Aura");
                 yield return Group("进入 / 停留 / 周期 / 离开 / 结束","Stay 每步执行，Tick 按间隔执行；所有回调保留 cast Level/Root。","OnEnter","OnStay","OnTick","OnExit","OnEnd","Prefab");
             }
-            else if(value is GameplaySpawnProjectileActionAuthoring)yield return Group("发射正式弹体","直接引用唯一弹体 Source；Logic/Physics2D/3D复用同一规则。","Projectile");
+            else if(value is GameplaySpawnProjectileActionAuthoring)yield return Group("发射正式弹体","直接引用唯一弹体 Source；Logic/Physics2D/3D复用同一规则。","Projectile","LaunchFromTriggerPoint");
             else if(value is GameplaySpawnAreaActionAuthoring)yield return Group("生成正式区域","位置来自 Source Origin；OnHit/Arrive 的 ContextPoint 可成为区域中心。","Area");
             else if((value is GameplaySummonDefinitionAsset || value is GameplaySummonDefinitionData))
             {
@@ -128,7 +132,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("位移 / 控制 / 到达","写回实际位置与朝向；等/高优先级替换，低优先级忽略。控制门禁为可选标签查询。","Mode","Distance","Speed","Priority","UseControlGate","Blocked","CancelOnAbilityEnd","FollowSource","MinimumSeparation","Duration","OnArrive","OnCancelled");
             else if(value is GameplayRotateToPointActionAuthoring)yield return Group("转向实际目标点","修改实际 Actor Facing；场景绑定映射到真实朝向。","RotateOwner");
             else if(value is GameplayChangeStateActionAuthoring)yield return Group("现有行为状态","使用Host显式注册的状态别名；转移约束由原Core/Fsm决定。","State");
-            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾，再消耗无主容量。现有Effect时钟到期只扣本份剩余值；OwnedByAbility另绑定当前cast。","Amount","Duration","OwnedByAbility");
+            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。耗尽输出破盾者，自然到期输出原目标；取消与驱散只清理。","Amount","Duration","OwnedByAbility","OnBroken","OnExpired");
             else if(value is GameplayCaptureCombatRollActionAuthoring)yield return Group("本次命中随机输入","概率0..1；使用World注入的随机源。保留已有输入时不重新抽样，可放进逐目标回调。","CriticalChance","MissChance","PreserveExisting");
             else if(value is GameplayCaptureValueActionAuthoring)yield return Group("捕获数值快照","在此动作/目标边界求值一次，写入Key。后续Context/Caller读取捕获值；属性节点仍读实时值。","Key","Value");
             else if(value is GameplaySkillDocumentAsset)

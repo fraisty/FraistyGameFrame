@@ -107,6 +107,13 @@ namespace FRFrame.Gameplay.Editor
             Labels["DamageType"]="伤害类型";
             Labels["Stages"]="结算阶段";
             Labels["Immunity"]="免疫筛选";
+            Labels["HealInstigatorAmount"]="伤害提交后治疗施法者";
+            Labels["ExcludePrimaryTarget"]="排除输入的主要目标";
+            Labels["RepeatFromResult"]="从每次结果继续搜索";
+            Labels["RepeatMultiplier"]="每跳倍率";
+            Labels["LaunchFromTriggerPoint"]="从触发事件地点发射";
+            Labels["OnlyHitPrimaryTarget"]="仅命中主要目标";
+            Labels["EndOnOwnerDeath"]="施法者死亡时结束";
             Labels["Expression"]="数值表达式";
             Labels["Source"]="数值来源";
             Labels["Constant"]="固定比较值";

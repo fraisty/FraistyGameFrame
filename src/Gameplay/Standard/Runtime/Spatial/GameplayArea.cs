@@ -21,6 +21,7 @@ namespace FRFrame.Gameplay.Standard
         public IGameplayFloatValue TickInterval {get;}
         public bool TickOnEnter {get;}
         public bool FollowOwner {get;}
+        public bool EndOnOwnerDeath { get; }
         public IGameplayFloatValue ArmingDelay {get;}
         /// <summary>0 means unlimited entries. A positive limit finishes after that many successful
         /// enter callbacks, using the same cleanup path as expiry/cancel (trap placement semantics).</summary>
@@ -42,7 +43,8 @@ namespace FRFrame.Gameplay.Standard
             bool tickOnEnter=true,bool followOwner=false,GameplayFactionFilter faction=GameplayFactionFilter.Enemies,GameplayTagQuery tags=null,int layerMask=-1,
             IEnumerable<GameplayEffectDefinition> aura=null,IEnumerable<IGameplaySkillAction> onEnter=null,IEnumerable<IGameplaySkillAction> onTick=null,
             IEnumerable<IGameplaySkillAction> onExit=null,IEnumerable<IGameplaySkillAction> onEnd=null,IEnumerable<GameplayPoint> cells=null,float cellSize=1,IGameplaySpatialViewFactory view=null,IEnumerable<IGameplaySkillAction> onStay=null,
-            IGameplayFloatValue armingDelay=null,int triggerLimit=0,GameplayPoint originOffset=default)
+            IGameplayFloatValue armingDelay=null,int triggerLimit=0,GameplayPoint originOffset=default,
+            bool endOnOwnerDeath=false)
         {
             if(shape!=GameplaySearchShape.Circle&&shape!=GameplaySearchShape.Sector&&shape!=GameplaySearchShape.Box&&shape!=GameplaySearchShape.GridCells)throw new ArgumentOutOfRangeException(nameof(shape));
             if(!Enum.IsDefined(typeof(GameplaySpatialPlane),plane)||!Enum.IsDefined(typeof(GameplaySearchOrigin),origin)||!Enum.IsDefined(typeof(GameplayFactionFilter),faction))throw new ArgumentOutOfRangeException(nameof(plane));
@@ -51,6 +53,7 @@ namespace FRFrame.Gameplay.Standard
             Length=length??throw new ArgumentNullException(nameof(length));Width=width??throw new ArgumentNullException(nameof(width));Height=height??throw new ArgumentNullException(nameof(height));
             Duration=duration??throw new ArgumentNullException(nameof(duration));TickInterval=tickInterval??throw new ArgumentNullException(nameof(tickInterval));
             TickOnEnter=tickOnEnter;FollowOwner=followOwner;Faction=faction;Tags=tags??GameplayTagQuery.Empty;LayerMask=layerMask;
+            EndOnOwnerDeath = endOnOwnerDeath;
             if(triggerLimit<0)throw new ArgumentOutOfRangeException(nameof(triggerLimit));TriggerLimit=triggerLimit;ArmingDelay=armingDelay??new GameplayConstantFloatValue(0);
             var effects=new List<GameplayEffectDefinition>(aura??Array.Empty<GameplayEffectDefinition>());
             if(effects.Exists(e=>e==null||e.DurationPolicy==GameplayEffectDurationPolicy.Instant))throw new ArgumentException("Aura requires persistent effect contributions.");
@@ -110,6 +113,11 @@ namespace FRFrame.Gameplay.Standard
         internal override void Advance(float delta)
         {
             if(Owner.IsDisposed){Dispose();return;}
+            if (_definition.EndOnOwnerDeath && !Owner.IsTargetable)
+            {
+                Finish(GameplaySpatialEndReason.Died);
+                return;
+            }
             double next=Math.Min(_duration,_age+(double)delta);
             double boundaries=Math.Floor(Math.Max(0,next-_arming)/_period);
             if(boundaries-_ticks>4096)throw new InvalidOperationException("Area step exceeds the callback budget; advance the world in smaller steps.");

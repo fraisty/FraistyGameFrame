@@ -30,6 +30,8 @@ namespace FRFrame.Gameplay.Authoring
         public GameplayTagQueryAuthoring Tags=new GameplayTagQueryAuthoring();
         public int LayerMask=-1;
         [Min(1)]public int MaxHits=1;
+        [Tooltip("只命中当前主要目标。用于从另一个单位所在位置起飞、且不应碰到该单位的弹体。")]
+        public bool OnlyHitPrimaryTarget;
         [SerializeReference] public GameplaySkillActionAuthoring[] OnHit=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnArrive=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnRange=Array.Empty<GameplaySkillActionAuthoring>();
@@ -38,7 +40,7 @@ namespace FRFrame.Gameplay.Authoring
             new GameplayProjectileMotionDefinition(Motion,new GameplayPoint(Control1Offset.x,Control1Offset.y,Control1Offset.z),new GameplayPoint(Control2Offset.x,Control2Offset.y,Control2Offset.z),StraightDestination),
             Speed.Build(),Duration.Build(),HitRadius.Build(),MaxRange.Build(),CurveHeight.Build(),Plane,Faction,Tags?.Build(),LayerMask,MaxHits,Motion==GameplayProjectileMotionKind.Homing,
             GameplaySpatialAuthoringUtility.Build(OnHit,context),GameplaySpatialAuthoringUtility.Build(OnArrive,context),GameplaySpatialAuthoringUtility.Build(OnRange,context),GameplaySpatialAuthoringUtility.Build(OnCancelled,context),CreateView(context),
-            CancelOnAbilityEnd,new GameplayPoint(LaunchOffset.x,LaunchOffset.y,LaunchOffset.z),new GameplayPoint(DestinationOffset.x,DestinationOffset.y,DestinationOffset.z),DirectionAngle));
+            CancelOnAbilityEnd,new GameplayPoint(LaunchOffset.x,LaunchOffset.y,LaunchOffset.z),new GameplayPoint(DestinationOffset.x,DestinationOffset.y,DestinationOffset.z),DirectionAngle,OnlyHitPrimaryTarget));
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {

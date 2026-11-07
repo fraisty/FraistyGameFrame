@@ -21,9 +21,11 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable,Preserve]public sealed class GameplaySpawnProjectileActionAuthoring:GameplaySkillActionAuthoring
     {
         public GameplayProjectileDefinitionAsset Projectile;
+        [Tooltip("从触发事件地点发射。搜索可改选目标，仍保留父弹体命中事件的出生点。")]
+        public bool LaunchFromTriggerPoint;
         public override void Validate(GameplayAuthoringValidationContext v,string p)=>v.Asset(Projectile,p+".Projectile");
         public override void ValidateReferences(GameplayAuthoringValidationContext v,string p)=>v.Asset(Projectile,p+".Projectile");
-        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplaySpawnProjectileAction(context.ResolveDefinition(Projectile, this, nameof(Projectile), () => Projectile.Build(context)));
+        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplaySpawnProjectileAction(context.ResolveDefinition(Projectile, this, nameof(Projectile), () => Projectile.Build(context)), LaunchFromTriggerPoint);
     }
     [Serializable,Preserve]public sealed class GameplaySpawnAreaActionAuthoring:GameplaySkillActionAuthoring
     {

@@ -14,7 +14,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             internal string Path, Description, CooldownGroup, TagSuffix;
             internal bool IsSelf, IsTag;
-            internal string TargetTag(int id,string scope)=>CooldownGroup!=null
+            internal int LocalStackOrdinal;
+            internal string TargetTag(int id,string scope)=>LocalStackOrdinal>0
+                ? GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Effect.Stack.","S"+id+".Copy"+LocalStackOrdinal)
+                : CooldownGroup!=null
                 ? GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Cooldown.Skill.",id+TagSuffix)
                 : GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Event.Created.","S"+id);
         }
@@ -30,6 +33,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             // embedded use of a granted tag travels with that group, including business queries.
             var privateTags=cooldown?.GrantedTags.Select(t=>t.Name).Where(t=>!string.IsNullOrEmpty(t)).Distinct().ToList()??new List<string>();
             var sharedTags=(binding?.External as GameplayEffectDefinitionAsset)?.GrantedTags.Select(t=>t.Name).ToHashSet()??new HashSet<string>();
+            var localStackKeys=source.AuthoringGraph.LocalDefinitions.Select(d=>d.Payload).OfType<GameplayEffectDefinitionData>()
+                .Where(d=>d.Stacking!=null).Select(d=>d.Stacking.StackKey.Name).Distinct().ToList();
             using(var so=new SerializedObject(source)){
                 var field=so.GetIterator();
                 while(field.Next(true)){
@@ -44,6 +49,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     }
                     if(!field.isArray&&field.type==nameof(GameplayTagReference)&&field.propertyPath!="CastEvent"){
                         var tag=field.FindPropertyRelative("Name");string value=tag.stringValue;
+                        if(field.name=="StackKey"&&field.propertyPath.StartsWith("authoringGraph.LocalDefinitions.",System.StringComparison.Ordinal)
+                           &&!string.IsNullOrEmpty(value)){
+                            result.Add(new Reference{Path=tag.propertyPath,IsSelf=true,IsTag=true,
+                                LocalStackOrdinal=localStackKeys.IndexOf(value)+1,Description="局部叠层键 "+value});
+                            continue;
+                        }
                         // Retained, detached authoring drafts still keep the established
                         // explicit self-ID contract (e.g. 7002); arbitrary names require a binding.
                         int at=privateTags.IndexOf(value);bool cooldownTag=at>=0||value=="Cooldown.Skill."+source.SkillId||value==scopedCooldown;

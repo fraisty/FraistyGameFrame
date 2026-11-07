@@ -200,7 +200,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 key == "NoTargets" ? "无目标" : key == "TrueActions" ? "满足条件" : key == "FalseActions" ? "不满足" :
                 key == "OnHit" ? "命中" : key == "OnArrive" ? "到达" : key == "OnRange" ? "射程结束" :
                 key == "OnEnter" ? "进入" : key == "OnExit" ? "离开" : key == "OnTick" ? "周期" : key=="OnStay"?"持续停留（每步）":
-                key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" : ObjectNames.NicifyVariableName(path);
+                key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
+                key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" :
+                ObjectNames.NicifyVariableName(path);
         }
 
         public static void Draw(GameplaySkillDocumentAsset document, string nodeId, string definitionId = null, bool cardFields = false)

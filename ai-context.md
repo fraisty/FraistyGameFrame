@@ -60867,6 +60867,10 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(port=="NoTargets"||port=="Completed"||port=="Then")return input.With(false,true,"搜索完成/无目标不保证 Actor；先以地点重新搜索");
             }
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
+            if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnBroken")
+                return input.With(true, true, "护盾耗尽后提供破盾者与地点");
+            if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnExpired")
+                return input.With(true, input.Point, "自然到期后提供原护盾目标");
             if(payload is GameplayAreaDefinitionData){
                 if(port=="OnEnd")return input;
                 return input.With(port=="OnEnter"||port=="OnStay"||port=="OnTick",true,"区域退出不保证 Actor");
@@ -61468,11 +61472,14 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=4};
         [SerializeReference] public GameplayFloatValueAuthoring TickInterval=new GameplayConstantFloatValueAuthoring{Value=.5f};
         public bool TickOnEnter=true,FollowOwner;
+        [Tooltip("施法者失去战斗资格时结束区域并释放全部 Aura 贡献。")]
+        public bool EndOnOwnerDeath;
         public GameplayFactionFilter Faction=GameplayFactionFilter.Enemies;
         public GameplayTagQueryAuthoring Tags=new GameplayTagQueryAuthoring();
         public int LayerMask=-1;
         public Vector3[] Cells=Array.Empty<Vector3>();
         public float CellSize=1;
+        [Tooltip("区域对每个成员持有独立的持续效果贡献，离开或结束时只解除自己的贡献。")]
         public GameplayEffectDefinitionAsset[] Aura=Array.Empty<GameplayEffectDefinitionAsset>();
         [SerializeReference]public GameplaySkillActionAuthoring[] OnEnter=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference]public GameplaySkillActionAuthoring[] OnStay=Array.Empty<GameplaySkillActionAuthoring>();
@@ -61485,7 +61492,7 @@ namespace FRFrame.Gameplay.Authoring
             Shape==GameplayAreaAuthoringShape.Cells?GameplaySearchShape.GridCells:Shape==GameplayAreaAuthoringShape.Box?GameplaySearchShape.Box:Shape==GameplayAreaAuthoringShape.Sector?GameplaySearchShape.Sector:GameplaySearchShape.Circle,
             Plane,Origin,Radius.Build(),Angle.Build(),Length.Build(),Width.Build(),Height.Build(),Duration.Build(),TickInterval.Build(),TickOnEnter,FollowOwner,Faction,Tags?.Build(),LayerMask,
             Enumerable.Range(0, Aura.Length).Select(i => context.ResolveDefinition(Aura[i], this, "Aura.Array.data[" + i + "]", () => Aura[i].Build(context))).ToArray(),GameplaySpatialAuthoringUtility.Build(OnEnter,context),GameplaySpatialAuthoringUtility.Build(OnTick,context),
-            GameplaySpatialAuthoringUtility.Build(OnExit,context),GameplaySpatialAuthoringUtility.Build(OnEnd,context),Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,CreateView(context),GameplaySpatialAuthoringUtility.Build(OnStay,context),ArmingDelay.Build(),TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z)));
+            GameplaySpatialAuthoringUtility.Build(OnExit,context),GameplaySpatialAuthoringUtility.Build(OnEnd,context),Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,CreateView(context),GameplaySpatialAuthoringUtility.Build(OnStay,context),ArmingDelay.Build(),TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),EndOnOwnerDeath));
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {
@@ -61540,6 +61547,8 @@ namespace FRFrame.Gameplay.Authoring
         public GameplayTagQueryAuthoring Tags=new GameplayTagQueryAuthoring();
         public int LayerMask=-1;
         [Min(1)]public int MaxHits=1;
+        [Tooltip("只命中当前主要目标。用于从另一个单位所在位置起飞、且不应碰到该单位的弹体。")]
+        public bool OnlyHitPrimaryTarget;
         [SerializeReference] public GameplaySkillActionAuthoring[] OnHit=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnArrive=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnRange=Array.Empty<GameplaySkillActionAuthoring>();
@@ -61548,7 +61557,7 @@ namespace FRFrame.Gameplay.Authoring
             new GameplayProjectileMotionDefinition(Motion,new GameplayPoint(Control1Offset.x,Control1Offset.y,Control1Offset.z),new GameplayPoint(Control2Offset.x,Control2Offset.y,Control2Offset.z),StraightDestination),
             Speed.Build(),Duration.Build(),HitRadius.Build(),MaxRange.Build(),CurveHeight.Build(),Plane,Faction,Tags?.Build(),LayerMask,MaxHits,Motion==GameplayProjectileMotionKind.Homing,
             GameplaySpatialAuthoringUtility.Build(OnHit,context),GameplaySpatialAuthoringUtility.Build(OnArrive,context),GameplaySpatialAuthoringUtility.Build(OnRange,context),GameplaySpatialAuthoringUtility.Build(OnCancelled,context),CreateView(context),
-            CancelOnAbilityEnd,new GameplayPoint(LaunchOffset.x,LaunchOffset.y,LaunchOffset.z),new GameplayPoint(DestinationOffset.x,DestinationOffset.y,DestinationOffset.z),DirectionAngle));
+            CancelOnAbilityEnd,new GameplayPoint(LaunchOffset.x,LaunchOffset.y,LaunchOffset.z),new GameplayPoint(DestinationOffset.x,DestinationOffset.y,DestinationOffset.z),DirectionAngle,OnlyHitPrimaryTarget));
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {
@@ -61822,11 +61831,14 @@ namespace FRFrame.Gameplay.Authoring
             new GameplayDamageStageAuthoring { Kind = GameplayDamageStageKind.Critical, Value = new GameplayConstantFloatValueAuthoring { Value = 2 } },
             new GameplayDamageStageAuthoring { Kind = GameplayDamageStageKind.Shield } };
         public GameplayTagQueryAuthoring Immunity = new GameplayTagQueryAuthoring();
+        [Tooltip("可选。伤害提交后用标准治疗回复施法者；仅在实际扣除 HP 时执行。公式可读取 Context.Data.Standard.Combat.AppliedDamage。")]
+        [SerializeReference] public GameplayFloatValueAuthoring HealInstigatorAmount;
         public override void Validate(GameplayAuthoringValidationContext v, string p)
         {
             v.Enum(DamageType,p+".DamageType");
             if (Amount == null) v.Error(p + ".Amount", "Missing damage amount."); else Amount.Validate(v, p + ".Amount");
             Immunity?.Validate(v, p + ".Immunity");
+            HealInstigatorAmount?.Validate(v, p + ".HealInstigatorAmount");
             if (Stages == null) { v.Error(p + ".Stages", "Missing stage list."); return; }
             int shields = 0;
             for (int i = 0; i < Stages.Length; i++)
@@ -61842,7 +61854,7 @@ namespace FRFrame.Gameplay.Authoring
         public override IGameplayEffectExecution Build()
         {
             var stages = new List<GameplayDamageStage>(); foreach (var stage in Stages) stages.Add(new GameplayDamageStage(stage.Kind, stage.Value.Build()));
-            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(),DamageType);
+            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(),DamageType,HealInstigatorAmount?.Build());
         }
     }
     [Serializable, Preserve]
@@ -61927,12 +61939,18 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayFloatValueAuthoring Amount=new GameplayConstantFloatValueAuthoring{Value=100};
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=5};
         public bool OwnedByAbility;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnBroken = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnExpired = Array.Empty<GameplaySkillActionAuthoring>();
         public override void Validate(GameplayAuthoringValidationContext validation,string path)
         {
             if(Amount==null)validation.Error(path+".Amount","Shield amount required.");else Amount.Validate(validation,path+".Amount");
             if(Duration==null)validation.Error(path+".Duration","Shield duration required.");else Duration.Validate(validation,path+".Duration");
+            GameplaySpatialAuthoringUtility.Validate(OnBroken, validation, path + ".OnBroken");
+            GameplaySpatialAuthoringUtility.Validate(OnExpired, validation, path + ".OnExpired");
         }
-        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplayGrantTimedShieldAction(Amount.Build(),Duration.Build(),OwnedByAbility);
+        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplayGrantTimedShieldAction(
+            Amount.Build(), Duration.Build(), OwnedByAbility, GameplaySpatialAuthoringUtility.Build(OnBroken, context),
+            GameplaySpatialAuthoringUtility.Build(OnExpired, context));
     }
 }
 ````
@@ -62065,6 +62083,12 @@ namespace FRFrame.Gameplay.Authoring
         [Min(1)] public int MaxTargets = 32;
         public GameplayTargetOrder Order = GameplayTargetOrder.Nearest;
         public bool IncludeSelf;
+        [Tooltip("跳过输入的主要目标，例如弹体命中后为子弹重选目标。")]
+        public bool ExcludePrimaryTarget;
+        [Tooltip("每次选最近的未访问目标，再从命中地点重选。目标上限是总次数。")]
+        public bool RepeatFromResult;
+        [Range(0,1), Tooltip("下一跳的倍率乘此值。逐目标下游读取 Context.Data.Standard.Search.Multiplier。")]
+        public float RepeatMultiplier = 1;
         [Tooltip("世界坐标单元中心；按 CellSize 对所在格进行匹配，不依赖 Physics。")]
         public Vector3[] Cells = Array.Empty<Vector3>();
         public float CellSize = 1;
@@ -62074,6 +62098,8 @@ namespace FRFrame.Gameplay.Authoring
         public override void Validate(GameplayAuthoringValidationContext v, string p)
         {
             v.Enum(Shape, p + ".Shape"); v.Enum(Plane, p + ".Plane"); v.Enum(Origin, p + ".Origin");
+            if (RepeatFromResult && (Shape != GameplaySearchShape.Circle || !(RepeatMultiplier >= 0 && RepeatMultiplier <= 1)))
+                v.Error(p + ".RepeatFromResult", "逐次重选需要圆形查询与 0–1 的倍率。");
             if(!float.IsFinite(OriginOffset.x)||!float.IsFinite(OriginOffset.y)||!float.IsFinite(OriginOffset.z))v.Error(p+".OriginOffset","原点偏移必须有限。");
             if (Directional) { v.Enum(Direction,p+".Direction"); DirectionAngle?.Validate(v,p+".DirectionAngle"); }
             if (UsesLength && LengthFromTarget && Direction != GameplaySearchDirection.ToPrimaryTarget && Direction != GameplaySearchDirection.ToContextPoint)
@@ -62115,7 +62141,9 @@ namespace FRFrame.Gameplay.Authoring
             return new GameplaySearchTargetAction(Shape, Plane, Origin, Dimension(Radius,UsesRadius), Dimension(Angle,Shape == GameplaySearchShape.Sector), Dimension(Length,UsesLength && !LengthFromTarget), Dimension(Width,UsesWidth), Height.Build(),
                 Faction, Tags?.Build(), LayerMask, MaxTargets, Order, IncludeSelf,
                 Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
-                Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null, UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z));
+                Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
+                UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier);
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;
@@ -62316,9 +62344,11 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable,Preserve]public sealed class GameplaySpawnProjectileActionAuthoring:GameplaySkillActionAuthoring
     {
         public GameplayProjectileDefinitionAsset Projectile;
+        [Tooltip("从触发事件地点发射。搜索可改选目标，仍保留父弹体命中事件的出生点。")]
+        public bool LaunchFromTriggerPoint;
         public override void Validate(GameplayAuthoringValidationContext v,string p)=>v.Asset(Projectile,p+".Projectile");
         public override void ValidateReferences(GameplayAuthoringValidationContext v,string p)=>v.Asset(Projectile,p+".Projectile");
-        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplaySpawnProjectileAction(context.ResolveDefinition(Projectile, this, nameof(Projectile), () => Projectile.Build(context)));
+        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplaySpawnProjectileAction(context.ResolveDefinition(Projectile, this, nameof(Projectile), () => Projectile.Build(context)), LaunchFromTriggerPoint);
     }
     [Serializable,Preserve]public sealed class GameplaySpawnAreaActionAuthoring:GameplaySkillActionAuthoring
     {
@@ -64775,6 +64805,13 @@ namespace FRFrame.Gameplay.Editor
             Labels["DamageType"]="伤害类型";
             Labels["Stages"]="结算阶段";
             Labels["Immunity"]="免疫筛选";
+            Labels["HealInstigatorAmount"]="伤害提交后治疗施法者";
+            Labels["ExcludePrimaryTarget"]="排除输入的主要目标";
+            Labels["RepeatFromResult"]="从每次结果继续搜索";
+            Labels["RepeatMultiplier"]="每跳倍率";
+            Labels["LaunchFromTriggerPoint"]="从触发事件地点发射";
+            Labels["OnlyHitPrimaryTarget"]="仅命中主要目标";
+            Labels["EndOnOwnerDeath"]="施法者死亡时结束";
             Labels["Expression"]="数值表达式";
             Labels["Source"]="数值来源";
             Labels["Constant"]="固定比较值";
@@ -66856,12 +66893,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 dimensions.Add("Height");
                 yield return Group("正式范围数值","可用常量、等级表、公式；形状切换保留原有配置。",dimensions.ToArray());
                 yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf");
+                yield return Group("逐次重选","圆形查询从上一目标的位置选最近未访问目标，目标上限为总跳数。逐目标分支可读取 Context.Data.Standard.Search.Multiplier。",
+                    "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier");
                 yield return Group("正式续接","每个目标只有一个 Target；搜索完成收到完整结果，无目标分支收到空列表。","EachTarget","Completed","NoTargets");
             }
             else if(value is GameplayDamageExecutionAuthoring)
             {
                 yield return Group("伤害数值 / 类型","Physical读Defense，Magical读MagicDefense；True只跳过防御阶段。所有计算成功后一次提交HP/Shield。","Amount","DamageType");
                 yield return Group("结算阶段（列表顺序）","拖动重排；Critical/Miss读取捕获输入，可先接「捕获暴击/未命中」动作。","Stages","Immunity");
+                yield return Group("结算后治疗","只在本次实际扣除 HP 后求值。公式可读取 Context.Data.Standard.Combat.AppliedDamage。",
+                    "HealInstigatorAmount");
             }
             else if(value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring)
                 yield return Group("结算数值",value is GameplayHealExecutionAuthoring?"治疗受实际 MaxHealth 限制，结果保留溢出。":"瞬时增加实际 Shield；本动作不提供按来源的时限护盾。","Amount");
@@ -66874,17 +66915,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             else if((value is GameplayProjectileDefinitionAsset || value is GameplayProjectileDefinitionData))
             {
                 yield return Group("弹体轨迹 / 时间 / 数值","直线方向模式保持旧射程弹；固定终点捕获释放点/目标位置，不追踪。射程/时长先耗尽分别 Range/Completed；命中上限优先。弧线/抛物线/Bezier使用时长与逐段扫掠。","Motion","StraightDestination","Plane","Speed","Duration","HitRadius","MaxRange","CurveHeight","Control1Offset","Control2Offset","DirectionAngle","LaunchOffset","DestinationOffset","CancelOnAbilityEnd");
-                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消当前 cast 精确清理。","Faction","Tags","LayerMask","MaxHits");
+                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消清理以生命周期归属为准。","Faction","Tags","LayerMask","MaxHits","OnlyHitPrimaryTarget");
                 yield return Group("实际回调","使用既有规则动作；可以施效果、生成区域或执行后续编排。","OnHit","OnArrive","OnRange","OnCancelled");
                 yield return Group("可选场景资源","场景 Source 直接绑定实际 Prefab；逻辑 Source 无 Unity 表现依赖。","Prefab");
             }
             else if((value is GameplayAreaDefinitionAsset || value is GameplayAreaDefinitionData))
             {
                 yield return Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize","CancelOnAbilityEnd");
-                yield return Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura离开/到期/取消只移除本区域来源。","Duration","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","Faction","Tags","LayerMask","Aura");
+                yield return Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura在进入时应用，离开或区域结束时只移除本区域贡献。","Duration","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","EndOnOwnerDeath","Faction","Tags","LayerMask","Aura");
                 yield return Group("进入 / 停留 / 周期 / 离开 / 结束","Stay 每步执行，Tick 按间隔执行；所有回调保留 cast Level/Root。","OnEnter","OnStay","OnTick","OnExit","OnEnd","Prefab");
             }
-            else if(value is GameplaySpawnProjectileActionAuthoring)yield return Group("发射正式弹体","直接引用唯一弹体 Source；Logic/Physics2D/3D复用同一规则。","Projectile");
+            else if(value is GameplaySpawnProjectileActionAuthoring)yield return Group("发射正式弹体","直接引用唯一弹体 Source；Logic/Physics2D/3D复用同一规则。","Projectile","LaunchFromTriggerPoint");
             else if(value is GameplaySpawnAreaActionAuthoring)yield return Group("生成正式区域","位置来自 Source Origin；OnHit/Arrive 的 ContextPoint 可成为区域中心。","Area");
             else if((value is GameplaySummonDefinitionAsset || value is GameplaySummonDefinitionData))
             {
@@ -66896,7 +66937,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("位移 / 控制 / 到达","写回实际位置与朝向；等/高优先级替换，低优先级忽略。控制门禁为可选标签查询。","Mode","Distance","Speed","Priority","UseControlGate","Blocked","CancelOnAbilityEnd","FollowSource","MinimumSeparation","Duration","OnArrive","OnCancelled");
             else if(value is GameplayRotateToPointActionAuthoring)yield return Group("转向实际目标点","修改实际 Actor Facing；场景绑定映射到真实朝向。","RotateOwner");
             else if(value is GameplayChangeStateActionAuthoring)yield return Group("现有行为状态","使用Host显式注册的状态别名；转移约束由原Core/Fsm决定。","State");
-            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾，再消耗无主容量。现有Effect时钟到期只扣本份剩余值；OwnedByAbility另绑定当前cast。","Amount","Duration","OwnedByAbility");
+            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。耗尽输出破盾者，自然到期输出原目标；取消与驱散只清理。","Amount","Duration","OwnedByAbility","OnBroken","OnExpired");
             else if(value is GameplayCaptureCombatRollActionAuthoring)yield return Group("本次命中随机输入","概率0..1；使用World注入的随机源。保留已有输入时不重新抽样，可放进逐目标回调。","CriticalChance","MissChance","PreserveExisting");
             else if(value is GameplayCaptureValueActionAuthoring)yield return Group("捕获数值快照","在此动作/目标边界求值一次，写入Key。后续Context/Caller读取捕获值；属性节点仍读实时值。","Key","Value");
             else if(value is GameplaySkillDocumentAsset)
@@ -69089,12 +69130,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             var port=AddPort(card,definition.Id,key);string role=binding.PropertyPath=="CooldownEffect"?"冷却":definition.Payload is GameplayProjectileDefinitionData?"弹体":definition.Payload is GameplayAreaDefinitionData?"区域":definition.Payload is GameplayEffectDefinitionData?"效果":null;
             if(role=="冷却"&&(key==GameplayGraphEffectCallbacks.Completion||key.StartsWith("Completion/",StringComparison.Ordinal)))port.portName=key==GameplayGraphEffectCallbacks.Completion?"冷却到期 · 添加效果":"冷却到期 · 续接效果";
-            else if(role!=null)port.portName=role+" · "+port.portName;
+            else if(role!=null&&role!="效果")port.portName=role+" · "+port.portName;
             if(GameplayGraphEffectCallbacks.Slots(definition.Payload).Any(s=>s.Key==key)){
                 var slots=GameplayGraphEffectCallbacks.Slots(definition.Payload).Where(s=>s.IsCompletion==key.StartsWith("Completion/",StringComparison.Ordinal)).ToList();
-                port.portName=(role=="冷却"?"冷却到期":key.StartsWith("Completion/",StringComparison.Ordinal)?"自然到期":"叠层溢出")+" → 效果 "+(slots.FindIndex(s=>s.Key==key)+1);
-                if(!_document.AuthoringGraph.Connections.Any(e=>e.FromNodeId==definition.Id&&e.OutputPortKey==key))port.portName+=" · 待连接";
-            }else if(key==GameplayGraphEffectCallbacks.Completion||key==GameplayGraphEffectCallbacks.Overflow)port.portName="＋ "+port.portName;
+                port.portName=(role=="冷却"?"冷却到期":key.StartsWith("Completion/",StringComparison.Ordinal)?"到期":"溢出")+" → 效果 "+(slots.FindIndex(s=>s.Key==key)+1);
+                if(!_document.AuthoringGraph.Connections.Any(e=>e.FromNodeId==definition.Id&&e.OutputPortKey==key))port.portName+=" · 待接";
+            }else if(key==GameplayGraphEffectCallbacks.Completion||key==GameplayGraphEffectCallbacks.Overflow)
+                port.portName=role=="冷却"?"＋ 冷却到期":key==GameplayGraphEffectCallbacks.Completion?"＋ 到期效果":"＋ 溢出效果";
             port.tooltip=port.portName+"\n"+port.tooltip;
         }
     }
@@ -69346,7 +69388,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(template&&(template.AuthoringSchemaVersion!=2||template.AuthoringGraph.Scope!=scope))throw new ArgumentException("复制必须使用 Schema 2 源技能的原 Scope。");
             var references=template?GameplaySkillCopyReferences.Audit(template):null;
             var preserve=preservedTemplateReferences??Array.Empty<string>();
-            if(preserve.Any(p=>references==null||!references.Any(r=>r.IsSelf&&r.Path==p)))throw new ArgumentException("复制引用选择已失效；请重新打开复制向导。");
+            if(preserve.Any(p=>references==null||!references.Any(r=>r.IsSelf&&r.LocalStackOrdinal==0&&r.Path==p)))throw new ArgumentException("复制引用选择已失效；请重新打开复制向导。");
             if(references!=null&&references.Where(r=>r.CooldownGroup!=null).GroupBy(r=>r.CooldownGroup).Any(g=>g.Any(r=>preserve.Contains(r.Path))&&g.Any(r=>!preserve.Contains(r.Path))))throw new ArgumentException("本地冷却的授予、门禁和业务引用必须整组独立化或整组共享。");
             var catalogScope=GameplayReferenceCatalogProvider.Scope(path,scope);
             var catalog=GameplayReferenceCatalogProvider.Find(catalogScope,out string catalogError);
@@ -69903,6 +69945,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Restart","重新开始"},{"Reduce","减少"},{"Increase","增加"},{"Reset","重置"},{"Set","设置"},{"Clear","清除"},
             {"Add","加法"},{"Multiply","乘法"},{"Override","覆盖"},{"Replace","替换"},
             {"AnimatorState","Animator 状态"},{"PlayablesClip","Playables 剪辑"},
+            {"AggregateByTarget","按目标"},{"AggregateBySource","按来源 ID"},{"AggregateByInstigator","按施法者"},
+            {"SharedEntryLifetime","共享时长"},{"IndependentLayerLifetime","各层独立时长"},
+            {"RefreshOnSuccessfulApplication","成功施加时刷新"},{"NeverRefresh","不刷新"},
+            {"NeverReset","不重置周期"},{"ResetOnSuccessfulApplication","成功施加时重置周期"},
             {"AfterFirstPeriod","首次间隔后"},{"Immediately","立即"},{"Reject","拒绝新增"},{"RefreshExistingAtLimit","到上限时刷新"},{"ExecuteOverflow","执行溢出效果"}
         };
         internal static string Display(string name)=>Labels.TryGetValue(name,out var label)?label:name;
@@ -70465,15 +70511,24 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 else if (payload.Action is GameplaySkillBranchActionAuthoring)
                     input = Merge(RunOutput(id, "TrueActions", input), RunOutput(id, "FalseActions", input));
-                else if (payload.Action is GameplaySearchTargetActionAuthoring)
+                else if (payload.Action is GameplaySearchTargetActionAuthoring search)
                 {
-                    RunOutput(id, "EachTarget", input);
+                    var each = input;
+                    if (search.RepeatFromResult)
+                    {
+                        string key = GameplaySearchTargetAction.SearchMultiplierKey.Name;
+                        string source = path + ".RepeatMultiplier";
+                        _producers[source] = (key, "逐次搜索倍率");
+                        each = new Dictionary<string, HashSet<string>>(input, StringComparer.Ordinal) { [key] = new HashSet<string> { source } };
+                    }
+                    RunOutput(id, "EachTarget", each);
                     RunOutput(id, "NoTargets", input);
                     input = RunOutput(id, "Completed", input);
                 }
                 else
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload.Action))
-                        RunOutput(id, slot.Path, payload.Action is GameplayMoveTargetsActionAuthoring ? input : Empty);
+                        RunOutput(id, slot.Path, payload.Action is GameplayMoveTargetsActionAuthoring ||
+                            payload.Action is GameplayGrantTimedShieldActionAuthoring ? input : Empty);
 
                 input = RunOutput(id, "Then", input);
                 active.Remove(id);
@@ -70631,7 +70686,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             internal string Path, Description, CooldownGroup, TagSuffix;
             internal bool IsSelf, IsTag;
-            internal string TargetTag(int id,string scope)=>CooldownGroup!=null
+            internal int LocalStackOrdinal;
+            internal string TargetTag(int id,string scope)=>LocalStackOrdinal>0
+                ? GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Effect.Stack.","S"+id+".Copy"+LocalStackOrdinal)
+                : CooldownGroup!=null
                 ? GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Cooldown.Skill.",id+TagSuffix)
                 : GameplaySkillAuthoringCommands.GeneratedSkillTag(scope,"Event.Created.","S"+id);
         }
@@ -70647,6 +70705,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             // embedded use of a granted tag travels with that group, including business queries.
             var privateTags=cooldown?.GrantedTags.Select(t=>t.Name).Where(t=>!string.IsNullOrEmpty(t)).Distinct().ToList()??new List<string>();
             var sharedTags=(binding?.External as GameplayEffectDefinitionAsset)?.GrantedTags.Select(t=>t.Name).ToHashSet()??new HashSet<string>();
+            var localStackKeys=source.AuthoringGraph.LocalDefinitions.Select(d=>d.Payload).OfType<GameplayEffectDefinitionData>()
+                .Where(d=>d.Stacking!=null).Select(d=>d.Stacking.StackKey.Name).Distinct().ToList();
             using(var so=new SerializedObject(source)){
                 var field=so.GetIterator();
                 while(field.Next(true)){
@@ -70661,6 +70721,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     }
                     if(!field.isArray&&field.type==nameof(GameplayTagReference)&&field.propertyPath!="CastEvent"){
                         var tag=field.FindPropertyRelative("Name");string value=tag.stringValue;
+                        if(field.name=="StackKey"&&field.propertyPath.StartsWith("authoringGraph.LocalDefinitions.",System.StringComparison.Ordinal)
+                           &&!string.IsNullOrEmpty(value)){
+                            result.Add(new Reference{Path=tag.propertyPath,IsSelf=true,IsTag=true,
+                                LocalStackOrdinal=localStackKeys.IndexOf(value)+1,Description="局部叠层键 "+value});
+                            continue;
+                        }
                         // Retained, detached authoring drafts still keep the established
                         // explicit self-ID contract (e.g. 7002); arbitrary names require a binding.
                         int at=privateTags.IndexOf(value);bool cooldownTag=at>=0||value=="Cooldown.Skill."+source.SkillId||value==scopedCooldown;
@@ -71366,7 +71432,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 key == "NoTargets" ? "无目标" : key == "TrueActions" ? "满足条件" : key == "FalseActions" ? "不满足" :
                 key == "OnHit" ? "命中" : key == "OnArrive" ? "到达" : key == "OnRange" ? "射程结束" :
                 key == "OnEnter" ? "进入" : key == "OnExit" ? "离开" : key == "OnTick" ? "周期" : key=="OnStay"?"持续停留（每步）":
-                key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" : ObjectNames.NicifyVariableName(path);
+                key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
+                key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" :
+                ObjectNames.NicifyVariableName(path);
         }
 
         public static void Draw(GameplaySkillDocumentAsset document, string nodeId, string definitionId = null, bool cardFields = false)
@@ -72624,6 +72692,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         bool next=EditorGUILayout.ToggleLeft(new GUIContent("独立冷却："+reference.CooldownGroup+" → "+reference.TargetTag(_id,tagScope)+"（"+group.Length+"处）",string.Join("\n",group.Select(r=>r.Path))+"\n取消勾选：有意与源技能共享这组冷却及业务标签。"),independent);
                         foreach(var item in group)if(next)_preserveReferences.Remove(item.Path);else _preserveReferences.Add(item.Path);
                     }
+                    else if(reference.LocalStackOrdinal>0)
+                        EditorGUILayout.LabelField(new GUIContent("独立叠层："+reference.Description+" → "+reference.TargetTag(_id,tagScope),reference.Path));
                     else if(reference.IsSelf){string target=reference.IsTag?reference.TargetTag(_id,tagScope):_id.ToString();bool remap=!_preserveReferences.Contains(reference.Path);bool next=EditorGUILayout.ToggleLeft(new GUIContent("重映射："+reference.Description+" → "+target,reference.Path),remap);if(next)_preserveReferences.Remove(reference.Path);else _preserveReferences.Add(reference.Path);}
                     else EditorGUILayout.LabelField(new GUIContent("保留："+reference.Description,reference.Path));
                 }
@@ -73185,6 +73255,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(values.OfType<GameplayEffectDefinitionData>().Any(e=>e.Period>0||e.PeriodValue!=null))mechanisms.Add("周期效果 Periodic");
                 if(values.OfType<GameplayEffectDefinitionData>().Any(e=>e.CompletionExecutions.Length>0)||graph.LocalDefinitions.Any(d=>GameplayGraphFields.ActionArrays(d.Payload).Any(s=>s.Path=="OnEnd")))mechanisms.Add("生命周期 自然结束 到期回调");
                 if(values.OfType<GameplayEffectDefinitionData>().Any(e=>e.Stacking!=null))mechanisms.Add("效果与叠层 Stack 溢出");
+                if(values.OfType<GameplaySearchTargetActionAuthoring>().Any(search=>search.RepeatFromResult))mechanisms.Add("连锁 · 最近未访问目标 · 每跳倍率");
+                if(values.OfType<GameplayDamageExecutionAuthoring>().Any(damage=>damage.HealInstigatorAmount!=null))mechanisms.Add("吸血 · 实际净 HP 伤害 · 治疗施法者");
+                if(values.OfType<GameplayGrantTimedShieldActionAuthoring>().Any(shield=>graph.Connections.Any(e=>e.OutputPortKey=="OnBroken"||e.OutputPortKey=="OnExpired")))mechanisms.Add("盾破反击 · 自然到期");
+                if(values.OfType<GameplaySpawnProjectileActionAuthoring>().Any(projectile=>projectile.LaunchFromTriggerPoint))mechanisms.Add("分裂弹 · 从命中点发射子弹");
                 if(doc.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Passive||graph.AdditionalRuleNodeIds.Count>0)mechanisms.Add("被动与条件 事件监听");
                 string mechanismIndex=string.Join(" · ",mechanisms.Distinct());
                 string category=Has("Animation")?"主动画与时间":Has("SpawnArea")?"周期领域":Has("SpawnSummon")?"召唤单位":Has("SpawnProjectile")?"弹体与命中":Has("Branch")||graph.AdditionalRuleNodeIds.Count>0?"被动与条件":graph.Timelines.Any(t=>t.Events.Count>3)?"多时点与复用":graph.LocalDefinitions.Any(d=>d.Payload is GameplayEffectDefinitionData e&&e.Stacking!=null)?"效果与叠层":"即时效果与控制";
@@ -73204,9 +73278,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(doc.SkillId==7008)route+=" 本例4秒/0.5秒周期、最多3层；层数不自动倍乘伤害。第四次应用触发溢出伤害，自然到期治疗50；OwnedByAbility=false，因此瞬时施放结束后DoT继续，驱散不等于自然完成。";
                 if(doc.SkillId==7009)route+=" 本例Mode=Passive，Subject=OwnerTarget，监听真实受击Hit；Owner当前Health<500才治疗当前目标50。试装面板发布者→敌人的测试事件不会冒充Owner受击；可让敌人安装7004面向Owner攻击验证。";
                 if(doc.SkillId==7010)route+=" 本例共享SpatialActorProfile与独立7004技能；AutoCast开启、存续4秒、OnEnd结束施放。召唤技能以新单位自己的属性和身份执行。";
+                bool u7=AssetDatabase.GetAssetPath(doc).Contains("/FRFrameSkillLab/U7Examples/");
+                if(u7){host="FRFrameGameplaySkillLab / 共用练习场";route+=" 进入共用练习场，或用 Scene / 调试 → 安装当前正式技能。剧毒爆发从零步骤与其余五例操作见 U7 Task。";}
                 var ability=graph.Nodes.Find(n=>n.Id==graph.AbilityNodeId)?.Payload as GameplayAbilityNodePayload;var settings=ability?.Settings as GameplayAbilityDefinitionData;
                 string tags=(settings?.Cost!=null?"消耗 ":"")+(settings?.Charge!=null?"充能 ":"")+(ability?.Definitions.Any(b=>b.PropertyPath=="CooldownEffect")==true?"冷却 ":"")+(graph.Nodes.Any(n=>n.Payload.Definitions.Any(b=>b.External))?"共享SO ":"");
-                return new SkillExample{Source=doc,Category=category,Host=host,Tags=tags,Mechanisms=mechanismIndex,Keywords=string.Join(" ",descriptions.Select(d=>d.Keywords)),Complexity=graph.Nodes.Count>15?3:graph.Nodes.Count>7?2:1,Status=privateHost?"特定样例Host；非通用能力":AssetDatabase.GetAssetPath(doc).Contains("/AuthoringExamples/H1/")?(doc.SkillId==7003?"已由 GUI 复制改造并在 Lab 验证":doc.SkillId==7002||doc.SkillId>=7004&&doc.SkillId<=7010?"已由 GUI 从零重建并在 Lab 运行验证":"已由 GUI 创作；运行验收待完成"):"既有正式Runtime内容；GUI复刻待验证",Lesson=route};
+                return new SkillExample{Source=doc,Category=category,Host=host,Tags=tags,Mechanisms=mechanismIndex,Keywords=string.Join(" ",descriptions.Select(d=>d.Keywords)),Complexity=graph.Nodes.Count>15?3:graph.Nodes.Count>7?2:1,Status=u7?"U7 标准范例 · Lab 可运行":privateHost?"特定样例Host；非通用能力":AssetDatabase.GetAssetPath(doc).Contains("/AuthoringExamples/H1/")?(doc.SkillId==7003?"已由 GUI 复制改造并在 Lab 验证":doc.SkillId==7002||doc.SkillId>=7004&&doc.SkillId<=7010?"已由 GUI 从零重建并在 Lab 运行验证":"已由 GUI 创作；运行验收待完成"):"既有正式Runtime内容；GUI复刻待验证",Lesson=route};
             }).OrderBy(e=>e.Category,StringComparer.Ordinal).ThenBy(e=>e.Source.SkillId).ToList();
             _examplePanel=new VisualElement{name="SkillExampleLibrary",style={position=Position.Absolute,left=12,right=12,top=38,bottom=12,backgroundColor=new Color(.14f,.16f,.19f)}};
             _examplePanel.Add(new IMGUIContainer(DrawExamples){style={flexGrow=1}});rootVisualElement.Add(_examplePanel);_examplePanel.BringToFront();
@@ -74928,7 +75004,7 @@ namespace FRFrame.Gameplay
                 foreach (var execution in definition.Executions) execution.Execute(application.WithStackCount(1));
                 return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.InstantExecuted, default, 0);
             }
-            var existing = definition.Stacking == null ? null : FindStackEntry(definition, application.Context.EffectiveSourceId);
+            var existing = definition.Stacking == null ? null : FindStackEntry(definition, application.Context);
             application = application.WithStackCount(existing == null ? 1 : Math.Min(existing.StackCount + 1, definition.Stacking.MaxStacks));
             var timing = EvaluateTiming(definition, application);
             if (existing != null) return ReapplyStack(existing, application, timing);
@@ -74980,7 +75056,7 @@ namespace FRFrame.Gameplay
             (d.OngoingRequirements.IsEmpty || d.OngoingRequirements.Matches(RequireTags()));
         private GameplayTagContainer RequireTags() => _targetTags ?? throw new InvalidOperationException("Requirements need target tags.");
         private bool MeetsOngoing(Entry e) => e.Definition.OngoingRequirements.IsEmpty || e.Definition.OngoingRequirements.Matches(RequireTags());
-        private Entry FindStackEntry(GameplayEffectDefinition d, GameplaySourceId source)
+        private Entry FindStackEntry(GameplayEffectDefinition d, GameplayContext context)
         {
             var incoming = d.Stacking;
             foreach (var e in _entries.Values)
@@ -74988,7 +75064,8 @@ namespace FRFrame.Gameplay
                 var active = e.Definition.Stacking;
                 if (active == null || active.StackKey != incoming.StackKey) continue;
                 if (active.Aggregation != incoming.Aggregation) throw new InvalidOperationException("Stack key collides with a different aggregation policy.");
-                if (incoming.Aggregation == GameplayEffectStackAggregation.AggregateBySource && e.Application.Context.EffectiveSourceId != source) continue;
+                if (incoming.Aggregation == GameplayEffectStackAggregation.AggregateBySource && e.Application.Context.EffectiveSourceId != context.EffectiveSourceId) continue;
+                if (incoming.Aggregation == GameplayEffectStackAggregation.AggregateByInstigator && e.Application.Context.InstigatorId != context.InstigatorId) continue;
                 if (!ReferenceEquals(e.Definition, d)) throw new InvalidOperationException("Stack key collides with a different Effect definition.");
                 return e;
             }
@@ -75544,7 +75621,9 @@ namespace FRFrame.Gameplay
     public enum GameplayEffectStackAggregation
     {
         AggregateByTarget,
-        AggregateBySource
+        AggregateBySource,
+        /// <summary>Groups contributions by the originating actor across independent casts.</summary>
+        AggregateByInstigator
     }
 
     /// <summary>成功重施加时是否重置共享 Duration。</summary>
@@ -81427,11 +81506,16 @@ namespace FRFrame.Gameplay.Standard
     {
         public static readonly GameplayTag CriticalKey = new GameplayTag("Data.Standard.Critical");
         public static readonly GameplayTag MissKey = new GameplayTag("Data.Standard.Miss");
+        /// <summary>The net HP loss in this committed damage execution, available only to its heal.</summary>
+        public static readonly GameplayTag AppliedDamageKey = new GameplayTag("Data.Standard.Combat.AppliedDamage");
         private readonly IGameplayFloatValue _amount;
         private readonly IReadOnlyList<GameplayDamageStage> _stages;
         private readonly GameplayTagQuery _immunity;
+        private readonly GameplayHealExecution _healInstigator;
         public GameplayDamageType DamageType {get;}
-        public GameplayDamageExecution(IGameplayFloatValue amount, IEnumerable<GameplayDamageStage> stages, GameplayTagQuery immunity = null,GameplayDamageType damageType=GameplayDamageType.Physical)
+        public GameplayDamageExecution(IGameplayFloatValue amount, IEnumerable<GameplayDamageStage> stages,
+            GameplayTagQuery immunity = null, GameplayDamageType damageType = GameplayDamageType.Physical,
+            IGameplayFloatValue healInstigatorAmount = null)
         {
             _amount = amount ?? throw new ArgumentNullException(nameof(amount));
             if(!Enum.IsDefined(typeof(GameplayDamageType),damageType))throw new ArgumentOutOfRangeException(nameof(damageType));DamageType=damageType;
@@ -81440,6 +81524,7 @@ namespace FRFrame.Gameplay.Standard
             int shields = 0; foreach (var stage in copy) if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
             if (shields > 1) throw new ArgumentException("Only one shield stage may consume the captured capacity.");
             _stages = copy.AsReadOnly(); _immunity = immunity ?? GameplayTagQuery.Empty;
+            if (healInstigatorAmount != null) _healInstigator = new GameplayHealExecution(healInstigatorAmount);
         }
         public void Execute(GameplayEffectApplicationContext application)
         {
@@ -81469,18 +81554,29 @@ namespace FRFrame.Gameplay.Standard
             var result = pipeline.Calculate(new DamageContext(application.Context, initial, target.Attributes, application.InstigatorAttributes));
             if (!target.Resources.TryGetBalance(map.Health, out float health)) throw new InvalidOperationException("Health resource is missing.");
             float applied = Math.Min(Math.Max(0, health), result.FinalDamage);
-            Action commitShieldOwnership=null;
+            Func<Action> commitShieldOwnership=null;
             var balances = new Dictionary<GameplayAttributeId, float> { [map.Health] = Math.Max(0, health - applied) };
             if (result.AbsorbedDamage > 0)
             {
                 if (!target.Resources.TryGetBalance(map.Shield, out float shield)) throw new InvalidOperationException("Shield resource is missing.");
                 balances.Add(map.Shield, Math.Max(0, shield - result.AbsorbedDamage));
-                commitShieldOwnership=target.Shields.PrepareConsumption(result.AbsorbedDamage,shield);
+                commitShieldOwnership=target.Shields.PrepareConsumption(result.AbsorbedDamage,shield,application.Context);
             }
             target.Resources.SetBalancesAtomic(balances);
-            commitShieldOwnership?.Invoke();
+            var shieldBreakCallbacks = commitShieldOwnership?.Invoke();
+            if (applied > 0 && balances[map.Health] == 0) target.Shields.RemoveCallbackShieldsOnDeath();
             target.ReportCombat(new GameplayCombatOutcome(application.Context, GameplayCombatOutcomeKind.Damage, result,
                 applied, Math.Max(0, result.FinalDamage - applied), health, balances[map.Health],DamageType));
+            if (_healInstigator != null && applied > 0 &&
+                target.World.TryGetActor(application.Context.InstigatorId, out var instigator) &&
+                instigator.CombatAttributes != null && instigator.IsTargetable)
+            {
+                var heal = application.Context.WithTarget(new GameplayTargetData(instigator.Id, instigator.Position))
+                    .WithValues(application.Context.Values.WithValue(AppliedDamageKey, applied));
+                _healInstigator.Execute(new GameplayEffectApplicationContext(heal, instigator,
+                    heal.Values.AsSetByCallerValues(), instigator.Attributes, instigator.Id, instigatorTarget: instigator));
+            }
+            shieldBreakCallbacks?.Invoke();
         }
         private sealed class Stage : IDamageResultModifier
         {
@@ -81634,19 +81730,58 @@ namespace FRFrame.Gameplay.Standard
         }
         /// <summary>Prepares ownership allocation before the atomic resource write. Apply the returned
         /// commit only after that write succeeds; resource stores must use the synchronous Core contract.</summary>
-        internal Action PrepareConsumption(float amount,float before)
+        internal Func<Action> PrepareConsumption(float amount,float before, GameplayContext hit)
         {
             Reconcile(before);var updates=new List<(GameplayShieldContribution entry,float remaining)>();
-            foreach(var entry in _entries){float take=Math.Min(amount,entry.Remaining);updates.Add((entry,entry.Remaining-take));amount-=take;}
-            return ()=>{foreach(var update in updates)if(!update.entry.IsDisposed)update.entry.Remaining=update.remaining;};
+            foreach (var entry in _entries)
+            {
+                float take = Math.Min(amount, entry.Remaining);
+                if (take > 0) updates.Add((entry, entry.Remaining - take));
+                amount -= take;
+                if (amount <= 0) break;
+            }
+            return () =>
+            {
+                Action callbacks = null;
+                foreach (var update in updates)
+                    if (!update.entry.IsDisposed) update.entry.Remaining = update.remaining;
+                foreach (var update in updates)
+                {
+                    var entry = update.entry;
+                    if (entry.IsDisposed || update.remaining > 0 || (entry.Broken == null && entry.Expired == null)) continue;
+                    var broken = entry.Broken;
+                    Remove(entry, true);
+                    if (broken != null) callbacks += () => broken(hit);
+                }
+                return callbacks;
+            };
         }
         private void OnRemoved(GameplayEffectRemovalObservation observation)
-        {foreach(var entry in _entries.ToArray())if(!entry.Lease.IsActive)Remove(entry,false);}
+        {
+            foreach (var entry in _entries.ToArray())
+            {
+                if (entry.Lease.IsActive) continue;
+                var expired = observation.Handle == entry.EffectHandle && observation.Cause == GameplayEffectRemovalCause.NaturalExpiry
+                    ? entry.Expired : null;
+                Remove(entry, false);
+                expired?.Invoke();
+            }
+        }
+        internal void RemoveCallbackShieldsOnDeath()
+        {
+            foreach (var entry in _entries.ToArray())
+                if (entry.Broken != null || entry.Expired != null) Remove(entry, true);
+        }
         internal void Remove(GameplayShieldContribution entry,bool removeEffect)
         {
             if(entry.IsDisposed)return;
-            float before=Balance();Reconcile(before);
-            _target.Resources.SetBalancesAtomic(new Dictionary<GameplayAttributeId,float>{{_target.CombatAttributes.Shield,Math.Max(0,before-entry.Remaining)}});
+            if (entry.Remaining > 0)
+            {
+                float before = Balance();
+                Reconcile(before);
+                if (entry.Remaining > 0)
+                    _target.Resources.SetBalancesAtomic(new Dictionary<GameplayAttributeId,float>{{_target.CombatAttributes.Shield,Math.Max(0,before-entry.Remaining)}});
+            }
             _entries.Remove(entry);entry.MarkRemoved();
             if(removeEffect)entry.Lease.Dispose();
         }
@@ -81667,9 +81802,11 @@ namespace FRFrame.Gameplay.Standard
         public float Remaining {get;internal set;}
         public bool IsDisposed {get;private set;}
         internal Action ReleaseBinding;
+        internal Action<GameplayContext> Broken;
+        internal Action Expired;
         internal GameplayShieldContribution(GameplayShieldContributions owner,GameplayContext context,GameplayEffectLease lease,float amount)
         {_owner=owner;Context=context;Lease=lease;Remaining=amount;}
-        internal void MarkRemoved(){IsDisposed=true;Remaining=0;ReleaseBinding?.Invoke();ReleaseBinding=null;}
+        internal void MarkRemoved(){IsDisposed=true;Remaining=0;Broken=null;Expired=null;ReleaseBinding?.Invoke();ReleaseBinding=null;}
         public void Dispose()=>_owner.Remove(this,true);
     }
     /// <summary>Grants a separate timed shield using an actual Effect clock; no time lives in this action.</summary>
@@ -81678,12 +81815,16 @@ namespace FRFrame.Gameplay.Standard
         private readonly IGameplayFloatValue _amount;
         private readonly GameplayEffectDefinition _lifetime;
         private readonly bool _ownedByAbility;
-        public GameplayGrantTimedShieldAction(IGameplayFloatValue amount,IGameplayFloatValue duration,bool ownedByAbility=false)
+        private readonly IReadOnlyList<IGameplaySkillAction> _onBroken, _onExpired;
+        public GameplayGrantTimedShieldAction(IGameplayFloatValue amount,IGameplayFloatValue duration,bool ownedByAbility=false,
+            IEnumerable<IGameplaySkillAction> onBroken = null, IEnumerable<IGameplaySkillAction> onExpired = null)
         {
             _amount=amount??throw new ArgumentNullException(nameof(amount));
             _lifetime=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration,1,0,Array.Empty<GameplayEffectAttributeModifierDefinition>(),Array.Empty<GameplayTag>(),Array.Empty<IGameplayEffectExecution>(),null,
                 effectTags:new[]{new GameplayTag("Effect.Standard.Shield")},durationValue:duration??throw new ArgumentNullException(nameof(duration)));
             _ownedByAbility=ownedByAbility;
+            _onBroken = GameplaySpatialMath.Actions(onBroken);
+            _onExpired = GameplaySpatialMath.Actions(onExpired);
         }
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
         {
@@ -81699,6 +81840,20 @@ namespace FRFrame.Gameplay.Standard
             try
             {
                 contribution=target.Shields.Add(context,lease,amount);
+                if (_onBroken.Count > 0) contribution.Broken = hit =>
+                {
+                    if (!actor.IsTargetable || !target.IsTargetable ||
+                        !actor.World.TryGetActor(hit.InstigatorId, out var breaker) || !breaker.IsTargetable) return;
+                    var retaliate = context.WithTarget(new GameplayTargetData(breaker.Id, breaker.Position));
+                    GameplaySkillActionRunner.Execute(_onBroken, retaliate,
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Broken"), retaliate, 1), actor);
+                };
+                if (_onExpired.Count > 0) contribution.Expired = () =>
+                {
+                    if (!actor.IsTargetable || !target.IsTargetable) return;
+                    GameplaySkillActionRunner.Execute(_onExpired, context,
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Expired"), context, 1), actor);
+                };
                 if(_ownedByAbility&&!actor.Abilities.TryOwnLifetime(grant,contribution)){contribution.Dispose();return GameplaySkillActionResult.Rejected;}
                 if(_ownedByAbility)contribution.ReleaseBinding=()=>actor.Abilities.ReleaseOwnedLifetime(grant,contribution);
             }
@@ -81736,6 +81891,7 @@ namespace FRFrame.Gameplay.Standard
         public IGameplayFloatValue TickInterval {get;}
         public bool TickOnEnter {get;}
         public bool FollowOwner {get;}
+        public bool EndOnOwnerDeath { get; }
         public IGameplayFloatValue ArmingDelay {get;}
         /// <summary>0 means unlimited entries. A positive limit finishes after that many successful
         /// enter callbacks, using the same cleanup path as expiry/cancel (trap placement semantics).</summary>
@@ -81757,7 +81913,8 @@ namespace FRFrame.Gameplay.Standard
             bool tickOnEnter=true,bool followOwner=false,GameplayFactionFilter faction=GameplayFactionFilter.Enemies,GameplayTagQuery tags=null,int layerMask=-1,
             IEnumerable<GameplayEffectDefinition> aura=null,IEnumerable<IGameplaySkillAction> onEnter=null,IEnumerable<IGameplaySkillAction> onTick=null,
             IEnumerable<IGameplaySkillAction> onExit=null,IEnumerable<IGameplaySkillAction> onEnd=null,IEnumerable<GameplayPoint> cells=null,float cellSize=1,IGameplaySpatialViewFactory view=null,IEnumerable<IGameplaySkillAction> onStay=null,
-            IGameplayFloatValue armingDelay=null,int triggerLimit=0,GameplayPoint originOffset=default)
+            IGameplayFloatValue armingDelay=null,int triggerLimit=0,GameplayPoint originOffset=default,
+            bool endOnOwnerDeath=false)
         {
             if(shape!=GameplaySearchShape.Circle&&shape!=GameplaySearchShape.Sector&&shape!=GameplaySearchShape.Box&&shape!=GameplaySearchShape.GridCells)throw new ArgumentOutOfRangeException(nameof(shape));
             if(!Enum.IsDefined(typeof(GameplaySpatialPlane),plane)||!Enum.IsDefined(typeof(GameplaySearchOrigin),origin)||!Enum.IsDefined(typeof(GameplayFactionFilter),faction))throw new ArgumentOutOfRangeException(nameof(plane));
@@ -81766,6 +81923,7 @@ namespace FRFrame.Gameplay.Standard
             Length=length??throw new ArgumentNullException(nameof(length));Width=width??throw new ArgumentNullException(nameof(width));Height=height??throw new ArgumentNullException(nameof(height));
             Duration=duration??throw new ArgumentNullException(nameof(duration));TickInterval=tickInterval??throw new ArgumentNullException(nameof(tickInterval));
             TickOnEnter=tickOnEnter;FollowOwner=followOwner;Faction=faction;Tags=tags??GameplayTagQuery.Empty;LayerMask=layerMask;
+            EndOnOwnerDeath = endOnOwnerDeath;
             if(triggerLimit<0)throw new ArgumentOutOfRangeException(nameof(triggerLimit));TriggerLimit=triggerLimit;ArmingDelay=armingDelay??new GameplayConstantFloatValue(0);
             var effects=new List<GameplayEffectDefinition>(aura??Array.Empty<GameplayEffectDefinition>());
             if(effects.Exists(e=>e==null||e.DurationPolicy==GameplayEffectDurationPolicy.Instant))throw new ArgumentException("Aura requires persistent effect contributions.");
@@ -81825,6 +81983,11 @@ namespace FRFrame.Gameplay.Standard
         internal override void Advance(float delta)
         {
             if(Owner.IsDisposed){Dispose();return;}
+            if (_definition.EndOnOwnerDeath && !Owner.IsTargetable)
+            {
+                Finish(GameplaySpatialEndReason.Died);
+                return;
+            }
             double next=Math.Min(_duration,_age+(double)delta);
             double boundaries=Math.Floor(Math.Max(0,next-_arming)/_period);
             if(boundaries-_ticks>4096)throw new InvalidOperationException("Area step exceeds the callback budget; advance the world in smaller steps.");
@@ -82141,6 +82304,7 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Total distinct targets allowed, including the first hit; never a per-frame counter.</summary>
         public int MaxHits {get;}
         public bool RequiresLiveTarget {get;}
+        public bool OnlyHitPrimaryTarget { get; }
         public IReadOnlyList<IGameplaySkillAction> OnHit {get;}
         public IReadOnlyList<IGameplaySkillAction> OnArrive {get;}
         public IReadOnlyList<IGameplaySkillAction> OnRange {get;}
@@ -82154,12 +82318,14 @@ namespace FRFrame.Gameplay.Standard
             IGameplayFloatValue hitRadius,IGameplayFloatValue maxRange,IGameplayFloatValue height,GameplaySpatialPlane plane=GameplaySpatialPlane.XY,
             GameplayFactionFilter faction=GameplayFactionFilter.Enemies,GameplayTagQuery tags=null,int layerMask=-1,int maxHits=1,bool requiresLiveTarget=false,
             IEnumerable<IGameplaySkillAction> onHit=null,IEnumerable<IGameplaySkillAction> onArrive=null,IEnumerable<IGameplaySkillAction> onRange=null,IEnumerable<IGameplaySkillAction> onCancelled=null,IGameplaySpatialViewFactory view=null,
-            bool cancelOnAbilityEnd=true,GameplayPoint launchOffset=default,GameplayPoint destinationOffset=default,float directionAngle=0)
+            bool cancelOnAbilityEnd=true,GameplayPoint launchOffset=default,GameplayPoint destinationOffset=default,float directionAngle=0,
+            bool onlyHitPrimaryTarget=false)
         {
             Motion=motion??throw new ArgumentNullException(nameof(motion));Speed=speed??throw new ArgumentNullException(nameof(speed));Duration=duration??throw new ArgumentNullException(nameof(duration));
             HitRadius=hitRadius??throw new ArgumentNullException(nameof(hitRadius));MaxRange=maxRange??throw new ArgumentNullException(nameof(maxRange));Height=height??throw new ArgumentNullException(nameof(height));
             if(!Enum.IsDefined(typeof(GameplaySpatialPlane),plane)||!Enum.IsDefined(typeof(GameplayFactionFilter),faction)||maxHits<1)throw new ArgumentOutOfRangeException(nameof(maxHits));
             Plane=plane;Faction=faction;Tags=tags??GameplayTagQuery.Empty;LayerMask=layerMask;MaxHits=maxHits;RequiresLiveTarget=requiresLiveTarget;
+            OnlyHitPrimaryTarget = onlyHitPrimaryTarget;
             OnHit=GameplaySpatialMath.Actions(onHit);OnArrive=GameplaySpatialMath.Actions(onArrive);OnRange=GameplaySpatialMath.Actions(onRange);OnCancelled=GameplaySpatialMath.Actions(onCancelled);View=view;
             CancelOnAbilityEnd=cancelOnAbilityEnd;LaunchOffset=launchOffset;DestinationOffset=destinationOffset;
             if(!float.IsFinite(directionAngle))throw new ArgumentOutOfRangeException(nameof(directionAngle));DirectionAngle=directionAngle;
@@ -82177,11 +82343,13 @@ namespace FRFrame.Gameplay.Standard
         private double _age;
         public float DistanceTravelled {get;private set;}
         public int HitCount=>_hits.Count;
-        internal GameplayProjectile(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,GameplayProjectileDefinition definition)
+        internal GameplayProjectile(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,GameplayProjectileDefinition definition,
+            GameplayPoint? launchPoint = null)
             :base(owner,context,grant,definition.View,definition.CancelOnAbilityEnd)
         {
             _definition=definition;_duration=GameplaySpatialMath.Positive(definition.Duration,owner,context,"Projectile duration");
-            Position=new GameplayPoint(Position.X+definition.LaunchOffset.X,Position.Y+definition.LaunchOffset.Y,Position.Z+definition.LaunchOffset.Z);
+            var launch = launchPoint ?? Position;
+            Position=new GameplayPoint(launch.X+definition.LaunchOffset.X,launch.Y+definition.LaunchOffset.Y,launch.Z+definition.LaunchOffset.Z);
             _radius=GameplaySpatialMath.Positive(definition.HitRadius,owner,context,"Hit radius");_range=GameplaySpatialMath.Positive(definition.MaxRange,owner,context,"Max range");
             float speed=GameplaySpatialMath.Positive(definition.Speed,owner,context,"Speed");
             float height=GameplaySpatialMath.Finite(definition.Height,owner,context);
@@ -82228,7 +82396,9 @@ namespace FRFrame.Gameplay.Standard
                 var selected=Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context,geometry,Owner.Faction,_definition.Faction,_definition.Tags,_definition.LayerMask));
                 foreach(var id in selected.Targets)
                 {
-                    if(IsDisposed)break;if(!Owner.World.TryGetActor(id,out var target)||!target.IsTargetable||!_hits.Add(id))continue;
+                    if(IsDisposed)break;
+                    if ((_definition.OnlyHitPrimaryTarget && id != _target) ||
+                        !Owner.World.TryGetActor(id,out var target)||!target.IsTargetable||!_hits.Add(id))continue;
                     var hit=At(id,target.Position);Run(_definition.OnHit,hit,"Event.Standard.Projectile.Hit",DistanceTravelled);
                     if(!IsDisposed&&_hits.Count>=_definition.MaxHits)Finish(GameplaySpatialEndReason.HitLimit);
                 }
@@ -82249,13 +82419,39 @@ namespace FRFrame.Gameplay.Standard
     {
         public GameplayProjectile SpawnProjectile(GameplayStandardActor owner,GameplayContext context,GameplayProjectileDefinition definition)
         {if(definition==null)throw new ArgumentNullException(nameof(definition));ValidateSpatialOwner(owner,context,out var grant);return RegisterSpatial(new GameplayProjectile(owner,context,grant,definition),grant);}
+
+        internal GameplayProjectile SpawnProjectileFromAction(GameplayStandardActor owner, GameplayContext context,
+            GameplayProjectileDefinition definition, GameplayPoint? launchPoint, GameplayContext trigger)
+        {
+            if (IsDisposed || owner.IsDisposed) return null;
+            if (!GameplayStandardActivation.TryFindGrant(owner, context, out var grant) &&
+                (definition.CancelOnAbilityEnd || trigger == null || trigger.ActivationSourceId != context.ActivationSourceId ||
+                 !_spatial.Exists(operation => operation.Owner == owner && !operation.OwnedByAbility && operation.Id == trigger.EffectiveSourceId)))
+                return null;
+            return RegisterSpatial(new GameplayProjectile(owner, context, grant, definition, launchPoint), grant);
+        }
     }
     public sealed class GameplaySpawnProjectileAction:IGameplaySkillAction
     {
         public GameplayProjectileDefinition Definition {get;}
-        public GameplaySpawnProjectileAction(GameplayProjectileDefinition definition)=>Definition=definition??throw new ArgumentNullException(nameof(definition));
+        private readonly bool _launchFromTriggerPoint;
+        public GameplaySpawnProjectileAction(GameplayProjectileDefinition definition, bool launchFromTriggerPoint = false)
+        {
+            Definition = definition ?? throw new ArgumentNullException(nameof(definition));
+            _launchFromTriggerPoint = launchFromTriggerPoint;
+        }
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
-        {if(!(host is GameplayStandardActor actor)||!GameplayStandardActivation.TryFindGrant(actor,context,out var grant))return GameplaySkillActionResult.Rejected;return actor.World.SpawnProjectile(actor,context,Definition)!=null?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;}
+        {
+            if (!(host is GameplayStandardActor actor) ||
+                ((Definition.RequiresLiveTarget || Definition.OnlyHitPrimaryTarget) &&
+                 (!actor.World.TryGetActor(context.TargetData.PrimaryTargetId, out var target) || !target.IsTargetable || target == actor)))
+                return GameplaySkillActionResult.Rejected;
+            var trigger = triggerEvent.Context;
+            if (_launchFromTriggerPoint && (trigger == null || !trigger.TargetData.HasPoint)) return GameplaySkillActionResult.Rejected;
+            var projectile = actor.World.SpawnProjectileFromAction(actor, context, Definition,
+                _launchFromTriggerPoint ? trigger.TargetData.Point : (GameplayPoint?)null, trigger);
+            return projectile != null ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+        }
     }
 }
 ````
@@ -82411,6 +82607,10 @@ namespace FRFrame.Gameplay.Standard
         private readonly int _layerMask, _maxTargets;
         private readonly GameplayTargetOrder _order;
         private readonly bool _includeSelf;
+        private readonly bool _excludePrimaryTarget, _repeatFromResult;
+        private readonly float _repeatMultiplier;
+        /// <summary>Per-result multiplier in a repeated search. The first result receives 1.</summary>
+        public static readonly GameplayTag SearchMultiplierKey = new GameplayTag("Data.Standard.Search.Multiplier");
         private readonly IReadOnlyList<GameplayPoint> _cells;
         private readonly float _cellSize;
         private readonly IReadOnlyList<IGameplaySkillAction> _each, _completed, _empty;
@@ -82420,7 +82620,8 @@ namespace FRFrame.Gameplay.Standard
             IEnumerable<IGameplaySkillAction> each, IEnumerable<IGameplaySkillAction> completed, IEnumerable<IGameplaySkillAction> empty,
             IEnumerable<GameplayPoint> cells = null, float cellSize = 1,
             GameplaySearchDirection direction = GameplaySearchDirection.OwnerFacing,
-            IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default)
+            IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default,
+            bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane) ||
                 !Enum.IsDefined(typeof(GameplaySearchOrigin), origin)) throw new ArgumentOutOfRangeException(nameof(shape));
@@ -82435,6 +82636,9 @@ namespace FRFrame.Gameplay.Standard
             _length = length ?? throw new ArgumentNullException(nameof(length)); _width = width ?? throw new ArgumentNullException(nameof(width));
             _height = height ?? throw new ArgumentNullException(nameof(height));
             _faction = faction; _tags = tags; _layerMask = layerMask; _maxTargets = maxTargets; _order = order; _includeSelf = includeSelf;
+            _excludePrimaryTarget = excludePrimaryTarget;
+            _repeatFromResult = repeatFromResult;
+            _repeatMultiplier = repeatMultiplier;
             _each = Copy(each); _completed = Copy(completed); _empty = Copy(empty);
             _cells = new List<GameplayPoint>(cells ?? Array.Empty<GameplayPoint>()).AsReadOnly(); _cellSize = cellSize;
         }
@@ -82449,18 +82653,47 @@ namespace FRFrame.Gameplay.Standard
         {
             if (!(host is GameplayStandardActor actor) || actor.IsDisposed) throw new InvalidOperationException("Search requires the official standard actor/world host.");
             if (!TryCreateRequest(context, actor, out var request)) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
-            var targets = actor.World.Spatial.Query(request);
+            GameplayTargetData targets;
+            if (_repeatFromResult)
+            {
+                var selected = new List<GameplaySourceId>();
+                var visited = new HashSet<GameplaySourceId>();
+                GameplayPoint origin = request.Geometry.Origin;
+                float multiplier = 1;
+                for (int step = 0; step < _maxTargets && (canContinue == null || canContinue()); step++)
+                {
+                    var targetsAtStep = actor.World.Spatial.Query(request);
+                    var id = targetsAtStep.PrimaryTargetId;
+                    if (!id.IsValid || !actor.World.TryGetActor(id, out var target)) break;
+                    var point = target.Position;
+                    selected.Add(id);
+                    visited.Add(id);
+                    var single = context.WithTarget(new GameplayTargetData(id, point, null, new[] { id }))
+                        .WithValues(context.Values.WithValue(SearchMultiplierKey, multiplier));
+                    var result = GameplaySkillActionRunner.Execute(_each, single, triggerEvent, host, canContinue);
+                    if (result.Result == GameplaySkillActionResult.Rejected) return result;
+                    multiplier *= _repeatMultiplier;
+                    if (step + 1 < _maxTargets && !actor.IsDisposed)
+                        TryCreateRequest(context, actor, out request, point, visited);
+                    else break;
+                }
+                targets = new GameplayTargetData(selected.Count > 0 ? selected[0] : default, origin, null, selected);
+            }
+            else
+            {
+                targets = actor.World.Spatial.Query(request);
+                foreach (var id in targets.Targets)
+                {
+                    if (!actor.World.TryGetActor(id, out var target)) continue;
+                    var single = context.WithTarget(new GameplayTargetData(id, target.Position, null, new[] { id }));
+                    var result = GameplaySkillActionRunner.Execute(_each, single, triggerEvent, host, canContinue);
+                    if (result.Result == GameplaySkillActionResult.Rejected) return result;
+                }
+            }
             var resultContext = context.WithTarget(targets);
             if (targets.Targets.Count == 0)
             {
                 var result = GameplaySkillActionRunner.Execute(_empty, resultContext, triggerEvent, host, canContinue);
-                if (result.Result == GameplaySkillActionResult.Rejected) return result;
-            }
-            else foreach (var id in targets.Targets)
-            {
-                if (!actor.World.TryGetActor(id, out var target)) continue;
-                var single = context.WithTarget(new GameplayTargetData(id, target.Position, null, new[] { id }));
-                var result = GameplaySkillActionRunner.Execute(_each, single, triggerEvent, host, canContinue);
                 if (result.Result == GameplaySkillActionResult.Rejected) return result;
             }
             return GameplaySkillActionRunner.Execute(_completed, resultContext, triggerEvent, host, canContinue);
@@ -82468,18 +82701,22 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Side-effect-free canonical request used by both runtime query and Editor preview.
         /// Only dimensions used by the selected shape evaluate their AST; inactive fields are retained
         /// for authoring shape switches and cannot fail an unrelated search at runtime.</summary>
-        public bool TryCreateRequest(GameplayContext context, GameplayStandardActor actor, out GameplaySpatialSearchRequest request)
+        public bool TryCreateRequest(GameplayContext context, GameplayStandardActor actor, out GameplaySpatialSearchRequest request) =>
+            TryCreateRequest(context, actor, out request, null, null);
+        private bool TryCreateRequest(GameplayContext context, GameplayStandardActor actor, out GameplaySpatialSearchRequest request,
+            GameplayPoint? previousHit, HashSet<GameplaySourceId> visited)
         {
             if (context == null || actor == null) throw new ArgumentNullException();
             if (actor.IsDisposed) throw new ObjectDisposedException(nameof(actor));
             request = null;
             GameplayPoint origin = actor.Position;
-            if (_origin == GameplaySearchOrigin.ContextPoint)
+            if (previousHit.HasValue) origin = previousHit.Value;
+            else if (_origin == GameplaySearchOrigin.ContextPoint)
             {
                 if (!context.TargetData.HasPoint) return false;
                 origin = context.TargetData.Point;
             }
-            if (_origin == GameplaySearchOrigin.PrimaryTarget)
+            else if (_origin == GameplaySearchOrigin.PrimaryTarget)
             {
                 if (!actor.World.TryGetActor(context.TargetData.PrimaryTargetId, out var primary)) return false;
                 origin = primary.Position;
@@ -82522,7 +82759,11 @@ namespace FRFrame.Gameplay.Standard
                 _shape == GameplaySearchShape.Box || _shape == GameplaySearchShape.Line || _shape == GameplaySearchShape.Ray ? GameplayValueEvaluator.Evaluate(_width, self) : 1,
                 GameplayValueEvaluator.Evaluate(_height, self), context.TargetData.PrimaryTargetId, _cells, _cellSize);
             request = new GameplaySpatialSearchRequest(context, geometry, actor.Faction,
-                _faction, _tags, _layerMask, _maxTargets, _order, _includeSelf);
+                _faction, _tags, _layerMask, _repeatFromResult ? 1 : _maxTargets,
+                _repeatFromResult ? GameplayTargetOrder.Nearest : _order, _includeSelf,
+                _excludePrimaryTarget || visited != null
+                    ? id => (_excludePrimaryTarget && id == context.TargetData.PrimaryTargetId) || (visited != null && visited.Contains(id))
+                    : null);
             return true;
         }
     }
@@ -82561,10 +82802,12 @@ namespace FRFrame.Gameplay.Standard
         public int MaxTargets { get; }
         public GameplayTargetOrder Order { get; }
         public bool IncludeSelf { get; }
+        private readonly Predicate<GameplaySourceId> _excluded;
         public GameplaySpatialSearchRequest(GameplayContext context, GameplaySearchGeometry geometry,
             int sourceFaction, GameplayFactionFilter faction = GameplayFactionFilter.Enemies,
             GameplayTagQuery tags = null, int layerMask = -1, int maxTargets = int.MaxValue,
-            GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false)
+            GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false,
+            Predicate<GameplaySourceId> excluded = null)
         {
             Context = context ?? throw new ArgumentNullException(nameof(context));
             Geometry = geometry ?? throw new ArgumentNullException(nameof(geometry));
@@ -82573,6 +82816,7 @@ namespace FRFrame.Gameplay.Standard
                 throw new ArgumentOutOfRangeException(nameof(faction));
             SourceFaction = sourceFaction; Faction = faction; Tags = tags ?? GameplayTagQuery.Empty;
             LayerMask = layerMask; MaxTargets = maxTargets; Order = order; IncludeSelf = includeSelf;
+            _excluded = excluded;
         }
         public GameplayTargetData Select(IEnumerable<IGameplaySpatialActor> candidates)
         {
@@ -82584,7 +82828,8 @@ namespace FRFrame.Gameplay.Standard
                     (!IncludeSelf && actor.Id == Context.InstigatorId) || (LayerMask & (1 << actor.Layer)) == 0 ||
                     (Faction == GameplayFactionFilter.Allies && actor.Faction != SourceFaction) ||
                     (Faction == GameplayFactionFilter.Enemies && actor.Faction == SourceFaction) ||
-                    !Tags.Matches(actor.Tags) || !Geometry.Contains(actor.Id, actor.Position) || !seen.Add(actor.Id)) continue;
+                    !Tags.Matches(actor.Tags) || !Geometry.Contains(actor.Id, actor.Position) ||
+                    _excluded?.Invoke(actor.Id) == true || !seen.Add(actor.Id)) continue;
                 selected.Add(actor);
             }
             selected.Sort((a, b) =>
@@ -86574,6 +86819,37 @@ namespace FRFrame.Tests.Gameplay.Effect
             Assert.That(c.LastRemoval.Cause,Is.EqualTo(GameplayEffectRemovalCause.Overflow)); Assert.That(c.GetActiveEntriesSnapshot().Count,Is.EqualTo(1));
             Assert.That(target.Attributes.GetCurrentValue(Stat),Is.EqualTo(110));
         }
+
+        [Test]
+        public void InstigatorStacksAcrossCastSourcesAndOverflowsOnlyItsOwnGroup()
+        {
+            var ids = new GameplaySourceIdAllocator();
+            var target = new Target(ids.Allocate());
+            var effects = new GameplayEffectContainer(target.Attributes, ids, target.Tags);
+            var first = ids.Allocate();
+            var second = ids.Allocate();
+            int bursts = 0;
+            var rule = new Overflow { Action = context => { bursts++; context.RemoveCurrent(); } };
+            var definition = Definition(stacking: new GameplayEffectStackingDefinition(new GameplayTag("Effect.Test.Instigator"),
+                GameplayEffectStackAggregation.AggregateByInstigator, 5, GameplayEffectStackDurationRefreshPolicy.RefreshOnSuccessfulApplication,
+                GameplayEffectStackPeriodResetPolicy.NeverReset, GameplayEffectStackOverflowPolicy.ExecuteOverflow,
+                overflowExecutions: new[] { rule }),
+                dynamic: false);
+
+            GameplayEffectApplicationResult Cast(GameplaySourceId instigator) => effects.Apply(definition,
+                new GameplayEffectApplicationContext(new GameplayContext(instigator, new GameplayTargetData(target.TargetId), ids.Allocate()),
+                    target, GameplaySetByCallerValues.Empty));
+
+            Cast(second);
+            for (int i = 1; i <= 5; i++) Assert.That(Cast(first).StackCount, Is.EqualTo(i));
+            Assert.That(bursts, Is.Zero);
+            Assert.That(Cast(first).Outcome, Is.EqualTo(GameplayEffectApplicationOutcome.OverflowExecuted));
+            Assert.That(bursts, Is.EqualTo(1));
+            var remaining = effects.GetActiveEntriesSnapshot();
+            Assert.That(remaining.Count, Is.EqualTo(1));
+            Assert.That(remaining[0].ApplicationContext.InstigatorId, Is.EqualTo(second));
+            Assert.That(Cast(first).StackCount, Is.EqualTo(1));
+        }
     }
 }
 ````
@@ -89982,6 +90258,76 @@ namespace FRFrame.Tests.Gameplay
         {private readonly Action<GameplayEffectApplicationContext> _action;internal CallbackExecution(Action<GameplayEffectApplicationContext> action)=>_action=action;public void Execute(GameplayEffectApplicationContext context)=>_action(context);}
         private sealed class CallbackCompletion:IGameplayEffectCompletionExecution
         {private readonly Action<GameplayEffectCompletionContext> _action;internal CallbackCompletion(Action<GameplayEffectCompletionContext> action)=>_action=action;public void Execute(GameplayEffectCompletionContext context)=>_action(context);}
+        [Test]
+        public void DamageFollowupUsesEachCommittedHpLossWithoutReusingEarlierResults()
+        {
+            using var world = new GameplayStandardWorld();
+            var source = world.CreateActor(default);
+            var first = world.CreateActor(default);
+            var second = world.CreateActor(default);
+            Configure(source);
+            Configure(first);
+            Configure(second);
+            source.Attributes.SetBaseValue(Health, 500);
+            first.Attributes.SetBaseValue(Health, 20);
+            first.Attributes.SetBaseValue(Shield, 0);
+            var execution = new GameplayDamageExecution(Number(40),
+                new[] { new GameplayDamageStage(GameplayDamageStageKind.Shield) },
+                healInstigatorAmount: GameplayFormula.Compile("Context.Data.Standard.Combat.AppliedDamage * 0.35"));
+            var heals = new List<GameplayCombatOutcome>();
+            source.CombatChanged += heals.Add;
+            var context = new GameplayContext(source.Id, new GameplayTargetData(first.Id), world.Sources.Allocate(),
+                GameplayContextValues.Empty.WithValue(GameplayDamageExecution.AppliedDamageKey, 1000));
+
+            void Hit(GameplayStandardActor target) => execution.Execute(new GameplayEffectApplicationContext(
+                context.WithTarget(new GameplayTargetData(target.Id)), target, GameplaySetByCallerValues.Empty,
+                source.Attributes, source.Id, instigatorTarget: source));
+
+            Hit(first);
+            Hit(second);
+            Hit(first);
+            Assert.That(heals.Count, Is.EqualTo(1));
+            Assert.That(heals[0].Applied, Is.EqualTo(7).Within(.001));
+            Assert.That(heals[0].Context.ActivationSourceId, Is.EqualTo(context.ActivationSourceId));
+            Assert.That(source.Attributes.GetCurrentValue(Health), Is.EqualTo(507).Within(.001));
+        }
+
+        [Test]
+        public void ShieldBreakConsumesTheLeaseAndUsesTheBreakerWithoutAnExpiryCallback()
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default);
+            var breaker = world.CreateActor(default);
+            Configure(owner);
+            Configure(breaker);
+            owner.Attributes.SetBaseValue(Shield, 0);
+            var broken = new List<GameplayContext>();
+            var expired = new List<GameplayContext>();
+            var grant = new GameplayGrantTimedShieldAction(Number(40), Number(1),
+                onBroken: new[] { new ObserveAction(broken.Add) },
+                onExpired: new[] { new ObserveAction(expired.Add) });
+            var self = new GameplayContext(owner.Id, new GameplayTargetData(owner.Id));
+            grant.Execute(self, default, owner);
+            var hit = new GameplayContext(breaker.Id, new GameplayTargetData(owner.Id));
+            var damage = new GameplayDamageExecution(Number(40), new[] { new GameplayDamageStage(GameplayDamageStageKind.Shield) });
+            damage.Execute(new GameplayEffectApplicationContext(hit, owner, GameplaySetByCallerValues.Empty));
+            Assert.That(owner.Shields.Snapshot(), Is.Empty);
+            Assert.That(broken.Count, Is.EqualTo(1));
+            Assert.That(broken[0].TargetData.PrimaryTargetId, Is.EqualTo(breaker.Id));
+            world.Advance(2);
+            Assert.That(expired, Is.Empty);
+
+            grant.Execute(self, default, owner);
+            world.Advance(1);
+            Assert.That(expired.Count, Is.EqualTo(1));
+            Assert.That(expired[0].TargetData.PrimaryTargetId, Is.EqualTo(owner.Id));
+            grant.Execute(self, default, owner);
+            owner.Effects.Remove(owner.Shields.Snapshot()[0].EffectHandle, GameplayEffectRemovalCause.Dispel);
+            world.Advance(1);
+            Assert.That(expired.Count, Is.EqualTo(1));
+            Assert.That(broken.Count, Is.EqualTo(1));
+        }
+
         private static IGameplayFloatValue Number(float value) => new GameplayConstantFloatValue(value);
         private sealed class ObserveAction : IGameplaySkillAction
         {

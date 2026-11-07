@@ -38,11 +38,14 @@ namespace FRFrame.Gameplay.Authoring
             new GameplayDamageStageAuthoring { Kind = GameplayDamageStageKind.Critical, Value = new GameplayConstantFloatValueAuthoring { Value = 2 } },
             new GameplayDamageStageAuthoring { Kind = GameplayDamageStageKind.Shield } };
         public GameplayTagQueryAuthoring Immunity = new GameplayTagQueryAuthoring();
+        [Tooltip("可选。伤害提交后用标准治疗回复施法者；仅在实际扣除 HP 时执行。公式可读取 Context.Data.Standard.Combat.AppliedDamage。")]
+        [SerializeReference] public GameplayFloatValueAuthoring HealInstigatorAmount;
         public override void Validate(GameplayAuthoringValidationContext v, string p)
         {
             v.Enum(DamageType,p+".DamageType");
             if (Amount == null) v.Error(p + ".Amount", "Missing damage amount."); else Amount.Validate(v, p + ".Amount");
             Immunity?.Validate(v, p + ".Immunity");
+            HealInstigatorAmount?.Validate(v, p + ".HealInstigatorAmount");
             if (Stages == null) { v.Error(p + ".Stages", "Missing stage list."); return; }
             int shields = 0;
             for (int i = 0; i < Stages.Length; i++)
@@ -58,7 +61,7 @@ namespace FRFrame.Gameplay.Authoring
         public override IGameplayEffectExecution Build()
         {
             var stages = new List<GameplayDamageStage>(); foreach (var stage in Stages) stages.Add(new GameplayDamageStage(stage.Kind, stage.Value.Build()));
-            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(),DamageType);
+            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(),DamageType,HealInstigatorAmount?.Build());
         }
     }
     [Serializable, Preserve]

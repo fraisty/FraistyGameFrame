@@ -196,12 +196,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             var port=AddPort(card,definition.Id,key);string role=binding.PropertyPath=="CooldownEffect"?"冷却":definition.Payload is GameplayProjectileDefinitionData?"弹体":definition.Payload is GameplayAreaDefinitionData?"区域":definition.Payload is GameplayEffectDefinitionData?"效果":null;
             if(role=="冷却"&&(key==GameplayGraphEffectCallbacks.Completion||key.StartsWith("Completion/",StringComparison.Ordinal)))port.portName=key==GameplayGraphEffectCallbacks.Completion?"冷却到期 · 添加效果":"冷却到期 · 续接效果";
-            else if(role!=null)port.portName=role+" · "+port.portName;
+            else if(role!=null&&role!="效果")port.portName=role+" · "+port.portName;
             if(GameplayGraphEffectCallbacks.Slots(definition.Payload).Any(s=>s.Key==key)){
                 var slots=GameplayGraphEffectCallbacks.Slots(definition.Payload).Where(s=>s.IsCompletion==key.StartsWith("Completion/",StringComparison.Ordinal)).ToList();
-                port.portName=(role=="冷却"?"冷却到期":key.StartsWith("Completion/",StringComparison.Ordinal)?"自然到期":"叠层溢出")+" → 效果 "+(slots.FindIndex(s=>s.Key==key)+1);
-                if(!_document.AuthoringGraph.Connections.Any(e=>e.FromNodeId==definition.Id&&e.OutputPortKey==key))port.portName+=" · 待连接";
-            }else if(key==GameplayGraphEffectCallbacks.Completion||key==GameplayGraphEffectCallbacks.Overflow)port.portName="＋ "+port.portName;
+                port.portName=(role=="冷却"?"冷却到期":key.StartsWith("Completion/",StringComparison.Ordinal)?"到期":"溢出")+" → 效果 "+(slots.FindIndex(s=>s.Key==key)+1);
+                if(!_document.AuthoringGraph.Connections.Any(e=>e.FromNodeId==definition.Id&&e.OutputPortKey==key))port.portName+=" · 待接";
+            }else if(key==GameplayGraphEffectCallbacks.Completion||key==GameplayGraphEffectCallbacks.Overflow)
+                port.portName=role=="冷却"?"＋ 冷却到期":key==GameplayGraphEffectCallbacks.Completion?"＋ 到期效果":"＋ 溢出效果";
             port.tooltip=port.portName+"\n"+port.tooltip;
         }
     }

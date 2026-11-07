@@ -92,6 +92,7 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Total distinct targets allowed, including the first hit; never a per-frame counter.</summary>
         public int MaxHits {get;}
         public bool RequiresLiveTarget {get;}
+        public bool OnlyHitPrimaryTarget { get; }
         public IReadOnlyList<IGameplaySkillAction> OnHit {get;}
         public IReadOnlyList<IGameplaySkillAction> OnArrive {get;}
         public IReadOnlyList<IGameplaySkillAction> OnRange {get;}
@@ -105,12 +106,14 @@ namespace FRFrame.Gameplay.Standard
             IGameplayFloatValue hitRadius,IGameplayFloatValue maxRange,IGameplayFloatValue height,GameplaySpatialPlane plane=GameplaySpatialPlane.XY,
             GameplayFactionFilter faction=GameplayFactionFilter.Enemies,GameplayTagQuery tags=null,int layerMask=-1,int maxHits=1,bool requiresLiveTarget=false,
             IEnumerable<IGameplaySkillAction> onHit=null,IEnumerable<IGameplaySkillAction> onArrive=null,IEnumerable<IGameplaySkillAction> onRange=null,IEnumerable<IGameplaySkillAction> onCancelled=null,IGameplaySpatialViewFactory view=null,
-            bool cancelOnAbilityEnd=true,GameplayPoint launchOffset=default,GameplayPoint destinationOffset=default,float directionAngle=0)
+            bool cancelOnAbilityEnd=true,GameplayPoint launchOffset=default,GameplayPoint destinationOffset=default,float directionAngle=0,
+            bool onlyHitPrimaryTarget=false)
         {
             Motion=motion??throw new ArgumentNullException(nameof(motion));Speed=speed??throw new ArgumentNullException(nameof(speed));Duration=duration??throw new ArgumentNullException(nameof(duration));
             HitRadius=hitRadius??throw new ArgumentNullException(nameof(hitRadius));MaxRange=maxRange??throw new ArgumentNullException(nameof(maxRange));Height=height??throw new ArgumentNullException(nameof(height));
             if(!Enum.IsDefined(typeof(GameplaySpatialPlane),plane)||!Enum.IsDefined(typeof(GameplayFactionFilter),faction)||maxHits<1)throw new ArgumentOutOfRangeException(nameof(maxHits));
             Plane=plane;Faction=faction;Tags=tags??GameplayTagQuery.Empty;LayerMask=layerMask;MaxHits=maxHits;RequiresLiveTarget=requiresLiveTarget;
+            OnlyHitPrimaryTarget = onlyHitPrimaryTarget;
             OnHit=GameplaySpatialMath.Actions(onHit);OnArrive=GameplaySpatialMath.Actions(onArrive);OnRange=GameplaySpatialMath.Actions(onRange);OnCancelled=GameplaySpatialMath.Actions(onCancelled);View=view;
             CancelOnAbilityEnd=cancelOnAbilityEnd;LaunchOffset=launchOffset;DestinationOffset=destinationOffset;
             if(!float.IsFinite(directionAngle))throw new ArgumentOutOfRangeException(nameof(directionAngle));DirectionAngle=directionAngle;
@@ -128,11 +131,13 @@ namespace FRFrame.Gameplay.Standard
         private double _age;
         public float DistanceTravelled {get;private set;}
         public int HitCount=>_hits.Count;
-        internal GameplayProjectile(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,GameplayProjectileDefinition definition)
+        internal GameplayProjectile(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,GameplayProjectileDefinition definition,
+            GameplayPoint? launchPoint = null)
             :base(owner,context,grant,definition.View,definition.CancelOnAbilityEnd)
         {
             _definition=definition;_duration=GameplaySpatialMath.Positive(definition.Duration,owner,context,"Projectile duration");
-            Position=new GameplayPoint(Position.X+definition.LaunchOffset.X,Position.Y+definition.LaunchOffset.Y,Position.Z+definition.LaunchOffset.Z);
+            var launch = launchPoint ?? Position;
+            Position=new GameplayPoint(launch.X+definition.LaunchOffset.X,launch.Y+definition.LaunchOffset.Y,launch.Z+definition.LaunchOffset.Z);
             _radius=GameplaySpatialMath.Positive(definition.HitRadius,owner,context,"Hit radius");_range=GameplaySpatialMath.Positive(definition.MaxRange,owner,context,"Max range");
             float speed=GameplaySpatialMath.Positive(definition.Speed,owner,context,"Speed");
             float height=GameplaySpatialMath.Finite(definition.Height,owner,context);
@@ -179,7 +184,9 @@ namespace FRFrame.Gameplay.Standard
                 var selected=Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context,geometry,Owner.Faction,_definition.Faction,_definition.Tags,_definition.LayerMask));
                 foreach(var id in selected.Targets)
                 {
-                    if(IsDisposed)break;if(!Owner.World.TryGetActor(id,out var target)||!target.IsTargetable||!_hits.Add(id))continue;
+                    if(IsDisposed)break;
+                    if ((_definition.OnlyHitPrimaryTarget && id != _target) ||
+                        !Owner.World.TryGetActor(id,out var target)||!target.IsTargetable||!_hits.Add(id))continue;
                     var hit=At(id,target.Position);Run(_definition.OnHit,hit,"Event.Standard.Projectile.Hit",DistanceTravelled);
                     if(!IsDisposed&&_hits.Count>=_definition.MaxHits)Finish(GameplaySpatialEndReason.HitLimit);
                 }
@@ -200,12 +207,38 @@ namespace FRFrame.Gameplay.Standard
     {
         public GameplayProjectile SpawnProjectile(GameplayStandardActor owner,GameplayContext context,GameplayProjectileDefinition definition)
         {if(definition==null)throw new ArgumentNullException(nameof(definition));ValidateSpatialOwner(owner,context,out var grant);return RegisterSpatial(new GameplayProjectile(owner,context,grant,definition),grant);}
+
+        internal GameplayProjectile SpawnProjectileFromAction(GameplayStandardActor owner, GameplayContext context,
+            GameplayProjectileDefinition definition, GameplayPoint? launchPoint, GameplayContext trigger)
+        {
+            if (IsDisposed || owner.IsDisposed) return null;
+            if (!GameplayStandardActivation.TryFindGrant(owner, context, out var grant) &&
+                (definition.CancelOnAbilityEnd || trigger == null || trigger.ActivationSourceId != context.ActivationSourceId ||
+                 !_spatial.Exists(operation => operation.Owner == owner && !operation.OwnedByAbility && operation.Id == trigger.EffectiveSourceId)))
+                return null;
+            return RegisterSpatial(new GameplayProjectile(owner, context, grant, definition, launchPoint), grant);
+        }
     }
     public sealed class GameplaySpawnProjectileAction:IGameplaySkillAction
     {
         public GameplayProjectileDefinition Definition {get;}
-        public GameplaySpawnProjectileAction(GameplayProjectileDefinition definition)=>Definition=definition??throw new ArgumentNullException(nameof(definition));
+        private readonly bool _launchFromTriggerPoint;
+        public GameplaySpawnProjectileAction(GameplayProjectileDefinition definition, bool launchFromTriggerPoint = false)
+        {
+            Definition = definition ?? throw new ArgumentNullException(nameof(definition));
+            _launchFromTriggerPoint = launchFromTriggerPoint;
+        }
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
-        {if(!(host is GameplayStandardActor actor)||!GameplayStandardActivation.TryFindGrant(actor,context,out var grant))return GameplaySkillActionResult.Rejected;return actor.World.SpawnProjectile(actor,context,Definition)!=null?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;}
+        {
+            if (!(host is GameplayStandardActor actor) ||
+                ((Definition.RequiresLiveTarget || Definition.OnlyHitPrimaryTarget) &&
+                 (!actor.World.TryGetActor(context.TargetData.PrimaryTargetId, out var target) || !target.IsTargetable || target == actor)))
+                return GameplaySkillActionResult.Rejected;
+            var trigger = triggerEvent.Context;
+            if (_launchFromTriggerPoint && (trigger == null || !trigger.TargetData.HasPoint)) return GameplaySkillActionResult.Rejected;
+            var projectile = actor.World.SpawnProjectileFromAction(actor, context, Definition,
+                _launchFromTriggerPoint ? trigger.TargetData.Point : (GameplayPoint?)null, trigger);
+            return projectile != null ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+        }
     }
 }

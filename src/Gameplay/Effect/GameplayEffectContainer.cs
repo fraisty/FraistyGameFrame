@@ -83,7 +83,7 @@ namespace FRFrame.Gameplay
                 foreach (var execution in definition.Executions) execution.Execute(application.WithStackCount(1));
                 return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.InstantExecuted, default, 0);
             }
-            var existing = definition.Stacking == null ? null : FindStackEntry(definition, application.Context.EffectiveSourceId);
+            var existing = definition.Stacking == null ? null : FindStackEntry(definition, application.Context);
             application = application.WithStackCount(existing == null ? 1 : Math.Min(existing.StackCount + 1, definition.Stacking.MaxStacks));
             var timing = EvaluateTiming(definition, application);
             if (existing != null) return ReapplyStack(existing, application, timing);
@@ -135,7 +135,7 @@ namespace FRFrame.Gameplay
             (d.OngoingRequirements.IsEmpty || d.OngoingRequirements.Matches(RequireTags()));
         private GameplayTagContainer RequireTags() => _targetTags ?? throw new InvalidOperationException("Requirements need target tags.");
         private bool MeetsOngoing(Entry e) => e.Definition.OngoingRequirements.IsEmpty || e.Definition.OngoingRequirements.Matches(RequireTags());
-        private Entry FindStackEntry(GameplayEffectDefinition d, GameplaySourceId source)
+        private Entry FindStackEntry(GameplayEffectDefinition d, GameplayContext context)
         {
             var incoming = d.Stacking;
             foreach (var e in _entries.Values)
@@ -143,7 +143,8 @@ namespace FRFrame.Gameplay
                 var active = e.Definition.Stacking;
                 if (active == null || active.StackKey != incoming.StackKey) continue;
                 if (active.Aggregation != incoming.Aggregation) throw new InvalidOperationException("Stack key collides with a different aggregation policy.");
-                if (incoming.Aggregation == GameplayEffectStackAggregation.AggregateBySource && e.Application.Context.EffectiveSourceId != source) continue;
+                if (incoming.Aggregation == GameplayEffectStackAggregation.AggregateBySource && e.Application.Context.EffectiveSourceId != context.EffectiveSourceId) continue;
+                if (incoming.Aggregation == GameplayEffectStackAggregation.AggregateByInstigator && e.Application.Context.InstigatorId != context.InstigatorId) continue;
                 if (!ReferenceEquals(e.Definition, d)) throw new InvalidOperationException("Stack key collides with a different Effect definition.");
                 return e;
             }

@@ -24,6 +24,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Restart","重新开始"},{"Reduce","减少"},{"Increase","增加"},{"Reset","重置"},{"Set","设置"},{"Clear","清除"},
             {"Add","加法"},{"Multiply","乘法"},{"Override","覆盖"},{"Replace","替换"},
             {"AnimatorState","Animator 状态"},{"PlayablesClip","Playables 剪辑"},
+            {"AggregateByTarget","按目标"},{"AggregateBySource","按来源 ID"},{"AggregateByInstigator","按施法者"},
+            {"SharedEntryLifetime","共享时长"},{"IndependentLayerLifetime","各层独立时长"},
+            {"RefreshOnSuccessfulApplication","成功施加时刷新"},{"NeverRefresh","不刷新"},
+            {"NeverReset","不重置周期"},{"ResetOnSuccessfulApplication","成功施加时重置周期"},
             {"AfterFirstPeriod","首次间隔后"},{"Immediately","立即"},{"Reject","拒绝新增"},{"RefreshExistingAtLimit","到上限时刷新"},{"ExecuteOverflow","执行溢出效果"}
         };
         internal static string Display(string name)=>Labels.TryGetValue(name,out var label)?label:name;

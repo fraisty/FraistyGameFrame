@@ -109,5 +109,36 @@ namespace FRFrame.Tests.Gameplay.Effect
             Assert.That(c.LastRemoval.Cause,Is.EqualTo(GameplayEffectRemovalCause.Overflow)); Assert.That(c.GetActiveEntriesSnapshot().Count,Is.EqualTo(1));
             Assert.That(target.Attributes.GetCurrentValue(Stat),Is.EqualTo(110));
         }
+
+        [Test]
+        public void InstigatorStacksAcrossCastSourcesAndOverflowsOnlyItsOwnGroup()
+        {
+            var ids = new GameplaySourceIdAllocator();
+            var target = new Target(ids.Allocate());
+            var effects = new GameplayEffectContainer(target.Attributes, ids, target.Tags);
+            var first = ids.Allocate();
+            var second = ids.Allocate();
+            int bursts = 0;
+            var rule = new Overflow { Action = context => { bursts++; context.RemoveCurrent(); } };
+            var definition = Definition(stacking: new GameplayEffectStackingDefinition(new GameplayTag("Effect.Test.Instigator"),
+                GameplayEffectStackAggregation.AggregateByInstigator, 5, GameplayEffectStackDurationRefreshPolicy.RefreshOnSuccessfulApplication,
+                GameplayEffectStackPeriodResetPolicy.NeverReset, GameplayEffectStackOverflowPolicy.ExecuteOverflow,
+                overflowExecutions: new[] { rule }),
+                dynamic: false);
+
+            GameplayEffectApplicationResult Cast(GameplaySourceId instigator) => effects.Apply(definition,
+                new GameplayEffectApplicationContext(new GameplayContext(instigator, new GameplayTargetData(target.TargetId), ids.Allocate()),
+                    target, GameplaySetByCallerValues.Empty));
+
+            Cast(second);
+            for (int i = 1; i <= 5; i++) Assert.That(Cast(first).StackCount, Is.EqualTo(i));
+            Assert.That(bursts, Is.Zero);
+            Assert.That(Cast(first).Outcome, Is.EqualTo(GameplayEffectApplicationOutcome.OverflowExecuted));
+            Assert.That(bursts, Is.EqualTo(1));
+            var remaining = effects.GetActiveEntriesSnapshot();
+            Assert.That(remaining.Count, Is.EqualTo(1));
+            Assert.That(remaining[0].ApplicationContext.InstigatorId, Is.EqualTo(second));
+            Assert.That(Cast(first).StackCount, Is.EqualTo(1));
+        }
     }
 }
