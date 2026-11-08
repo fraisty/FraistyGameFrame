@@ -15,8 +15,16 @@ namespace FRFrame.Gameplay.Unity
         /// the same FRFrame modules and dispose only those local modules, never a second implementation.</summary>
         public GameObjectPoolModule CuePool {get;set;}
         public AudioManager CueAudio {get;set;}
+        /// <summary>Optional camera layer for spawned cue and status views in a scoped viewport.</summary>
+        public int? ViewRenderLayer {get;set;}
         public int ActiveCueCount=>_cues.Count;
         internal GameObjectPoolModule SpatialViewPool=>CuePool??(_ownedPool??(_ownedPool=new GameObjectPoolModule()));
+
+        private void ApplyViewRenderLayer(GameObject view)
+        {
+            if (ViewRenderLayer is not int layer) return;
+            foreach (var child in view.GetComponentsInChildren<Transform>(true)) child.gameObject.layer = layer;
+        }
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
@@ -36,6 +44,12 @@ namespace FRFrame.Gameplay.Unity
                 parent=(target.Presentation as GameplayUnityAnimationController)?.Subject?.transform;
                 if(parent!=null&&!string.IsNullOrEmpty(definition.Binding)){parent=parent.Find(definition.Binding)??parent;point=parent.position;}
             }
+            return PlayCueAt(definition, point, parent, duration, grant);
+        }
+
+        private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent,
+            float duration, GameplayAbilityHandle grant=default)
+        {
             var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
             {
@@ -46,6 +60,7 @@ namespace FRFrame.Gameplay.Unity
                     var key=new ResourceKey("Gameplay.DirectPrefab",definition.Prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
                     var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
+                    ApplyViewRenderLayer(view);
                     var offset=definition.Offset;var scale=definition.Scale;
                     if(definition.MirrorFacing&&Subject.transform.localScale.x<0){offset.x=-offset.x;scale.x=-scale.x;}
                     view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=Quaternion.identity;
@@ -102,7 +117,7 @@ namespace FRFrame.Gameplay.Unity
             }
             public void Dispose()
             {
-                if(_disposed)return;_disposed=true;_owner._cues.Remove(this);_owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);
+                if(_disposed)return;_disposed=true;_owner._cues.Remove(this);if(_grant.IsValid)_owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);
                 Audio.Stop();
                 if(View!=null){foreach(var particles in Particles??Array.Empty<ParticleSystem>())if(particles!=null)particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);Pool.Release(Key,Location,View);View=null;}
             }

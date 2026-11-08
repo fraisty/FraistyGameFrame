@@ -13,6 +13,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal static string Name(GameplayAuthoringNode node,GameplayAuthoringGraph graph)
         {
             var action=(node.Payload as GameplayActionNodePayload)?.Action;
+            var descriptor=action==null?null:GameplaySkillNodeDescriptors.Get(action.GetType());
+            if(descriptor?.IsPresentationCue==true){
+                string type=GameplaySkillFieldSchema.ValueNodeTypeName(BoundValues(node,graph))??descriptor.DisplayName;
+                return string.IsNullOrEmpty(node.Title)||node.Title==type||node.Title==descriptor.DisplayName?type:type+" · "+node.Title;
+            }
             if(!(action is GameplayApplyToTargetsActionAuthoring)&&!(action is GameplaySkillApplyEffectActionAuthoring))return GameplaySkillFieldSchema.NodeName(node);
             var binding=node.Payload.Definitions.FirstOrDefault(b=>b.PropertyPath=="Effect");
             var effect=graph.LocalDefinitions.Find(d=>d.Id==binding?.LocalId)?.Payload as GameplayEffectDefinitionData;
@@ -68,8 +73,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(effect==null)return null;
                 string state=effect.DurationPolicy==GameplayEffectDurationPolicy.Instant?"瞬时结算":effect.DurationPolicy==GameplayEffectDurationPolicy.Infinite?"无限持续":"持续效果";
                 int count=effect.Executions.Length+effect.Modifiers.Length;
+                string presentation=effect.Presentation==null?null:GameplaySkillFieldSchema.ValueSummary(effect.Presentation);
+                var overflow=effect.Stacking?.OverflowExecutions.Select(GameplaySkillFieldSchema.ValueSummary).Where(s=>!string.IsNullOrEmpty(s)).ToArray();
                 return state+(count>1?" · 复合 "+count+" 项":"")+(!hasFields&&effect.Stacking!=null?" · 叠层上限 "+effect.Stacking.MaxStacks:"")+
-                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"");
+                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"")+
+                    (presentation==null?"":"\n效果表现 · "+presentation)+
+                    (overflow?.Length>0?"\n"+string.Join("\n",overflow):"");
             }
             return hasFields?null:Summary(node,graph);
         }
@@ -115,12 +124,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if(node==null)return "缺失入口";
             var action=(node.Payload as GameplayActionNodePayload)?.Action;
-            if(action!=null&&GameplaySkillNodeDescriptors.Get(action.GetType()).IsAnimation){
-                var value=AnimationValues(node,graph);
+            var descriptor=action==null?null:GameplaySkillNodeDescriptors.Get(action.GetType());
+            if(descriptor?.IsPresentationCue==true){
+                string summary=GameplaySkillFieldSchema.ValueSummary(BoundValues(node,graph));
+                return Name(node,graph)+(summary==null?"":"\n"+summary);
+            }
+            if(descriptor?.IsAnimation==true){
+                var value=BoundValues(node,graph);
                 string summary=value==null?null:GameplaySkillFieldSchema.ValueSummary(value);return Name(node,graph)+(summary==null?"":" · "+summary)+"\n"+string.Join(" / ",node.Payload.Definitions.Select(b=>b.External?"共享 · "+b.External.name:"本地 · "+graph.LocalDefinitions.Find(d=>d.Id==b.LocalId)?.Name));
             }return Name(node,graph);
         }
-        internal static object AnimationValues(GameplayAuthoringNode node,GameplayAuthoringGraph graph)=>node.Payload.Definitions.Select(b=>graph.LocalDefinitions.Find(d=>d.Id==b.LocalId)?.Payload??(b.External?b.External.CaptureGraphValues():null)).FirstOrDefault(v=>v!=null);
+        internal static object BoundValues(GameplayAuthoringNode node,GameplayAuthoringGraph graph)=>node.Payload.Definitions.Select(b=>graph.LocalDefinitions.Find(d=>d.Id==b.LocalId)?.Payload??(b.External?b.External.CaptureGraphValues():null)).FirstOrDefault(v=>v!=null);
         private static string Effect(GameplayEffectDefinitionData effect,string name)
         {
             string duration=effect.DurationPolicy==GameplayEffectDurationPolicy.Instant?"瞬时":effect.DurationPolicy==GameplayEffectDurationPolicy.Infinite?"无限持续":"持续 "+(effect.DurationValue==null?effect.Duration.ToString("0.###"):Value(effect.DurationValue))+"s";
@@ -137,5 +151,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public interface IGameplaySkillValueDescription
     {
         string Summary(object values);
+        /// <summary>Optional creation-menu name when one payload type has multiple authoring presets.</summary>
+        string NodeTypeName(object values)=>null;
     }
 }

@@ -27,6 +27,7 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayEffectExecutionAuthoring[] Executions = Array.Empty<GameplayEffectExecutionAuthoring>();
         /// <summary>Only Duration natural expiry runs these, after modifiers, tags and handle have been removed.</summary>
         [SerializeReference] public GameplayEffectCompletionAuthoring[] CompletionExecutions = Array.Empty<GameplayEffectCompletionAuthoring>();
+        [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
 
         protected override void ValidateContent(GameplayAuthoringValidationContext v, string p)
         {
@@ -51,6 +52,7 @@ namespace FRFrame.Gameplay.Authoring
             Stacking?.Validate(v, p + ".Stacking");
             ApplicationRequirements?.Validate(v, p + ".ApplicationRequirements");
             OngoingRequirements?.Validate(v, p + ".OngoingRequirements");
+            Presentation?.Validate(v, p + ".Presentation");
             if (CompletionExecutions == null) v.Error(p + ".CompletionExecutions", "Completion list is null.");
             else
             {
@@ -74,6 +76,7 @@ namespace FRFrame.Gameplay.Authoring
             int modifierCount = Modifiers?.Length ?? 0, tagCount = GrantedTags?.Length ?? 0, executionCount = Executions?.Length ?? 0;
             if (DurationPolicy == GameplayEffectDurationPolicy.Instant)
             {
+                if (Presentation != null) v.Error(p + ".Presentation", "状态表现需要持续效果。");
                 if (Period != 0 || Stacking != null || modifierCount != 0 || tagCount != 0 || executionCount == 0)
                     v.Error(p, "Instant effects require executions and reject period, stack, modifiers and granted tags.");
                 if (OngoingRequirements != null && ((OngoingRequirements.All?.Length ?? 0) > 0 ||
@@ -98,7 +101,7 @@ namespace FRFrame.Gameplay.Authoring
                 return new GameplayEffectDefinition(DurationPolicy, Duration, Period, modifiers,
                     GameplayTagQueryAuthoring.BuildTags(GrantedTags), executions, Stacking?.Build(context),
                     ApplicationRequirements?.Build(), OngoingRequirements?.Build(), completions,
-                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build());
+                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build(), Presentation?.Build());
             });
         }
     

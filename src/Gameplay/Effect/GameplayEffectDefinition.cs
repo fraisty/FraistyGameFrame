@@ -31,6 +31,8 @@ namespace FRFrame.Gameplay
         public IReadOnlyList<IGameplayEffectExecution> Executions { get; }
         /// <summary>Authored order, executed once after natural Duration expiry cleanup; interruptions never run these.</summary>
         public IReadOnlyList<IGameplayEffectCompletionExecution> CompletionExecutions { get; }
+        /// <summary>Optional backend-owned presentation data. The rule container never plays it.</summary>
+        public IGameplayEffectPresentationDefinition Presentation { get; }
 
         /// <summary>
         /// 此定义在应用期间提供的 exact 标签。集合只读，来源由每个 Effect 实例独立分配。
@@ -94,7 +96,8 @@ namespace FRFrame.Gameplay
             IEnumerable<IGameplayEffectCompletionExecution> completionExecutions = null,
             IEnumerable<GameplayTag> effectTags = null,
             GameplayEffectPeriodicStartPolicy periodicStart = GameplayEffectPeriodicStartPolicy.AfterFirstPeriod,
-            IGameplayFloatValue durationValue = null, IGameplayFloatValue periodValue = null)
+            IGameplayFloatValue durationValue = null, IGameplayFloatValue periodValue = null,
+            IGameplayEffectPresentationDefinition presentation = null)
         {
             if (durationPolicy != GameplayEffectDurationPolicy.Duration &&
                 durationPolicy != GameplayEffectDurationPolicy.Infinite &&
@@ -150,6 +153,7 @@ namespace FRFrame.Gameplay
                 throw new ArgumentException("Executions must not contain null.", nameof(executions));
             if (durationPolicy == GameplayEffectDurationPolicy.Instant)
             {
+                if (presentation != null) throw new ArgumentException("Effect status presentation requires a persistent effect.");
                 if (ongoingRequirements != null && !ongoingRequirements.IsEmpty)
                     throw new ArgumentException("Instant effects cannot have ongoing requirements.", nameof(ongoingRequirements));
                 if (period != 0f || stacking != null || modifierCopy.Count != 0 || tagCopy.Count != 0 || executionCopy.Count == 0)
@@ -165,6 +169,7 @@ namespace FRFrame.Gameplay
             DurationValue = durationValue;
             PeriodValue = periodValue;
             PeriodicStart = periodicStart;
+            Presentation = presentation;
             EffectTags = classification.AsReadOnly();
             Stacking = stacking;
             ApplicationRequirements = applicationRequirements ?? GameplayTagQuery.Empty;

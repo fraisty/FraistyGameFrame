@@ -8,11 +8,13 @@ namespace FRFrame.Gameplay.Unity.Editor
 {
     public sealed class GameplayAnimationNodeDescriptor:IGameplaySkillNodeEditorDescriptorProvider
     {
-        public bool Supports(Type type)=>type==typeof(GameplayPlayAnimationActionAuthoring)||type==typeof(GameplayPlayPresentationCueActionAuthoring)||type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset);
+        public bool Supports(Type type)=>type==typeof(GameplayPlayAnimationActionAuthoring)||type==typeof(GameplayPlayPresentationCueActionAuthoring)||type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset)||type==typeof(GameplayUnityEffectPresentationAuthoring)||type==typeof(GameplayPlayEffectCueOnOverflowAuthoring);
         public GameplaySkillNodeEditorDescriptor Describe(Type type,SerializedProperty property)
         {
             if(type==typeof(GameplayPlayAnimationActionAuthoring))return new GameplaySkillNodeEditorDescriptor(property?.FindPropertyRelative("Queue")?.boolValue==true?"排队动画":"播放动画","FRFrame/表现","播放正式动画资源；Queue在同一channel等待，取消施法释放当前与排队请求。",visualKind:GameplayNodeVisualKind.Presentation,isAnimation:true);
             if(type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset))return new GameplaySkillNodeEditorDescriptor("战斗飘字","FRFrame/表现","展示同来源已提交结果；复用Core UIWidget/Pool。不会决定伤害或另建规则时钟。",visualKind:GameplayNodeVisualKind.Presentation);
+            if(type==typeof(GameplayUnityEffectPresentationAuthoring))return new GameplaySkillNodeEditorDescriptor("Unity 状态表现","FRFrame/表现","首次应用与存续表现，按真实 Effect 实例追踪层数与清理。",visualKind:GameplayNodeVisualKind.Presentation);
+            if(type==typeof(GameplayPlayEffectCueOnOverflowAuthoring))return new GameplaySkillNodeEditorDescriptor("溢出播放声光","FRFrame/表现","按溢出执行列表顺序，在实际受影响目标位置播放。",visualKind:GameplayNodeVisualKind.Presentation);
             var cue=property?.FindPropertyRelative("Cue")?.objectReferenceValue as GameplayPresentationCueAsset;
             return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","直接正式资源绑定；复用 FRFrame Pool/Audio，绑定当前施法并精确清理。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
         }

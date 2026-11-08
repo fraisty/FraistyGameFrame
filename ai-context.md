@@ -641,6 +641,7 @@ Gameplay/
         GameplayAnimationAsset.cs
         GameplayAnimationSubjectLease.cs
         GameplayAnimationVariantSelector.cs
+        GameplayEffectStatusView.cs
         GameplayFloatingTextAsset.cs
         GameplayFloatingTextWidget.cs
         GameplayFsmBehaviourAdapter.cs
@@ -654,9 +655,11 @@ Gameplay/
         GameplayUnityAnimationAsset.cs
         GameplayUnityAnimationController.cs
         GameplayUnityAnimationController.Cues.cs
+        GameplayUnityAnimationController.Effects.cs
         GameplayUnityAnimationController.FloatingText.cs
         GameplayUnityAnimationController.Queue.cs
         GameplayUnityAreaAsset.cs
+        GameplayUnityEffectPresentationAuthoring.cs
         GameplayUnityProjectileAsset.cs
         GameplayUnitySpatialBackends.cs
         GameplayUnitySpatialViewFactory.cs
@@ -60275,6 +60278,7 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayEffectExecutionAuthoring[] Executions = Array.Empty<GameplayEffectExecutionAuthoring>();
         /// <summary>Only Duration natural expiry runs these, after modifiers, tags and handle have been removed.</summary>
         [SerializeReference] public GameplayEffectCompletionAuthoring[] CompletionExecutions = Array.Empty<GameplayEffectCompletionAuthoring>();
+        [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
 
         protected override void ValidateContent(GameplayAuthoringValidationContext v, string p)
         {
@@ -60299,6 +60303,7 @@ namespace FRFrame.Gameplay.Authoring
             Stacking?.Validate(v, p + ".Stacking");
             ApplicationRequirements?.Validate(v, p + ".ApplicationRequirements");
             OngoingRequirements?.Validate(v, p + ".OngoingRequirements");
+            Presentation?.Validate(v, p + ".Presentation");
             if (CompletionExecutions == null) v.Error(p + ".CompletionExecutions", "Completion list is null.");
             else
             {
@@ -60322,6 +60327,7 @@ namespace FRFrame.Gameplay.Authoring
             int modifierCount = Modifiers?.Length ?? 0, tagCount = GrantedTags?.Length ?? 0, executionCount = Executions?.Length ?? 0;
             if (DurationPolicy == GameplayEffectDurationPolicy.Instant)
             {
+                if (Presentation != null) v.Error(p + ".Presentation", "状态表现需要持续效果。");
                 if (Period != 0 || Stacking != null || modifierCount != 0 || tagCount != 0 || executionCount == 0)
                     v.Error(p, "Instant effects require executions and reject period, stack, modifiers and granted tags.");
                 if (OngoingRequirements != null && ((OngoingRequirements.All?.Length ?? 0) > 0 ||
@@ -60346,7 +60352,7 @@ namespace FRFrame.Gameplay.Authoring
                 return new GameplayEffectDefinition(DurationPolicy, Duration, Period, modifiers,
                     GameplayTagQueryAuthoring.BuildTags(GrantedTags), executions, Stacking?.Build(context),
                     ApplicationRequirements?.Build(), OngoingRequirements?.Build(), completions,
-                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build());
+                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build(), Presentation?.Build());
             });
         }
     
@@ -62848,6 +62854,14 @@ using UnityEngine;
 
 namespace FRFrame.Gameplay.Authoring
 {
+    /// <summary>Backend-specific authoring of a persistent Effect's optional presentation.</summary>
+    [Serializable]
+    public abstract class GameplayEffectPresentationAuthoring
+    {
+        public abstract void Validate(GameplayAuthoringValidationContext validation, string path);
+        public abstract IGameplayEffectPresentationDefinition Build();
+    }
+
     [CreateAssetMenu(menuName = "FRFrame Gameplay/Effect Definition")]
     public sealed class GameplayEffectDefinitionAsset : GameplayDefinitionAsset
     {
@@ -62880,9 +62894,11 @@ namespace FRFrame.Gameplay.Authoring
         /// <summary>Only Duration natural expiry runs these, after modifiers, tags and handle have been removed.</summary>
         [SerializeReference] public GameplayEffectCompletionAuthoring[] CompletionExecutions = Array.Empty<GameplayEffectCompletionAuthoring>();
 
+        [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
+
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        private GameplayEffectDefinitionData CaptureValues() => new GameplayEffectDefinitionData { DurationPolicy = DurationPolicy, Duration = Duration, Period = Period, EffectTags = EffectTags, PeriodicStart = PeriodicStart, DurationValue = DurationValue, PeriodValue = PeriodValue, Modifiers = Modifiers, GrantedTags = GrantedTags, Stacking = Stacking, ApplicationRequirements = ApplicationRequirements, OngoingRequirements = OngoingRequirements, Executions = Executions, CompletionExecutions = CompletionExecutions };
+        private GameplayEffectDefinitionData CaptureValues() => new GameplayEffectDefinitionData { DurationPolicy = DurationPolicy, Duration = Duration, Period = Period, EffectTags = EffectTags, PeriodicStart = PeriodicStart, DurationValue = DurationValue, PeriodValue = PeriodValue, Modifiers = Modifiers, GrantedTags = GrantedTags, Stacking = Stacking, ApplicationRequirements = ApplicationRequirements, OngoingRequirements = OngoingRequirements, Executions = Executions, CompletionExecutions = CompletionExecutions, Presentation = Presentation };
         public GameplayEffectDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => CaptureValues().Build(context));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 
@@ -64879,6 +64895,8 @@ namespace FRFrame.Gameplay.Editor
             Labels["AudioLoop"]="循环音效";Labels["Backend"]="播放后端";Labels["BlendDuration"]="混合时长（秒）";Labels["Clip"]="动画或音频片段";
             Labels["CriticalColor"]="暴击颜色";Labels["CriticalPrefix"]="暴击前缀";Labels["Cue"]="表现资源";Labels["DamageColor"]="伤害颜色";Labels["DamagePrefix"]="伤害前缀";
             Labels["FadeStartRatio"]="开始淡出的进度（0～1）";Labels["FixedPoint"]="固定位置";Labels["Follow"]="跟随位置";Labels["FollowSource"]="持续跟随来源";
+            Labels["Presentation"]="效果表现";Labels["StatusPrefab"]="持续状态预制体";Labels["FirstApplicationVfx"]="首次应用特效";
+            Labels["FirstApplicationOffset"]="首次特效偏移";Labels["FirstApplicationSeconds"]="首次特效时长（秒）";
             Labels["ImmuneText"]="免疫文字";Labels["Layer"]="Animator层";Labels["Material"]="材质";Labels["MinimumSeparation"]="最小间距";
             Labels["MirrorFacing"]="随朝向镜像";Labels["MissColor"]="未命中颜色";Labels["MissText"]="未命中文字";Labels["ModelPrefab"]="Cubism模型预制体";
             Labels["NumberFormat"]="数字格式";Labels["OwnerSkillId"]="拥有者技能编号（0使用当前）";Labels["Pitch"]="音调";Labels["Point"]="地点来源或坐标";
@@ -66869,6 +66887,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             else if((value is GameplayEffectDefinitionAsset || value is GameplayEffectDefinitionData)){
                 yield return Group("持续 / 周期（秒）","Period=0不执行周期；动态数值沿用正式求值器，非启用字段保留旧值。","DurationPolicy","Duration","DurationValue","Period","PeriodValue","PeriodicStart");
                 yield return Group("标签 / 应用与持续门禁","EffectTags用于驱散分类，GrantedTags在存续期间贡献标签。","EffectTags","GrantedTags","ApplicationRequirements","OngoingRequirements");
+                if ((value is GameplayEffectDefinitionData effect ? effect.DurationPolicy : ((GameplayEffectDefinitionAsset)value).DurationPolicy) != GameplayEffectDurationPolicy.Instant)
+                    yield return Group("效果表现","首次应用播放一次；持续表现随当前 Effect 实例清理。溢出声光在下方溢出执行中配置。","Presentation");
                 yield return Group("属性修改 / 结算","所有Execution均可配置，按正式数组顺序执行。","Modifiers","Executions");
                 yield return Group("叠层 / 溢出 / 自然完成","Overflow与Completion是不同的typed数组；取消/驱散不运行自然完成。","Stacking","CompletionExecutions");
             }
@@ -68053,7 +68073,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     animationHeader.Add(animationConfig);
                     foreach(var source in animationNodes){
                         string actionId=source.Id;bool inline=IsTimelineInline(actionId);
-                        object values=GameplaySkillNodeDisplay.AnimationValues(source,_document.AuthoringGraph);
+                        object values=GameplaySkillNodeDisplay.BoundValues(source,_document.AuthoringGraph);
                         var label=new Label(inline?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(source.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):
                             GameplaySkillNodeDisplay.EventLabel(source,_document.AuthoringGraph)+" · 参数在独立动画卡"){name="AnimationSource-"+actionId,userData=actionId};
                         label.AddToClassList("animation-source");label.style.whiteSpace=WhiteSpace.Normal;label.style.marginLeft=10;label.style.fontSize=12;if(!inline)animationConfig.Add(label);
@@ -68916,7 +68936,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     Set("BusinessSummary",GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,editors.Any(e=>e.HasFields)));
                     if(data.Payload is GameplayAbilityNodePayload)Set("AbilitySummary",_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能");
                     foreach(var binding in data.Payload.Definitions){var definition=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);if(definition!=null)Set("Definition-"+definition.Id,DefinitionSummary(definition));}
-                    foreach(var label in node.extensionContainer.Query<Label>(className:"animation-source").ToList()){var animation=Record((string)label.userData);if(animation==null)continue;object values=GameplaySkillNodeDisplay.AnimationValues(animation,_document.AuthoringGraph);string text=IsTimelineInline(animation.Id)?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(animation.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):GameplaySkillNodeDisplay.EventLabel(animation,_document.AuthoringGraph)+" · 参数在独立动画卡";if(label.text!=text)label.text=text;}
+                    foreach(var label in node.extensionContainer.Query<Label>(className:"animation-source").ToList()){var animation=Record((string)label.userData);if(animation==null)continue;object values=GameplaySkillNodeDisplay.BoundValues(animation,_document.AuthoringGraph);string text=IsTimelineInline(animation.Id)?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(animation.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):GameplaySkillNodeDisplay.EventLabel(animation,_document.AuthoringGraph)+" · 参数在独立动画卡";if(label.text!=text)label.text=text;}
                     foreach(var timeline in _document.AuthoringGraph.Timelines.Where(t=>data.Payload.Definitions.Any(b=>b.LocalId==t.Id))){var entries=timeline.Events.Where(e=>!IsTimelineInline(e.EntryNodeId)).OrderBy(e=>e.TimeSeconds).ThenBy(e=>e.Order).ToArray();for(int i=0;i<entries.Length;i++)if(_outputs.TryGetValue(Key(entries[i].Id,"Schedule"),out var port)){string caption="#"+(i+1)+" "+(entries[i].TimeSeconds*timeline.FramesPerSecond).ToString("0.#")+"f";if(port.portName!=caption){port.tooltip="◇ 真实时间调度 · "+caption+"\n事件 "+entries[i].Id+"\n单击编号定位；Order、目标与条件见该事件。";}}}
                     foreach(var timelineView in node.Query<GameplaySkillTimeline>().ToList())timelineView.InvalidatePresentation();
                     node.MarkDirtyRepaint();
@@ -71407,6 +71427,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         public static string FloatSummary(GameplayFloatValueAuthoring value)=>GameplaySkillNodeDisplay.Value(value);
         public static string ValueSummary(object values)=>Providers.OfType<IGameplaySkillValueDescription>().Select(p=>p.Summary(values)).FirstOrDefault(s=>s!=null);
+        internal static string ValueNodeTypeName(object values)=>Providers.OfType<IGameplaySkillValueDescription>().Select(p=>p.NodeTypeName(values)).FirstOrDefault(s=>s!=null);
         public static string Name(Type type) => Providers.Select(p => p.Name(type)).FirstOrDefault(n => n != null) ??
             (type == typeof(GameplayEffectDefinitionData) ? "效果 / Buff" : type == typeof(GameplayProjectileDefinitionData) ? "逻辑弹体" :
              type == typeof(GameplayAreaDefinitionData) ? "逻辑区域" : type == typeof(GameplaySummonDefinitionData) ? "逻辑召唤" :
@@ -72219,6 +72240,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal static string Name(GameplayAuthoringNode node,GameplayAuthoringGraph graph)
         {
             var action=(node.Payload as GameplayActionNodePayload)?.Action;
+            var descriptor=action==null?null:GameplaySkillNodeDescriptors.Get(action.GetType());
+            if(descriptor?.IsPresentationCue==true){
+                string type=GameplaySkillFieldSchema.ValueNodeTypeName(BoundValues(node,graph))??descriptor.DisplayName;
+                return string.IsNullOrEmpty(node.Title)||node.Title==type||node.Title==descriptor.DisplayName?type:type+" · "+node.Title;
+            }
             if(!(action is GameplayApplyToTargetsActionAuthoring)&&!(action is GameplaySkillApplyEffectActionAuthoring))return GameplaySkillFieldSchema.NodeName(node);
             var binding=node.Payload.Definitions.FirstOrDefault(b=>b.PropertyPath=="Effect");
             var effect=graph.LocalDefinitions.Find(d=>d.Id==binding?.LocalId)?.Payload as GameplayEffectDefinitionData;
@@ -72274,8 +72300,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(effect==null)return null;
                 string state=effect.DurationPolicy==GameplayEffectDurationPolicy.Instant?"瞬时结算":effect.DurationPolicy==GameplayEffectDurationPolicy.Infinite?"无限持续":"持续效果";
                 int count=effect.Executions.Length+effect.Modifiers.Length;
+                string presentation=effect.Presentation==null?null:GameplaySkillFieldSchema.ValueSummary(effect.Presentation);
+                var overflow=effect.Stacking?.OverflowExecutions.Select(GameplaySkillFieldSchema.ValueSummary).Where(s=>!string.IsNullOrEmpty(s)).ToArray();
                 return state+(count>1?" · 复合 "+count+" 项":"")+(!hasFields&&effect.Stacking!=null?" · 叠层上限 "+effect.Stacking.MaxStacks:"")+
-                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"");
+                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"")+
+                    (presentation==null?"":"\n效果表现 · "+presentation)+
+                    (overflow?.Length>0?"\n"+string.Join("\n",overflow):"");
             }
             return hasFields?null:Summary(node,graph);
         }
@@ -72321,12 +72351,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if(node==null)return "缺失入口";
             var action=(node.Payload as GameplayActionNodePayload)?.Action;
-            if(action!=null&&GameplaySkillNodeDescriptors.Get(action.GetType()).IsAnimation){
-                var value=AnimationValues(node,graph);
+            var descriptor=action==null?null:GameplaySkillNodeDescriptors.Get(action.GetType());
+            if(descriptor?.IsPresentationCue==true){
+                string summary=GameplaySkillFieldSchema.ValueSummary(BoundValues(node,graph));
+                return Name(node,graph)+(summary==null?"":"\n"+summary);
+            }
+            if(descriptor?.IsAnimation==true){
+                var value=BoundValues(node,graph);
                 string summary=value==null?null:GameplaySkillFieldSchema.ValueSummary(value);return Name(node,graph)+(summary==null?"":" · "+summary)+"\n"+string.Join(" / ",node.Payload.Definitions.Select(b=>b.External?"共享 · "+b.External.name:"本地 · "+graph.LocalDefinitions.Find(d=>d.Id==b.LocalId)?.Name));
             }return Name(node,graph);
         }
-        internal static object AnimationValues(GameplayAuthoringNode node,GameplayAuthoringGraph graph)=>node.Payload.Definitions.Select(b=>graph.LocalDefinitions.Find(d=>d.Id==b.LocalId)?.Payload??(b.External?b.External.CaptureGraphValues():null)).FirstOrDefault(v=>v!=null);
+        internal static object BoundValues(GameplayAuthoringNode node,GameplayAuthoringGraph graph)=>node.Payload.Definitions.Select(b=>graph.LocalDefinitions.Find(d=>d.Id==b.LocalId)?.Payload??(b.External?b.External.CaptureGraphValues():null)).FirstOrDefault(v=>v!=null);
         private static string Effect(GameplayEffectDefinitionData effect,string name)
         {
             string duration=effect.DurationPolicy==GameplayEffectDurationPolicy.Instant?"瞬时":effect.DurationPolicy==GameplayEffectDurationPolicy.Infinite?"无限持续":"持续 "+(effect.DurationValue==null?effect.Duration.ToString("0.###"):Value(effect.DurationValue))+"s";
@@ -72343,6 +72378,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public interface IGameplaySkillValueDescription
     {
         string Summary(object values);
+        /// <summary>Optional creation-menu name when one payload type has multiple authoring presets.</summary>
+        string NodeTypeName(object values)=>null;
     }
 }
 ````
@@ -74786,6 +74823,19 @@ using System.Collections.Generic;
 
 namespace FRFrame.Gameplay
 {
+    /// <summary>Immutable presentation definition supplied by an optional integration assembly.</summary>
+    public interface IGameplayEffectPresentationDefinition { }
+
+    /// <summary>Committed layer state for a configured presentation, identified by its exact live handle.</summary>
+    public readonly struct GameplayEffectPresentationState
+    {
+        public GameplayEffectHandle Handle { get; }
+        public GameplayEffectDefinition Definition { get; }
+        public int StackCount { get; }
+        internal GameplayEffectPresentationState(GameplayEffectHandle handle, GameplayEffectDefinition definition, int stackCount)
+        { Handle = handle; Definition = definition; StackCount = stackCount; }
+    }
+
     /// <summary>Immediate execution also runs on successful increase/refresh, never rejection or overflow.</summary>
     public enum GameplayEffectPeriodicStartPolicy { AfterFirstPeriod, ExecuteOnApplication }
     /// <summary>Shared keeps the legacy entry clock; independent expires each real contribution on the same owner timeline.</summary>
@@ -74936,6 +74986,8 @@ namespace FRFrame.Gameplay
         internal AttributeSet TargetAttributes => _target;
         /// <summary>Synchronous post-cleanup observation. G3 remains the natural-expiry continuation authority.</summary>
         public event Action<GameplayEffectRemovalObservation> Removed;
+        /// <summary>Raised for a configured presentation on committed creation or layer count change. Removal uses Removed.</summary>
+        public event Action<GameplayEffectPresentationState> PresentationChanged;
         public GameplayEffectRemovalObservation LastRemoval { get; private set; }
         public GameplayEffectContainer(AttributeSet target, GameplaySourceIdAllocator sourceIdAllocator) : this(target, sourceIdAllocator, null) { }
         public GameplayEffectContainer(AttributeSet target, GameplaySourceIdAllocator sourceIdAllocator, GameplayTagContainer targetTags)
@@ -74983,7 +75035,9 @@ namespace FRFrame.Gameplay
             if (definition.DurationValue?.RequiresApplicationContext == true || definition.PeriodValue?.RequiresApplicationContext == true)
                 throw new InvalidOperationException("Dynamic timing requires context.");
             if (!MeetsRequirements(definition)) return default;
-            return CreateEntry(definition, null, EvaluateTiming(definition, null)).Handle;
+            var entry = CreateEntry(definition, null, EvaluateTiming(definition, null));
+            NotifyPresentation(entry);
+            return entry.Handle;
         }
         /// <summary>Evaluates and freezes incoming timing before mutation. Execution exceptions propagate after commit.</summary>
         public GameplayEffectApplicationResult Apply(GameplayEffectDefinition definition, GameplayEffectApplicationContext application)
@@ -75011,7 +75065,7 @@ namespace FRFrame.Gameplay
             var entry = CreateEntry(definition, application, timing);
             var layer = entry.Layers[0].Handle;
             entry.ActivationInitialPending=deferInitial;
-            if(!deferInitial)ExecuteInitial(entry, application);
+            if (!deferInitial) { NotifyPresentation(entry); ExecuteInitial(entry, application); }
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.NewActiveEffect, entry.Handle, 1, layer);
         }
         private static Timing EvaluateTiming(GameplayEffectDefinition d, GameplayEffectApplicationContext app)
@@ -75088,7 +75142,7 @@ namespace FRFrame.Gameplay
                 return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RefreshedAtLimit, e.Handle, e.StackCount);
             }
             var layer = CreateLayer(e, app, timing); e.Layers.Add(layer);
-            CommitReapplication(e, app, timing); int count = e.StackCount; ExecuteInitial(e, app);
+            CommitReapplication(e, app, timing); int count = e.StackCount; NotifyPresentation(e); ExecuteInitial(e, app);
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.StackIncreased, e.Handle, count, layer.Handle);
         }
         private static void CommitReapplication(Entry e, GameplayEffectApplicationContext app, Timing timing)
@@ -75107,7 +75161,13 @@ namespace FRFrame.Gameplay
         {
             if(!_entries.TryGetValue(handle,out var entry)||!entry.ActivationInitialPending)return;
             entry.ActivationInitialPending=false; // Exactly once, including exceptions and reentry.
+            NotifyPresentation(entry);
             ExecuteInitial(entry,entry.Application);
+        }
+        private void NotifyPresentation(Entry entry)
+        {
+            if (entry.Definition.Presentation != null && !entry.ActivationInitialPending)
+                PresentationChanged?.Invoke(new GameplayEffectPresentationState(entry.Handle, entry.Definition, entry.StackCount));
         }
         /// <summary>Aborts unpublished activation contributions without a removal notification or
         /// completion callback. No initial execution has run, so this is a real reversible cleanup.</summary>
@@ -75150,8 +75210,10 @@ namespace FRFrame.Gameplay
             var layer = e.Layers.Find(x => x.Handle == handle);
             if (layer == null) return false;
             if (e.StackCount == 1) return RemoveEntry(e.Handle, cause);
-            CleanupLayer(layer); e.Layers.Remove(layer); SelectSurvivingApplication(e); return true;
+            RemoveSurvivingLayer(e, layer); return true;
         }
+        private void RemoveSurvivingLayer(Entry entry, Layer layer)
+        { CleanupLayer(layer); entry.Layers.Remove(layer); SelectSurvivingApplication(entry); NotifyPresentation(entry); }
         private static void CleanupLayer(Layer layer)
         {
             var groups = new Dictionary<GameplayAttribute, List<GameplayModifierHandle>>();
@@ -75214,7 +75276,7 @@ namespace FRFrame.Gameplay
                     if (!_entries.ContainsKey(e.Handle)) break;
                     if (!e.Layers.Contains(layer)) continue;
                     if (e.StackCount == 1) RemoveEntry(e.Handle, GameplayEffectRemovalCause.NaturalExpiry);
-                    else { CleanupLayer(layer); e.Layers.Remove(layer); SelectSurvivingApplication(e); }
+                    else RemoveSurvivingLayer(e, layer);
                 }
             if (_entries.ContainsKey(e.Handle) && !MeetsOngoing(e)) RemoveEntry(e.Handle, GameplayEffectRemovalCause.OngoingRequirementMismatch);
         }
@@ -75241,7 +75303,9 @@ namespace FRFrame.Gameplay
             if(definition.DurationPolicy!=GameplayEffectDurationPolicy.Duration||definition.Period!=0||definition.PeriodValue!=null||definition.Stacking!=null||definition.Modifiers.Count!=0||definition.Executions.Count!=0||definition.CompletionExecutions.Count!=0||!definition.ApplicationRequirements.IsEmpty||!definition.OngoingRequirements.IsEmpty)
                 throw new ArgumentException("Explicit cooldown duration requires a simple tag-only Effect.");
             if(application!=null&&!ReferenceEquals(application.Target.Attributes,_target))throw new ArgumentException("Cooldown application must target this container.");
-            return CreateEntry(definition,application,new Timing(duration,0)).Handle;
+            var entry = CreateEntry(definition, application, new Timing(duration, 0));
+            NotifyPresentation(entry);
+            return entry.Handle;
         }
         internal bool TryGetAppliedDuration(GameplayEffectHandle handle,out float duration)
         {if(_entries.TryGetValue(handle,out var entry)){duration=entry.Duration;return true;}duration=0;return false;}
@@ -75402,6 +75466,8 @@ namespace FRFrame.Gameplay
         public IReadOnlyList<IGameplayEffectExecution> Executions { get; }
         /// <summary>Authored order, executed once after natural Duration expiry cleanup; interruptions never run these.</summary>
         public IReadOnlyList<IGameplayEffectCompletionExecution> CompletionExecutions { get; }
+        /// <summary>Optional backend-owned presentation data. The rule container never plays it.</summary>
+        public IGameplayEffectPresentationDefinition Presentation { get; }
 
         /// <summary>
         /// 此定义在应用期间提供的 exact 标签。集合只读，来源由每个 Effect 实例独立分配。
@@ -75465,7 +75531,8 @@ namespace FRFrame.Gameplay
             IEnumerable<IGameplayEffectCompletionExecution> completionExecutions = null,
             IEnumerable<GameplayTag> effectTags = null,
             GameplayEffectPeriodicStartPolicy periodicStart = GameplayEffectPeriodicStartPolicy.AfterFirstPeriod,
-            IGameplayFloatValue durationValue = null, IGameplayFloatValue periodValue = null)
+            IGameplayFloatValue durationValue = null, IGameplayFloatValue periodValue = null,
+            IGameplayEffectPresentationDefinition presentation = null)
         {
             if (durationPolicy != GameplayEffectDurationPolicy.Duration &&
                 durationPolicy != GameplayEffectDurationPolicy.Infinite &&
@@ -75521,6 +75588,7 @@ namespace FRFrame.Gameplay
                 throw new ArgumentException("Executions must not contain null.", nameof(executions));
             if (durationPolicy == GameplayEffectDurationPolicy.Instant)
             {
+                if (presentation != null) throw new ArgumentException("Effect status presentation requires a persistent effect.");
                 if (ongoingRequirements != null && !ongoingRequirements.IsEmpty)
                     throw new ArgumentException("Instant effects cannot have ongoing requirements.", nameof(ongoingRequirements));
                 if (period != 0f || stacking != null || modifierCopy.Count != 0 || tagCopy.Count != 0 || executionCopy.Count == 0)
@@ -75536,6 +75604,7 @@ namespace FRFrame.Gameplay
             DurationValue = durationValue;
             PeriodValue = periodValue;
             PeriodicStart = periodicStart;
+            Presentation = presentation;
             EffectTags = classification.AsReadOnly();
             Stacking = stacking;
             ApplicationRequirements = applicationRequirements ?? GameplayTagQuery.Empty;
@@ -77641,11 +77710,13 @@ namespace FRFrame.Gameplay.Unity.Editor
 {
     public sealed class GameplayAnimationNodeDescriptor:IGameplaySkillNodeEditorDescriptorProvider
     {
-        public bool Supports(Type type)=>type==typeof(GameplayPlayAnimationActionAuthoring)||type==typeof(GameplayPlayPresentationCueActionAuthoring)||type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset);
+        public bool Supports(Type type)=>type==typeof(GameplayPlayAnimationActionAuthoring)||type==typeof(GameplayPlayPresentationCueActionAuthoring)||type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset)||type==typeof(GameplayUnityEffectPresentationAuthoring)||type==typeof(GameplayPlayEffectCueOnOverflowAuthoring);
         public GameplaySkillNodeEditorDescriptor Describe(Type type,SerializedProperty property)
         {
             if(type==typeof(GameplayPlayAnimationActionAuthoring))return new GameplaySkillNodeEditorDescriptor(property?.FindPropertyRelative("Queue")?.boolValue==true?"排队动画":"播放动画","FRFrame/表现","播放正式动画资源；Queue在同一channel等待，取消施法释放当前与排队请求。",visualKind:GameplayNodeVisualKind.Presentation,isAnimation:true);
             if(type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset))return new GameplaySkillNodeEditorDescriptor("战斗飘字","FRFrame/表现","展示同来源已提交结果；复用Core UIWidget/Pool。不会决定伤害或另建规则时钟。",visualKind:GameplayNodeVisualKind.Presentation);
+            if(type==typeof(GameplayUnityEffectPresentationAuthoring))return new GameplaySkillNodeEditorDescriptor("Unity 状态表现","FRFrame/表现","首次应用与存续表现，按真实 Effect 实例追踪层数与清理。",visualKind:GameplayNodeVisualKind.Presentation);
+            if(type==typeof(GameplayPlayEffectCueOnOverflowAuthoring))return new GameplaySkillNodeEditorDescriptor("溢出播放声光","FRFrame/表现","按溢出执行列表顺序，在实际受影响目标位置播放。",visualKind:GameplayNodeVisualKind.Presentation);
             var cue=property?.FindPropertyRelative("Cue")?.objectReferenceValue as GameplayPresentationCueAsset;
             return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","直接正式资源绑定；复用 FRFrame Pool/Audio，绑定当前施法并精确清理。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
         }
@@ -78019,11 +78090,16 @@ namespace FRFrame.Gameplay.Unity.Editor
             }
         }
         public string Summary(object values) {
+            if(values is GameplayUnityEffectPresentationAuthoring effect)return (effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图")+(effect.FirstApplicationVfx?" · 首次 "+effect.FirstApplicationVfx.name:"");
+            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow)return "溢出声光 · "+(overflow.Prefab?overflow.Prefab.name:"")+(overflow.Clip?" "+overflow.Clip.name:"");
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
             if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
             return null;
         }
+        public string NodeTypeName(object values)=>values is GameplayPresentationCueData cue
+            ?cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"播放音频":"播放特效"
+            :null;
         public IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType)
         {
             if (valueType != typeof(GameplayPresentationCueData)) yield break;
@@ -78046,6 +78122,8 @@ namespace FRFrame.Gameplay.Unity.Editor
             type == typeof(GameplayFloatingTextData) ? "战斗飘字" : type == typeof(GameplayUnityProjectileData) ? "Unity 弹体" : type == typeof(GameplayUnityAreaData) ? "Unity 区域" : type == typeof(GameplayUnitySummonData) ? "Unity 召唤" : null;
         public bool IsFieldVisible(object values,string field)
         {
+            if(values is GameplayUnityEffectPresentationAuthoring effect&&(field=="FirstApplicationOffset"||field=="FirstApplicationSeconds"))return effect.FirstApplicationVfx!=null;
+            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow&&field=="Volume")return overflow.Clip!=null;
             GameplayPresentationCueAsset.CueKind kind;
             GameplayPresentationCueAsset.PositionSource origin;
             bool autoRecycle;
@@ -78929,6 +79007,82 @@ namespace FRFrame.Gameplay.Unity
 }
 ````
 
+## File: Gameplay/Integrations/UnityCommon/Runtime/GameplayEffectStatusView.cs
+````csharp
+using TMPro;
+using UnityEngine;
+
+namespace FRFrame.Gameplay.Unity
+{
+    /// <summary>A reusable pooled Effect view. The controller supplies actual layers and owns its lifetime.</summary>
+    public sealed class GameplayEffectStatusView : MonoBehaviour
+    {
+        [SerializeField] private Transform badge;
+        [SerializeField] private TMP_Text stackLabel;
+        [SerializeField] private SpriteRenderer icon;
+        [SerializeField] private Material fullStackMaterial;
+        [SerializeField] private Color fullStackTextColor = new Color(.86f, .69f, 1);
+        [SerializeField, Min(0)] private float fullStackPulseSeconds = .26f;
+        [SerializeField, Min(0)] private float fullStackPulseScale = .34f;
+        private ParticleSystem[] _particles;
+        private Vector3 _normalScale;
+        private Material _normalMaterial;
+        private Color _normalTextColor;
+        private float _pulseRemaining;
+
+        private void Awake()
+        {
+            _particles = GetComponentsInChildren<ParticleSystem>(true);
+            if (badge != null) _normalScale = badge.localScale;
+            if (icon != null) _normalMaterial = icon.sharedMaterial;
+            if (stackLabel != null) _normalTextColor = stackLabel.color;
+        }
+
+        internal void Begin()
+        {
+            _pulseRemaining = 0;
+            if (badge != null) badge.localScale = _normalScale;
+            foreach (var particle in _particles)
+            {
+                particle.Stop(false, ParticleSystemStopBehavior.StopEmittingAndClear);
+                particle.Play(false);
+                particle.Pause(false);
+            }
+        }
+
+        internal void SetStacks(int stacks, bool full, bool enteredFull)
+        {
+            if (stackLabel != null)
+            {
+                stackLabel.SetText("×{0}", stacks);
+                stackLabel.color = full ? fullStackTextColor : _normalTextColor;
+            }
+            if (icon != null) icon.sharedMaterial = full && fullStackMaterial != null ? fullStackMaterial : _normalMaterial;
+            if (enteredFull) _pulseRemaining = fullStackPulseSeconds;
+            if (!full && _pulseRemaining > 0)
+            {
+                _pulseRemaining = 0;
+                if (badge != null) badge.localScale = _normalScale;
+            }
+        }
+
+        internal void Advance(float amount, bool showBadge)
+        {
+            if (badge != null)
+            {
+                if (badge.gameObject.activeSelf != showBadge) badge.gameObject.SetActive(showBadge);
+                if (_pulseRemaining > 0)
+                {
+                    _pulseRemaining = Mathf.Max(0, _pulseRemaining - amount);
+                    badge.localScale = _normalScale * (1 + fullStackPulseScale * Mathf.Sin(Mathf.PI * _pulseRemaining / fullStackPulseSeconds));
+                }
+            }
+            foreach (var particle in _particles) particle.Simulate(amount, false, false, false);
+        }
+    }
+}
+````
+
 ## File: Gameplay/Integrations/UnityCommon/Runtime/GameplayFloatingTextAsset.cs
 ````csharp
 using FRFrame.Gameplay.Authoring.Graph;
@@ -79603,7 +79757,12 @@ namespace FRFrame.Gameplay.Unity
             return false;
         }
         public GameplayUnityAnimationController(GameplayStandardActor actor,GameObject subject)
-        {Actor=actor??throw new ArgumentNullException(nameof(actor));Subject=subject!=null?subject:throw new ArgumentNullException(nameof(subject));Actor.CombatChanged+=OnFloatingCombat;Controllers.Add(this);}
+        {
+            Actor=actor??throw new ArgumentNullException(nameof(actor));Subject=subject!=null?subject:throw new ArgumentNullException(nameof(subject));
+            Actor.CombatChanged+=OnFloatingCombat;
+            Actor.Effects.PresentationChanged+=ObserveEffectState;Actor.Effects.Removed+=ObserveEffectRemoval;
+            Controllers.Add(this);
+        }
         public bool TryPlay(GameplayAnimationDefinition definition,GameplayContext context)
         {
             if(definition==null)throw new ArgumentNullException(nameof(definition));
@@ -79650,6 +79809,7 @@ namespace FRFrame.Gameplay.Unity
             foreach(var playback in new List<Playback>(_channels.Values))playback.Advance(amount);
             foreach(var cue in cues)cue.Advance(amount);
             foreach(var text in floating)text.Advance(amount);
+            AdvanceEffectPresentation(amount);
             FlushCombatText();
             _ownedAudio?.Update(amount,amount);
         }
@@ -79663,6 +79823,7 @@ namespace FRFrame.Gameplay.Unity
             DisposeQueues();
             foreach(var cue in _cues.ToArray())cue.Dispose();
             foreach(var text in _floating.ToArray())text.Dispose();
+            DisposeEffectPresentation();
             _ownedPool?.ClearAll();_ownedAudio?.Destroy();
         }
         private sealed class Playback:IDisposable
@@ -79740,8 +79901,16 @@ namespace FRFrame.Gameplay.Unity
         /// the same FRFrame modules and dispose only those local modules, never a second implementation.</summary>
         public GameObjectPoolModule CuePool {get;set;}
         public AudioManager CueAudio {get;set;}
+        /// <summary>Optional camera layer for spawned cue and status views in a scoped viewport.</summary>
+        public int? ViewRenderLayer {get;set;}
         public int ActiveCueCount=>_cues.Count;
         internal GameObjectPoolModule SpatialViewPool=>CuePool??(_ownedPool??(_ownedPool=new GameObjectPoolModule()));
+
+        private void ApplyViewRenderLayer(GameObject view)
+        {
+            if (ViewRenderLayer is not int layer) return;
+            foreach (var child in view.GetComponentsInChildren<Transform>(true)) child.gameObject.layer = layer;
+        }
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
@@ -79761,6 +79930,12 @@ namespace FRFrame.Gameplay.Unity
                 parent=(target.Presentation as GameplayUnityAnimationController)?.Subject?.transform;
                 if(parent!=null&&!string.IsNullOrEmpty(definition.Binding)){parent=parent.Find(definition.Binding)??parent;point=parent.position;}
             }
+            return PlayCueAt(definition, point, parent, duration, grant);
+        }
+
+        private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent,
+            float duration, GameplayAbilityHandle grant=default)
+        {
             var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
             {
@@ -79771,6 +79946,7 @@ namespace FRFrame.Gameplay.Unity
                     var key=new ResourceKey("Gameplay.DirectPrefab",definition.Prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
                     var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
+                    ApplyViewRenderLayer(view);
                     var offset=definition.Offset;var scale=definition.Scale;
                     if(definition.MirrorFacing&&Subject.transform.localScale.x<0){offset.x=-offset.x;scale.x=-scale.x;}
                     view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=Quaternion.identity;
@@ -79827,9 +80003,130 @@ namespace FRFrame.Gameplay.Unity
             }
             public void Dispose()
             {
-                if(_disposed)return;_disposed=true;_owner._cues.Remove(this);_owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);
+                if(_disposed)return;_disposed=true;_owner._cues.Remove(this);if(_grant.IsValid)_owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);
                 Audio.Stop();
                 if(View!=null){foreach(var particles in Particles??Array.Empty<ParticleSystem>())if(particles!=null)particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);Pool.Release(Key,Location,View);View=null;}
+            }
+        }
+    }
+}
+````
+
+## File: Gameplay/Integrations/UnityCommon/Runtime/GameplayUnityAnimationController.Effects.cs
+````csharp
+using System.Collections.Generic;
+using System.Globalization;
+using UnityEngine;
+
+namespace FRFrame.Gameplay.Unity
+{
+    public sealed partial class GameplayUnityAnimationController
+    {
+        private readonly Queue<(GameplayEffectHandle Handle, GameplayEffectDefinition Definition, int Stacks)> _effectChanges = new();
+        private readonly Queue<(GameplayEffectCue Cue, Vector3 Position)> _effectCues = new();
+        private readonly Dictionary<GameplayEffectHandle, EffectViewLease> _effectViews = new();
+        private readonly Dictionary<GameplayEffectDefinition, EffectViewLease> _effectBadges = new();
+
+        private void ObserveEffectState(GameplayEffectPresentationState state) =>
+            _effectChanges.Enqueue((state.Handle, state.Definition, state.StackCount));
+
+        private void ObserveEffectRemoval(GameplayEffectRemovalObservation removal)
+        {
+            if (removal.Definition.Presentation != null) _effectChanges.Enqueue((removal.Handle, removal.Definition, 0));
+        }
+
+        internal void QueueEffectCue(GameplayEffectCue cue)
+        {
+            var point = Actor.Position;
+            _effectCues.Enqueue((cue, new Vector3(point.X, point.Y, point.Z)));
+        }
+
+        private void AdvanceEffectPresentation(float amount)
+        {
+            while (_effectChanges.TryDequeue(out var change))
+            {
+                if (change.Stacks == 0)
+                {
+                    if (_effectViews.Remove(change.Handle, out var removed)) removed.Release();
+                    continue;
+                }
+                if (change.Definition.Presentation is not GameplayUnityEffectPresentation presentation || !Actor.Effects.IsActive(change.Handle)) continue;
+                if (!_effectViews.TryGetValue(change.Handle, out var lease))
+                {
+                    lease = new EffectViewLease(change.Definition, presentation.StatusPrefab, SpatialViewPool);
+                    if (lease.View != null) ApplyViewRenderLayer(lease.View.gameObject);
+                    _effectViews.Add(change.Handle, lease);
+                    if (Actor.IsTargetable && presentation.FirstApplication != null) QueueEffectCue(presentation.FirstApplication);
+                }
+                lease.SetStacks(change.Stacks);
+            }
+
+            while (_effectCues.TryDequeue(out var playback))
+            {
+                var cue = playback.Cue;
+                if (cue.Vfx != null) PlayCueAt(cue.Vfx, playback.Position, null, cue.Duration);
+                if (cue.Audio != null) PlayCueAt(cue.Audio, playback.Position, null, cue.Duration);
+            }
+
+            if (_effectViews.Count == 0) return;
+            _effectBadges.Clear();
+            foreach (var lease in _effectViews.Values)
+                if (!_effectBadges.TryGetValue(lease.Definition, out var current) || lease.Stacks > current.Stacks)
+                    _effectBadges[lease.Definition] = lease;
+            var point = Actor.Position;
+            foreach (var lease in _effectViews.Values)
+            {
+                if (lease.View == null) continue;
+                lease.View.transform.position = new Vector3(point.X, point.Y, point.Z);
+                if (lease.View.gameObject.activeSelf != Actor.IsTargetable) lease.View.gameObject.SetActive(Actor.IsTargetable);
+                if (Actor.IsTargetable) lease.View.Advance(amount, ReferenceEquals(_effectBadges[lease.Definition], lease));
+            }
+        }
+
+        private void DisposeEffectPresentation()
+        {
+            Actor.Effects.PresentationChanged -= ObserveEffectState;
+            Actor.Effects.Removed -= ObserveEffectRemoval;
+            foreach (var lease in _effectViews.Values) lease.Release();
+            _effectViews.Clear();
+            _effectBadges.Clear();
+            _effectChanges.Clear();
+            _effectCues.Clear();
+        }
+
+        private sealed class EffectViewLease
+        {
+            private readonly GameObjectPoolModule _pool;
+            private readonly ResourceKey _key;
+            private readonly string _name;
+            internal readonly GameplayEffectDefinition Definition;
+            internal readonly GameplayEffectStatusView View;
+            internal int Stacks { get; private set; }
+
+            internal EffectViewLease(GameplayEffectDefinition definition, GameObject prefab, GameObjectPoolModule pool)
+            {
+                Definition = definition;
+                if (prefab == null) return;
+                _pool = pool;
+                _name = prefab.name;
+                _key = new ResourceKey("Gameplay.DirectPrefab", prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
+                var instance = _pool.GetOrCreate(_key, _name, prefab);
+                instance.transform.SetParent(null, false);
+                View = instance.GetComponent<GameplayEffectStatusView>();
+                View.Begin();
+            }
+
+            internal void SetStacks(int count)
+            {
+                int cap = Definition.Stacking?.MaxStacks ?? 1;
+                bool full = cap > 1 && count == cap;
+                View?.SetStacks(count, full, full && Stacks < cap);
+                Stacks = count;
+            }
+
+            internal void Release()
+            {
+                if (View != null) _pool.Release(_key, _name, View.gameObject);
             }
         }
     }
@@ -80101,6 +80398,104 @@ namespace FRFrame.Gameplay.Unity
         protected override GameplayAreaDefinitionData CaptureValues() => new GameplayUnityAreaData { Prefab = Prefab, Shape = Shape, Plane = Plane, Origin = Origin, OriginOffset = OriginOffset, Radius = Radius, Angle = Angle, Length = Length, Width = Width, Height = Height, Duration = Duration, TickInterval = TickInterval, TickOnEnter = TickOnEnter, FollowOwner = FollowOwner, Faction = Faction, Tags = Tags, LayerMask = LayerMask, Cells = Cells, CellSize = CellSize, Aura = Aura, OnEnter = OnEnter, OnStay = OnStay, OnTick = OnTick, OnExit = OnExit, OnEnd = OnEnd, ArmingDelay = ArmingDelay, TriggerLimit = TriggerLimit };
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 
+    }
+}
+````
+
+## File: Gameplay/Integrations/UnityCommon/Runtime/GameplayUnityEffectPresentationAuthoring.cs
+````csharp
+using System;
+using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Standard;
+using UnityEngine;
+using UnityEngine.Scripting;
+
+namespace FRFrame.Gameplay.Unity
+{
+    /// <summary>Unity resources for an individual persistent Effect, authored on that Effect's card.</summary>
+    [Serializable, Preserve]
+    public sealed class GameplayUnityEffectPresentationAuthoring : GameplayEffectPresentationAuthoring
+    {
+        public GameObject StatusPrefab;
+        public GameObject FirstApplicationVfx;
+        public Vector3 FirstApplicationOffset;
+        public float FirstApplicationSeconds = .5f;
+
+        public override void Validate(GameplayAuthoringValidationContext validation, string path)
+        {
+            if (StatusPrefab == null && FirstApplicationVfx == null)
+                validation.Error(path, "请至少绑定状态预制体或首次应用特效。");
+            if (StatusPrefab != null && !StatusPrefab.TryGetComponent<GameplayEffectStatusView>(out _))
+                validation.Error(path + ".StatusPrefab", "状态预制体根节点需要 GameplayEffectStatusView。");
+            if (FirstApplicationVfx != null && (!float.IsFinite(FirstApplicationSeconds) || FirstApplicationSeconds <= 0))
+                validation.Error(path + ".FirstApplicationSeconds", "首次应用特效时长必须大于零。");
+        }
+
+        public override IGameplayEffectPresentationDefinition Build() => new GameplayUnityEffectPresentation(
+            StatusPrefab, FirstApplicationVfx == null ? null : GameplayEffectCue.AtTarget(
+                FirstApplicationVfx, null, FirstApplicationOffset, FirstApplicationSeconds));
+    }
+
+    /// <summary>An ordered overflow action. It plays at the actual affected target and can outlive the Effect.</summary>
+    [Serializable, Preserve]
+    public sealed class GameplayPlayEffectCueOnOverflowAuthoring : GameplayEffectOverflowAuthoring
+    {
+        public GameObject Prefab;
+        public AudioClip Clip;
+        [Range(0, 1)] public float Volume = .72f;
+        public Vector3 Offset;
+        public float Duration = .65f;
+
+        public override void Validate(GameplayAuthoringValidationContext validation, string path)
+        {
+            if (Prefab == null && Clip == null) validation.Error(path, "请至少绑定一个特效或音频。");
+            if (!float.IsFinite(Duration) || Duration <= 0) validation.Error(path + ".Duration", "溢出表现时长必须大于零。");
+            if (Clip != null && (!float.IsFinite(Volume) || Volume < 0 || Volume > 1)) validation.Error(path + ".Volume", "音量须为 0～1。");
+        }
+
+        public override IGameplayEffectOverflowExecution Build(GameplayAuthoringBuildContext context) =>
+            new Playback(GameplayEffectCue.AtTarget(Prefab, Clip, Offset, Duration, Volume));
+
+        private sealed class Playback : IGameplayEffectOverflowExecution
+        {
+            private readonly GameplayEffectCue _cue;
+            internal Playback(GameplayEffectCue cue) => _cue = cue;
+            public void Execute(GameplayEffectOverflowContext context)
+            {
+                if (context.Application.Target is GameplayStandardActor actor &&
+                    actor.Presentation is GameplayUnityAnimationController controller)
+                    controller.QueueEffectCue(_cue);
+            }
+        }
+    }
+
+    internal sealed class GameplayUnityEffectPresentation : IGameplayEffectPresentationDefinition
+    {
+        internal readonly GameObject StatusPrefab;
+        internal readonly GameplayEffectCue FirstApplication;
+        internal GameplayUnityEffectPresentation(GameObject statusPrefab, GameplayEffectCue firstApplication)
+        { StatusPrefab = statusPrefab; FirstApplication = firstApplication; }
+    }
+
+    internal sealed class GameplayEffectCue
+    {
+        internal readonly GameplayPresentationCueDefinition Vfx, Audio;
+        internal readonly float Duration;
+
+        private GameplayEffectCue(GameplayPresentationCueDefinition vfx, GameplayPresentationCueDefinition audio, float duration)
+        { Vfx = vfx; Audio = audio; Duration = duration; }
+
+        internal static GameplayEffectCue AtTarget(GameObject prefab, AudioClip clip, Vector3 offset, float duration, float volume = 1)
+        {
+            var origin = GameplayPresentationCueAsset.PositionSource.Owner;
+            var time = new GameplayConstantFloatValue(duration);
+            return new GameplayEffectCue(
+                prefab == null ? null : new GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind.Vfx,
+                    prefab, null, origin, offset, false, 1, 1, false, time, ownedByAbility: false),
+                clip == null ? null : new GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind.Audio,
+                    null, clip, origin, offset, false, volume, 1, false, time, ownedByAbility: false),
+                duration);
+        }
     }
 }
 ````

@@ -227,7 +227,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     animationHeader.Add(animationConfig);
                     foreach(var source in animationNodes){
                         string actionId=source.Id;bool inline=IsTimelineInline(actionId);
-                        object values=GameplaySkillNodeDisplay.AnimationValues(source,_document.AuthoringGraph);
+                        object values=GameplaySkillNodeDisplay.BoundValues(source,_document.AuthoringGraph);
                         var label=new Label(inline?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(source.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):
                             GameplaySkillNodeDisplay.EventLabel(source,_document.AuthoringGraph)+" · 参数在独立动画卡"){name="AnimationSource-"+actionId,userData=actionId};
                         label.AddToClassList("animation-source");label.style.whiteSpace=WhiteSpace.Normal;label.style.marginLeft=10;label.style.fontSize=12;if(!inline)animationConfig.Add(label);

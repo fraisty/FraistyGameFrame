@@ -33,7 +33,12 @@ namespace FRFrame.Gameplay.Unity
             return false;
         }
         public GameplayUnityAnimationController(GameplayStandardActor actor,GameObject subject)
-        {Actor=actor??throw new ArgumentNullException(nameof(actor));Subject=subject!=null?subject:throw new ArgumentNullException(nameof(subject));Actor.CombatChanged+=OnFloatingCombat;Controllers.Add(this);}
+        {
+            Actor=actor??throw new ArgumentNullException(nameof(actor));Subject=subject!=null?subject:throw new ArgumentNullException(nameof(subject));
+            Actor.CombatChanged+=OnFloatingCombat;
+            Actor.Effects.PresentationChanged+=ObserveEffectState;Actor.Effects.Removed+=ObserveEffectRemoval;
+            Controllers.Add(this);
+        }
         public bool TryPlay(GameplayAnimationDefinition definition,GameplayContext context)
         {
             if(definition==null)throw new ArgumentNullException(nameof(definition));
@@ -80,6 +85,7 @@ namespace FRFrame.Gameplay.Unity
             foreach(var playback in new List<Playback>(_channels.Values))playback.Advance(amount);
             foreach(var cue in cues)cue.Advance(amount);
             foreach(var text in floating)text.Advance(amount);
+            AdvanceEffectPresentation(amount);
             FlushCombatText();
             _ownedAudio?.Update(amount,amount);
         }
@@ -93,6 +99,7 @@ namespace FRFrame.Gameplay.Unity
             DisposeQueues();
             foreach(var cue in _cues.ToArray())cue.Dispose();
             foreach(var text in _floating.ToArray())text.Dispose();
+            DisposeEffectPresentation();
             _ownedPool?.ClearAll();_ownedAudio?.Destroy();
         }
         private sealed class Playback:IDisposable

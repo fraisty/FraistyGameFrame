@@ -3,6 +3,19 @@ using System.Collections.Generic;
 
 namespace FRFrame.Gameplay
 {
+    /// <summary>Immutable presentation definition supplied by an optional integration assembly.</summary>
+    public interface IGameplayEffectPresentationDefinition { }
+
+    /// <summary>Committed layer state for a configured presentation, identified by its exact live handle.</summary>
+    public readonly struct GameplayEffectPresentationState
+    {
+        public GameplayEffectHandle Handle { get; }
+        public GameplayEffectDefinition Definition { get; }
+        public int StackCount { get; }
+        internal GameplayEffectPresentationState(GameplayEffectHandle handle, GameplayEffectDefinition definition, int stackCount)
+        { Handle = handle; Definition = definition; StackCount = stackCount; }
+    }
+
     /// <summary>Immediate execution also runs on successful increase/refresh, never rejection or overflow.</summary>
     public enum GameplayEffectPeriodicStartPolicy { AfterFirstPeriod, ExecuteOnApplication }
     /// <summary>Shared keeps the legacy entry clock; independent expires each real contribution on the same owner timeline.</summary>

@@ -175,6 +175,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         public static string FloatSummary(GameplayFloatValueAuthoring value)=>GameplaySkillNodeDisplay.Value(value);
         public static string ValueSummary(object values)=>Providers.OfType<IGameplaySkillValueDescription>().Select(p=>p.Summary(values)).FirstOrDefault(s=>s!=null);
+        internal static string ValueNodeTypeName(object values)=>Providers.OfType<IGameplaySkillValueDescription>().Select(p=>p.NodeTypeName(values)).FirstOrDefault(s=>s!=null);
         public static string Name(Type type) => Providers.Select(p => p.Name(type)).FirstOrDefault(n => n != null) ??
             (type == typeof(GameplayEffectDefinitionData) ? "效果 / Buff" : type == typeof(GameplayProjectileDefinitionData) ? "逻辑弹体" :
              type == typeof(GameplayAreaDefinitionData) ? "逻辑区域" : type == typeof(GameplaySummonDefinitionData) ? "逻辑召唤" :

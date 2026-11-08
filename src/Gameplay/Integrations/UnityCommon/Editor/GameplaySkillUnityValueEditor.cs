@@ -51,11 +51,16 @@ namespace FRFrame.Gameplay.Unity.Editor
             }
         }
         public string Summary(object values) {
+            if(values is GameplayUnityEffectPresentationAuthoring effect)return (effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图")+(effect.FirstApplicationVfx?" · 首次 "+effect.FirstApplicationVfx.name:"");
+            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow)return "溢出声光 · "+(overflow.Prefab?overflow.Prefab.name:"")+(overflow.Clip?" "+overflow.Clip.name:"");
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
             if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
             return null;
         }
+        public string NodeTypeName(object values)=>values is GameplayPresentationCueData cue
+            ?cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"播放音频":"播放特效"
+            :null;
         public IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType)
         {
             if (valueType != typeof(GameplayPresentationCueData)) yield break;
@@ -78,6 +83,8 @@ namespace FRFrame.Gameplay.Unity.Editor
             type == typeof(GameplayFloatingTextData) ? "战斗飘字" : type == typeof(GameplayUnityProjectileData) ? "Unity 弹体" : type == typeof(GameplayUnityAreaData) ? "Unity 区域" : type == typeof(GameplayUnitySummonData) ? "Unity 召唤" : null;
         public bool IsFieldVisible(object values,string field)
         {
+            if(values is GameplayUnityEffectPresentationAuthoring effect&&(field=="FirstApplicationOffset"||field=="FirstApplicationSeconds"))return effect.FirstApplicationVfx!=null;
+            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow&&field=="Volume")return overflow.Clip!=null;
             GameplayPresentationCueAsset.CueKind kind;
             GameplayPresentationCueAsset.PositionSource origin;
             bool autoRecycle;

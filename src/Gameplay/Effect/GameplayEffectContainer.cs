@@ -15,6 +15,8 @@ namespace FRFrame.Gameplay
         internal AttributeSet TargetAttributes => _target;
         /// <summary>Synchronous post-cleanup observation. G3 remains the natural-expiry continuation authority.</summary>
         public event Action<GameplayEffectRemovalObservation> Removed;
+        /// <summary>Raised for a configured presentation on committed creation or layer count change. Removal uses Removed.</summary>
+        public event Action<GameplayEffectPresentationState> PresentationChanged;
         public GameplayEffectRemovalObservation LastRemoval { get; private set; }
         public GameplayEffectContainer(AttributeSet target, GameplaySourceIdAllocator sourceIdAllocator) : this(target, sourceIdAllocator, null) { }
         public GameplayEffectContainer(AttributeSet target, GameplaySourceIdAllocator sourceIdAllocator, GameplayTagContainer targetTags)
@@ -62,7 +64,9 @@ namespace FRFrame.Gameplay
             if (definition.DurationValue?.RequiresApplicationContext == true || definition.PeriodValue?.RequiresApplicationContext == true)
                 throw new InvalidOperationException("Dynamic timing requires context.");
             if (!MeetsRequirements(definition)) return default;
-            return CreateEntry(definition, null, EvaluateTiming(definition, null)).Handle;
+            var entry = CreateEntry(definition, null, EvaluateTiming(definition, null));
+            NotifyPresentation(entry);
+            return entry.Handle;
         }
         /// <summary>Evaluates and freezes incoming timing before mutation. Execution exceptions propagate after commit.</summary>
         public GameplayEffectApplicationResult Apply(GameplayEffectDefinition definition, GameplayEffectApplicationContext application)
@@ -90,7 +94,7 @@ namespace FRFrame.Gameplay
             var entry = CreateEntry(definition, application, timing);
             var layer = entry.Layers[0].Handle;
             entry.ActivationInitialPending=deferInitial;
-            if(!deferInitial)ExecuteInitial(entry, application);
+            if (!deferInitial) { NotifyPresentation(entry); ExecuteInitial(entry, application); }
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.NewActiveEffect, entry.Handle, 1, layer);
         }
         private static Timing EvaluateTiming(GameplayEffectDefinition d, GameplayEffectApplicationContext app)
@@ -167,7 +171,7 @@ namespace FRFrame.Gameplay
                 return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RefreshedAtLimit, e.Handle, e.StackCount);
             }
             var layer = CreateLayer(e, app, timing); e.Layers.Add(layer);
-            CommitReapplication(e, app, timing); int count = e.StackCount; ExecuteInitial(e, app);
+            CommitReapplication(e, app, timing); int count = e.StackCount; NotifyPresentation(e); ExecuteInitial(e, app);
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.StackIncreased, e.Handle, count, layer.Handle);
         }
         private static void CommitReapplication(Entry e, GameplayEffectApplicationContext app, Timing timing)
@@ -186,7 +190,13 @@ namespace FRFrame.Gameplay
         {
             if(!_entries.TryGetValue(handle,out var entry)||!entry.ActivationInitialPending)return;
             entry.ActivationInitialPending=false; // Exactly once, including exceptions and reentry.
+            NotifyPresentation(entry);
             ExecuteInitial(entry,entry.Application);
+        }
+        private void NotifyPresentation(Entry entry)
+        {
+            if (entry.Definition.Presentation != null && !entry.ActivationInitialPending)
+                PresentationChanged?.Invoke(new GameplayEffectPresentationState(entry.Handle, entry.Definition, entry.StackCount));
         }
         /// <summary>Aborts unpublished activation contributions without a removal notification or
         /// completion callback. No initial execution has run, so this is a real reversible cleanup.</summary>
@@ -229,8 +239,10 @@ namespace FRFrame.Gameplay
             var layer = e.Layers.Find(x => x.Handle == handle);
             if (layer == null) return false;
             if (e.StackCount == 1) return RemoveEntry(e.Handle, cause);
-            CleanupLayer(layer); e.Layers.Remove(layer); SelectSurvivingApplication(e); return true;
+            RemoveSurvivingLayer(e, layer); return true;
         }
+        private void RemoveSurvivingLayer(Entry entry, Layer layer)
+        { CleanupLayer(layer); entry.Layers.Remove(layer); SelectSurvivingApplication(entry); NotifyPresentation(entry); }
         private static void CleanupLayer(Layer layer)
         {
             var groups = new Dictionary<GameplayAttribute, List<GameplayModifierHandle>>();
@@ -293,7 +305,7 @@ namespace FRFrame.Gameplay
                     if (!_entries.ContainsKey(e.Handle)) break;
                     if (!e.Layers.Contains(layer)) continue;
                     if (e.StackCount == 1) RemoveEntry(e.Handle, GameplayEffectRemovalCause.NaturalExpiry);
-                    else { CleanupLayer(layer); e.Layers.Remove(layer); SelectSurvivingApplication(e); }
+                    else RemoveSurvivingLayer(e, layer);
                 }
             if (_entries.ContainsKey(e.Handle) && !MeetsOngoing(e)) RemoveEntry(e.Handle, GameplayEffectRemovalCause.OngoingRequirementMismatch);
         }
@@ -320,7 +332,9 @@ namespace FRFrame.Gameplay
             if(definition.DurationPolicy!=GameplayEffectDurationPolicy.Duration||definition.Period!=0||definition.PeriodValue!=null||definition.Stacking!=null||definition.Modifiers.Count!=0||definition.Executions.Count!=0||definition.CompletionExecutions.Count!=0||!definition.ApplicationRequirements.IsEmpty||!definition.OngoingRequirements.IsEmpty)
                 throw new ArgumentException("Explicit cooldown duration requires a simple tag-only Effect.");
             if(application!=null&&!ReferenceEquals(application.Target.Attributes,_target))throw new ArgumentException("Cooldown application must target this container.");
-            return CreateEntry(definition,application,new Timing(duration,0)).Handle;
+            var entry = CreateEntry(definition, application, new Timing(duration, 0));
+            NotifyPresentation(entry);
+            return entry.Handle;
         }
         internal bool TryGetAppliedDuration(GameplayEffectHandle handle,out float duration)
         {if(_entries.TryGetValue(handle,out var entry)){duration=entry.Duration;return true;}duration=0;return false;}
