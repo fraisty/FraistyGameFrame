@@ -65965,15 +65965,24 @@ namespace FRFrame.Gameplay.Editor
 
     internal static class GameplayReferenceDrawerGUI
     {
+        private const string TagFormatError = "标签名称格式错误";
+        private const string TagCatalogWarning = "目录提示 · 未登记或当前 Scope 不可用";
+
         private static bool TagAvailable(IEnumerable<string> scopes, string tag) =>
             scopes.All(source => GameplayReferenceCatalogProvider.Visible(source).Any(owner => owner.Tags.Contains(tag,StringComparer.Ordinal)));
+
+        private static string TagIssue(string value, IEnumerable<string> scopes)
+        {
+            if (string.IsNullOrEmpty(value)) return null;
+            if (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, value)) return TagFormatError;
+            return TagAvailable(scopes, value) ? null : TagCatalogWarning;
+        }
 
         internal static bool HasTagIssue(SerializedProperty property)
         {
             if (!GameplayAuthoringInspector.InWorkbenchField) return false;
             var value = property.FindPropertyRelative("Name").stringValue;
-            return !string.IsNullOrEmpty(value) && (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, value) ||
-                !TagAvailable(property.serializedObject.targetObjects.Select(GameplayReferenceCatalogProvider.Scope).Distinct(), value));
+            return TagIssue(value, property.serializedObject.targetObjects.Select(GameplayReferenceCatalogProvider.Scope).Distinct()) != null;
         }
 
         internal static void Draw(Rect position, SerializedProperty property, GUIContent label,
@@ -65992,18 +66001,19 @@ namespace FRFrame.Gameplay.Editor
             var scopes = kind == GameplayReferenceKind.Tag ? targets.Select(GameplayReferenceCatalogProvider.Scope).Distinct().ToArray() : Array.Empty<string>();
             string scope = scopes.Length == 1 ? scopes[0] : null;
             string value = child.stringValue;
-            bool known = catalog != null && (kind == GameplayReferenceKind.Tag
-                ? TagAvailable(scopes,value)
-                : (catalog.Attributes ?? Array.Empty<string>()).Contains(value, StringComparer.Ordinal));
-            bool invalid = !string.IsNullOrEmpty(value) && (!GameplayReferenceDiagnostics.IsValid(kind, value) || !known);
+            string issue = kind == GameplayReferenceKind.Tag ? TagIssue(value, scopes) :
+                !string.IsNullOrEmpty(value) && (!GameplayReferenceDiagnostics.IsValid(kind, value) || catalog == null ||
+                    !(catalog.Attributes ?? Array.Empty<string>()).Contains(value, StringComparer.Ordinal))
+                    ? "当前 Scope 不可用或未登记。可在 Reference 检查归属。" : null;
             Color old = GUI.color;
-            if (invalid && !child.hasMultipleDifferentValues) GUI.color = new Color(1f, .65f, .55f);
+            if (issue != null && !child.hasMultipleDifferentValues)
+                GUI.color = old * (issue == TagCatalogWarning ? new Color(1f, .84f, .50f) : new Color(1f, .65f, .55f));
             EditorGUI.showMixedValue = child.hasMultipleDifferentValues;
             EditorGUI.PropertyField(raw, child, GUIContent.none);
             EditorGUI.showMixedValue = false;
             GUI.color = old;
             if (catalog == null) GUI.Label(pick, new GUIContent("!", discoveryError));
-            else if (GUI.Button(pick, new GUIContent("选择", invalid ? "当前 Scope 不可用或未登记。可在 Reference 检查归属。" : value)))
+            else if (GUI.Button(pick, new GUIContent("选择", issue ?? value)))
             {
                 string path=child.propertyPath;
                 if (targets.Length == 1 && targets[0] is GameplaySkillDocumentAsset document)
@@ -66020,9 +66030,9 @@ namespace FRFrame.Gameplay.Editor
                     }catch(InvalidOperationException e){EditorUtility.DisplayDialog("引用位置已变化",e.Message,"关闭");}}));
             }
             if (GUI.Button(clear, new GUIContent("×", "清空此引用"))) child.stringValue = string.Empty;
-            if (invalid && kind == GameplayReferenceKind.Tag && GameplayAuthoringInspector.InWorkbenchField)
+            if (issue != null && kind == GameplayReferenceKind.Tag && GameplayAuthoringInspector.InWorkbenchField)
                 EditorGUI.LabelField(new Rect(position.x,position.y+height+EditorGUIUtility.standardVerticalSpacing,position.width,height),
-                    "标签未登记或当前 Scope 不可用",EditorStyles.miniBoldLabel);
+                    issue,EditorStyles.miniBoldLabel);
             EditorGUI.EndProperty();
         }
 
