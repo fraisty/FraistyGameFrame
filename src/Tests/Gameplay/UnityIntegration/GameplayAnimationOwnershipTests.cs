@@ -11,8 +11,9 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
 {
     public sealed class GameplayAnimationOwnershipTests
     {
-        [Test]
-        public void CommittedEffectCuesSurviveSameFrameRemovalWithoutCastOrReplayAuthority()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CommittedEffectCuesSurviveSameFrameRemovalWithoutCastOrReplayAuthority(bool selfDispel)
         {
             var subject = new GameObject("Effect Cue target");
             var prefab = new GameObject("Effect Cue prefab");
@@ -30,13 +31,18 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
                 var cue = new GameplayPlayPresentationCueActionAuthoring { Cue = asset }.Build(build);
                 var probe = new EffectCueProbe();
                 var actions = new GameplayEffectLifecycleActions(new[] { cue, probe });
+                var classification = new GameplayTag("Effect.Test.LifecycleCue");
+                var granted = new GameplayTag("State.Test.LifecycleCue");
+                var dispel = new GameplayDispelEffectsAction(new GameplayEffectQuery(
+                    new GameplayTagQuery(new[] { classification }, Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>())));
+                var applied = selfDispel ? new GameplayEffectLifecycleActions(new[] { cue, probe, dispel }) : actions;
                 var overflow = new GameplayEffectStackingDefinition(new GameplayTag("Effect.Test.LifecycleCue"),
                     GameplayEffectStackAggregation.AggregateByInstigator, 1, GameplayEffectStackDurationRefreshPolicy.NeverRefresh,
                     GameplayEffectStackPeriodResetPolicy.NeverReset, GameplayEffectStackOverflowPolicy.ExecuteOverflow,
                     overflowExecutions: new[] { (IGameplayEffectOverflowExecution)actions, new GameplayRemoveCurrentOnOverflowAuthoring().Build(build) });
                 var effect = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration, 4, 0,
-                    Array.Empty<GameplayEffectAttributeModifierDefinition>(), Array.Empty<GameplayTag>(), Array.Empty<IGameplayEffectExecution>(),
-                    overflow, onApplied: actions);
+                    Array.Empty<GameplayEffectAttributeModifierDefinition>(), new[] { granted }, Array.Empty<IGameplayEffectExecution>(),
+                    overflow, effectTags: new[] { classification }, onApplied: applied, onEnterMax: selfDispel ? actions : null);
                 using (var world = new GameplayStandardWorld())
                 {
                     var caster = world.CreateActor(default, 1);
@@ -45,16 +51,21 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
                     target.Presentation = controller;
                     var context = new GameplayContext(caster.Id, new GameplayTargetData(target.Id, target.Position));
                     Assert.That(controller.TryPlayCue(asset.Build(build), context), Is.False);
-                    caster.ApplyEffect(context, effect);
-                    caster.ApplyEffect(context, effect);
+                    var handle = caster.ApplyEffect(context, effect).ActiveHandle;
+                    if (!selfDispel) caster.ApplyEffect(context, effect);
                     Assert.That(target.Effects.GetActiveEntriesSnapshot(), Is.Empty);
-                    Assert.That(probe.Kinds, Is.EqualTo(new[] { GameplayEffectLifecycleKind.Applied, GameplayEffectLifecycleKind.Overflow }));
+                    Assert.That(target.Effects.IsActive(handle), Is.False);
+                    Assert.That(target.Tags.HasTag(granted), Is.False);
+                    Assert.That(target.Effects.LastRemoval.Cause, Is.EqualTo(selfDispel ? GameplayEffectRemovalCause.Dispel : GameplayEffectRemovalCause.Overflow));
+                    Assert.That(probe.Kinds, Is.EqualTo(selfDispel ? new[] { GameplayEffectLifecycleKind.Applied } :
+                        new[] { GameplayEffectLifecycleKind.Applied, GameplayEffectLifecycleKind.Overflow }));
                     Assert.That(probe.Last.EffectLifecycle.IsExecuting, Is.False);
                     Assert.That(cue.Execute(context, probe.Last, target), Is.EqualTo(GameplaySkillActionResult.Rejected));
                     world.Advance(.01f);
-                    Assert.That(controller.ActiveCueCount, Is.EqualTo(2), "Both committed events play once despite the removed handle.");
+                    int expectedCues = selfDispel ? 1 : 2;
+                    Assert.That(controller.ActiveCueCount, Is.EqualTo(expectedCues), "Committed events play once despite the removed handle.");
                     world.Advance(.01f);
-                    Assert.That(controller.ActiveCueCount, Is.EqualTo(2));
+                    Assert.That(controller.ActiveCueCount, Is.EqualTo(expectedCues));
                     world.Advance(1.1f);
                     Assert.That(controller.ActiveCueCount, Is.Zero);
                 }
@@ -71,11 +82,133 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
         {
             internal readonly List<GameplayEffectLifecycleKind> Kinds = new List<GameplayEffectLifecycleKind>();
             internal GameplayEventData Last;
+            internal Action<GameplayEffectLifecycleEvent> Observe;
             public GameplaySkillActionResult Execute(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host)
             {
                 Last = triggerEvent;
                 Kinds.Add(triggerEvent.EffectLifecycle.Kind);
+                Observe?.Invoke(triggerEvent.EffectLifecycle);
                 return GameplaySkillActionResult.Succeeded;
+            }
+        }
+
+        private sealed class PeriodRuleProbe : IGameplayEffectExecution
+        {
+            internal GameplayEffectApplicationContext Pending;
+            public void Execute(GameplayEffectApplicationContext application)
+            {
+                Assert.That(Pending, Is.Null, "The preceding rule call must already have its period event.");
+                Pending = application;
+            }
+        }
+
+        [TestCase(GameplayEffectStackOverflowPolicy.RefreshExistingAtLimit, true)]
+        [TestCase(GameplayEffectStackOverflowPolicy.Reject, true)]
+        [TestCase(GameplayEffectStackOverflowPolicy.ExecuteOverflow, true)]
+        [TestCase(GameplayEffectStackOverflowPolicy.RefreshExistingAtLimit, false)]
+        public void PeriodActionsShareImmediateAndScheduledExecution(GameplayEffectStackOverflowPolicy overflow, bool withRule)
+        {
+            foreach (var start in new[] { GameplayEffectPeriodicStartPolicy.AfterFirstPeriod, GameplayEffectPeriodicStartPolicy.ExecuteOnApplication })
+            using (var world = new GameplayStandardWorld())
+            {
+                var caster = world.CreateActor(default, 1);
+                var target = world.CreateActor(default, 2);
+                var rule = new PeriodRuleProbe();
+                var period = new EffectCueProbe { Observe = evt =>
+                {
+                    if (withRule) Assert.That(evt.Application, Is.SameAs(rule.Pending));
+                    rule.Pending = null;
+                    Assert.That(evt.Application.Target, Is.SameAs(target));
+                    Assert.That(evt.Application.Context.InstigatorId, Is.EqualTo(caster.Id));
+                } };
+                var overflowProbe = new EffectCueProbe();
+                var stacking = new GameplayEffectStackingDefinition(new GameplayTag("Effect.Test.Period"),
+                    GameplayEffectStackAggregation.AggregateByTarget, 2, GameplayEffectStackDurationRefreshPolicy.NeverRefresh,
+                    GameplayEffectStackPeriodResetPolicy.NeverReset, overflow, overflowExecutions:
+                    overflow == GameplayEffectStackOverflowPolicy.ExecuteOverflow
+                        ? new[] { new GameplayEffectLifecycleActions(new[] { overflowProbe }) } : null);
+                var effect = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration, 4, 1,
+                    Array.Empty<GameplayEffectAttributeModifierDefinition>(), Array.Empty<GameplayTag>(),
+                    withRule ? new IGameplayEffectExecution[] { rule } : Array.Empty<IGameplayEffectExecution>(),
+                    stacking, periodicStart: start, onPeriod: new GameplayEffectLifecycleActions(new[] { period }));
+
+                bool immediate = start == GameplayEffectPeriodicStartPolicy.ExecuteOnApplication;
+                int expected = 0;
+                GameplayContext lastAccepted = null;
+                for (int attempt = 1; attempt <= 3; attempt++)
+                {
+                    var context = new GameplayContext(caster.Id, new GameplayTargetData(target.Id), world.Sources.Allocate());
+                    caster.ApplyEffect(context, effect);
+                    if (attempt <= 2 || overflow == GameplayEffectStackOverflowPolicy.RefreshExistingAtLimit)
+                    {
+                        lastAccepted = context;
+                        if (immediate)
+                        {
+                            expected++;
+                            Assert.That(period.Last.EffectLifecycle?.Application.Context, Is.SameAs(context));
+                            Assert.That(period.Last.EffectLifecycle.StackCount, Is.EqualTo(Math.Min(attempt, 2)));
+                        }
+                    }
+                    Assert.That(period.Kinds.Count, Is.EqualTo(expected));
+                    Assert.That(rule.Pending, Is.Null);
+                }
+                Assert.That(overflowProbe.Kinds.Count, Is.EqualTo(overflow == GameplayEffectStackOverflowPolicy.ExecuteOverflow ? 1 : 0));
+                world.Advance(.5f);
+                Assert.That(period.Kinds.Count, Is.EqualTo(expected));
+                world.Advance(.5f);
+                Assert.That(period.Kinds.Count, Is.EqualTo(expected + 1));
+                Assert.That(period.Kinds, Has.All.EqualTo(GameplayEffectLifecycleKind.Period));
+                Assert.That(period.Last.EffectLifecycle.StackCount, Is.EqualTo(2));
+                Assert.That(period.Last.EffectLifecycle.Application.Context, Is.SameAs(lastAccepted));
+                Assert.That(rule.Pending, Is.Null);
+            }
+        }
+
+        [TestCase("Dispel")]
+        [TestCase("RemoveLayer")]
+        [TestCase("Restack")]
+        public void EnterMaxBelongsToTheSurvivingTransition(string change)
+        {
+            using (var world = new GameplayStandardWorld())
+            {
+                var caster = world.CreateActor(default, 1);
+                var target = world.CreateActor(default, 2);
+                var granted = new GameplayTag("State.Test.Max");
+                var classification = new GameplayTag("Effect.Test.Max");
+                var dispel = new GameplayDispelEffectsAction(new GameplayEffectQuery(
+                    new GameplayTagQuery(new[] { classification }, Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>())));
+                var original = new GameplayContext(caster.Id, new GameplayTargetData(target.Id));
+                var nested = new GameplayContext(caster.Id, original.TargetData, world.Sources.Allocate());
+                bool restack = change == "Restack";
+                var enter = new EffectCueProbe();
+                GameplayEffectLayerHandle first = default;
+                GameplayEffectDefinition effect = null;
+                var changed = new EffectCueProbe { Observe = evt =>
+                {
+                    if (evt.StackCount != 2 || !ReferenceEquals(evt.Application.Context, original)) return;
+                    if (change == "Dispel") dispel.Execute(original, default, target);
+                    else
+                    {
+                        Assert.That(target.Effects.RemoveLayer(first), Is.True);
+                        if (restack) caster.ApplyEffect(nested, effect);
+                    }
+                } };
+                var stacking = new GameplayEffectStackingDefinition(new GameplayTag("Effect.Test.Max"),
+                    GameplayEffectStackAggregation.AggregateByTarget, 2, GameplayEffectStackDurationRefreshPolicy.NeverRefresh,
+                    GameplayEffectStackPeriodResetPolicy.NeverReset, GameplayEffectStackOverflowPolicy.Reject);
+                effect = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration, 4, 0,
+                    Array.Empty<GameplayEffectAttributeModifierDefinition>(), new[] { granted }, Array.Empty<IGameplayEffectExecution>(),
+                    stacking, effectTags: new[] { classification }, onStackChanged: new GameplayEffectLifecycleActions(new[] { changed }),
+                    onEnterMax: new GameplayEffectLifecycleActions(new[] { enter }));
+                var initial = caster.ApplyEffect(original, effect);
+                first = initial.LayerHandle;
+                caster.ApplyEffect(original, effect);
+                bool active = change != "Dispel";
+                Assert.That(target.Effects.TryGetStackCount(initial.ActiveHandle, out int count), Is.EqualTo(active));
+                Assert.That(count, Is.EqualTo(restack ? 2 : active ? 1 : 0));
+                Assert.That(target.Tags.HasTag(granted), Is.EqualTo(active));
+                Assert.That(enter.Kinds.Count, Is.EqualTo(restack ? 1 : 0));
+                if (restack) Assert.That(enter.Last.EffectLifecycle.Application.Context, Is.SameAs(nested));
             }
         }
 

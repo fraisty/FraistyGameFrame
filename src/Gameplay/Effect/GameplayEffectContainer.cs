@@ -188,8 +188,17 @@ namespace FRFrame.Gameplay
             if (e.Period > 0 && s.PeriodReset == GameplayEffectStackPeriodResetPolicy.ResetOnSuccessfulApplication)
             { e.Period = timing.Period; e.NextPeriodAt = e.Elapsed + timing.Period; }
         }
-        private static void ExecuteInitial(Entry e, GameplayEffectApplicationContext app)
-        { if (e.Definition.PeriodicStart == GameplayEffectPeriodicStartPolicy.ExecuteOnApplication) foreach (var rule in e.Definition.Executions) rule.Execute(app); }
+        private void ExecuteInitial(Entry entry, GameplayEffectApplicationContext application)
+        {
+            if (entry.Definition.PeriodicStart == GameplayEffectPeriodicStartPolicy.ExecuteOnApplication)
+                ExecutePeriod(entry, application);
+        }
+        private void ExecutePeriod(Entry entry, GameplayEffectApplicationContext application)
+        {
+            foreach (var rule in entry.Definition.Executions) rule.Execute(application);
+            entry.Definition.OnPeriod?.Run(this, GameplayEffectLifecycleKind.Period, entry.Handle, entry.SourceId,
+                application, application.StackCount, entry.Definition.Stacking?.MaxStacks ?? 1);
+        }
         internal void CommitActivationInitial(GameplayEffectHandle handle)
         {
             if(!_entries.TryGetValue(handle,out var entry)||!entry.ActivationInitialPending)return;
@@ -198,23 +207,33 @@ namespace FRFrame.Gameplay
         }
         private void PublishApplied(Entry entry)
         {
-            NotifyPresentation(entry);
             var application = entry.Application;
+            long layerSequence = entry.LastLayerSequence;
+            NotifyPresentation(entry);
             entry.Definition.OnApplied?.Run(this, GameplayEffectLifecycleKind.Applied, entry.Handle, entry.SourceId,
                 application, 0, entry.Definition.Stacking?.MaxStacks ?? 1);
             if (entry.Definition.Stacking?.MaxStacks == 1)
-                entry.Definition.OnEnterMax?.Run(this, GameplayEffectLifecycleKind.EnterMax, entry.Handle, entry.SourceId, application, 0, 1);
+                PublishEnterMax(entry, application, 0, 1, layerSequence);
             if (IsActive(entry.Handle)) ExecuteInitial(entry, application);
         }
         private void PublishStackChange(Entry entry, GameplayEffectApplicationContext application, int previous)
         {
+            long layerSequence = entry.LastLayerSequence;
             NotifyPresentation(entry);
             int max = entry.Definition.Stacking.MaxStacks;
             entry.Definition.OnStackChanged?.Run(this, GameplayEffectLifecycleKind.StackChanged, entry.Handle, entry.SourceId,
                 application, previous, max);
             if (previous < max && application.StackCount == max)
-                entry.Definition.OnEnterMax?.Run(this, GameplayEffectLifecycleKind.EnterMax, entry.Handle, entry.SourceId,
-                    application, previous, max);
+                PublishEnterMax(entry, application, previous, max, layerSequence);
+        }
+        private void PublishEnterMax(Entry entry, GameplayEffectApplicationContext application, int previous, int max, long layerSequence)
+        {
+            var actions = entry.Definition.OnEnterMax;
+            // A nested remove-and-restack can reach max again on the same handle. That newer
+            // transition owns its own event, even when the outer callback returns at max.
+            if (actions == null || entry.StackCount != max || entry.LastLayerSequence != layerSequence ||
+                !_entries.TryGetValue(entry.Handle, out var active) || !ReferenceEquals(active, entry)) return;
+            actions.Run(this, GameplayEffectLifecycleKind.EnterMax, entry.Handle, entry.SourceId, application, previous, max);
         }
         private void NotifyPresentation(Entry entry)
         {
@@ -320,13 +339,7 @@ namespace FRFrame.Gameplay
             if (periodDue)
             {
                 e.NextPeriodAt += e.Period;
-                var application = e.Application.WithStackCount(e.StackCount);
-                try
-                {
-                    foreach (var rule in e.Definition.Executions) rule.Execute(application);
-                    e.Definition.OnPeriod?.Run(this, GameplayEffectLifecycleKind.Period, e.Handle, e.SourceId,
-                        application, application.StackCount, e.Definition.Stacking?.MaxStacks ?? 1);
-                }
+                try { ExecutePeriod(e, e.Application.WithStackCount(e.StackCount)); }
                 catch { if (expiryDue) RemoveEntry(e.Handle, GameplayEffectRemovalCause.Explicit); throw; }
             }
             if (!_entries.ContainsKey(e.Handle)) return;
