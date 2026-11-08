@@ -54,9 +54,19 @@ namespace FRFrame.Gameplay.Unity.Editor
         public bool DrawSourceLink(SerializedProperty root, SerializedProperty property)
         {
             if (!SupportsControl(property)) return false;
-            var prefab = (property.managedReferenceValue as GameplayUnityEffectPresentationAuthoring)?.StatusPrefab;
-            EditorGUILayout.LabelField("状态外观", prefab == null ? "在 Buff 卡选择预制体" : prefab.name);
-            if (prefab != null && GUILayout.Button("定位状态预制体")) EditorGUIUtility.PingObject(prefab);
+            var presentation = property.managedReferenceValue as GameplayUnityEffectPresentationAuthoring;
+            var prefab = presentation?.StatusPrefab;
+            if (presentation != null && prefab == null)
+                EditorGUILayout.HelpBox("状态外观缺少预制体，请在 Buff 卡选择。", MessageType.Error);
+            else if (prefab == null)
+                EditorGUILayout.LabelField("未配置状态外观", EditorStyles.miniLabel);
+            else
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Label(new GUIContent(prefab.name, AssetDatabase.GetAssetPath(prefab)));
+                    if (GUILayout.Button("定位", EditorStyles.miniButton, GUILayout.Width(42))) GameplayInspectorOperations.LocateResource(prefab);
+                    if (GUILayout.Button("编辑", EditorStyles.miniButton, GUILayout.Width(42))) GameplayInspectorOperations.EditResource(prefab);
+                }
             return true;
         }
         public IEnumerable<GameplaySkillCardField> CardFields(object values)

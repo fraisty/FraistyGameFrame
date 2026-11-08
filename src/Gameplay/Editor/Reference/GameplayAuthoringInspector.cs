@@ -20,6 +20,7 @@ namespace FRFrame.Gameplay.Editor
         /// <summary>Names the actual serialized input controls so editor navigation and profiler
         /// probes can focus a real field without changing authoring data.</summary>
         public static IDisposable UseFieldContext(string context)=>new FieldContext(context);
+        internal static bool InWorkbenchField => _fieldContext == "Inspector";
         private sealed class FieldContext:IDisposable
         {
             private readonly string _previous=_fieldContext;
@@ -195,10 +196,17 @@ namespace FRFrame.Gameplay.Editor
             Labels["SourceId"]="来源标识";Labels["Instigator"]="发起者";Labels["X"]="X坐标";Labels["Y"]="Y坐标";Labels["Z"]="Z坐标";
         }
         public static bool HasBusinessLabel(string field)=>Labels.ContainsKey(field);
-        public static GUIContent Label(SerializedProperty property){
-            if(Labels.TryGetValue(property.name,out var label))return new GUIContent(label);
-            if(property.name.StartsWith("data[",StringComparison.Ordinal)&&int.TryParse(property.name.Substring(5,property.name.Length-6),out int index))return new GUIContent("配置 "+(index+1));
-            return new GUIContent(property.displayName,"扩展字段；内部路径可在高级来源中查看。");
+        internal static (string Text, string Help) DescribeLabel(SerializedProperty property)
+        {
+            if(Labels.TryGetValue(property.name,out var label))return (label,null);
+            if(property.name.StartsWith("data[",StringComparison.Ordinal)&&int.TryParse(property.name.Substring(5,property.name.Length-6),out int index))
+                return ("配置 "+(index+1),null);
+            return (property.displayName,"扩展字段；内部路径可在高级来源中查看。");
+        }
+        public static GUIContent Label(SerializedProperty property)
+        {
+            var caption=DescribeLabel(property);
+            return new GUIContent(caption.Text,caption.Help);
         }
         public static void Field(SerializedProperty property)
         {if(property!=null)Field(property,Label(property));}

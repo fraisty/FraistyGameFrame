@@ -62,15 +62,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("业务动作 / 表现","所有动作消费正式Source；Cue只有配置真实Duration才显示持续区间。","Actions","Effect","CueTag","HasMagnitude","Magnitude","HasDuration","Duration");
             }
             else if((value is GameplayEffectDefinitionAsset || value is GameplayEffectDefinitionData)){
-                yield return Group("持续 / 周期（秒）","Period=0不执行周期；动态数值沿用正式求值器，非启用字段保留旧值。","DurationPolicy","Duration","DurationValue","Period","PeriodValue","PeriodicStart");
-                yield return Group("标签 / 应用与持续门禁","EffectTags用于驱散分类，GrantedTags在存续期间贡献标签。","EffectTags","GrantedTags","ApplicationRequirements","OngoingRequirements");
+                yield return Group("持续与周期","时间以秒为单位。周期为 0 时不执行周期。","DurationPolicy","Duration","Period","PeriodicStart","DurationValue","PeriodValue");
+                yield return Group("应用与持续条件","应用时检查应用条件，存续时继续检查持续条件。","ApplicationRequirements","OngoingRequirements");
                 if ((value is GameplayEffectDefinitionData effect ? effect.DurationPolicy : ((GameplayEffectDefinitionAsset)value).DurationPolicy) != GameplayEffectDurationPolicy.Instant)
                 {
                     yield return Group("状态外观","由实际 Effect 句柄创建、更新和回收；一次性表现从生命周期动作行连接。","Presentation");
-                    yield return Group("生命周期动作","只有真实提交才触发。满层是到达上限，溢出是满层后再次申请。","OnApplied","OnStackChanged","OnEnterMax","OnPeriod");
+                    yield return Group("生命周期行为","周期先结算规则，再执行连接的行为。满层后再次申请才按溢出策略处理。","OnApplied","OnStackChanged","OnEnterMax","OnPeriod");
                 }
-                yield return Group("属性修改 / 结算","所有Execution均可配置，按正式数组顺序执行。","Modifiers","Executions");
-                yield return Group("叠层 / 溢出 / 自然完成","Overflow与Completion是不同的typed数组；取消/驱散不运行自然完成。","Stacking","CompletionExecutions");
+                yield return Group("规则结算","执行器按列表顺序结算。","Executions");
+                yield return Group("叠层、溢出与自然到期","取消和驱散不会执行自然到期行为。","Stacking","CompletionExecutions");
+                yield return Group("标签与属性贡献","效果分类用于驱散匹配，授予标签和属性修改在存续期间生效。","EffectTags","GrantedTags","Modifiers");
             }
             else if(value is GameplaySkillConditionAuthoring||value is GameplaySkillTriggerAuthoring||value is GameplaySkillTargetAuthoring||value is GameplayFloatValueAuthoring||value is GameplayAbilityCostAuthoring||value is GameplayEffectCompletionAuthoring||value is GameplayEffectOverflowAuthoring)
                 yield return Group(value is GameplayFloatValueAuthoring?"数值来源 / 求值":value is GameplayAbilityCostAuthoring?"资源消耗 / 释放前检查":value is GameplaySkillConditionAuthoring?"条件判定":value is GameplaySkillTargetAuthoring?"明确目标 / 地点":"事件 / 后续回调","直接编辑真实嵌入配置；类型替换会提示字段丢失，可Undo恢复。",Fields(value));
@@ -99,10 +100,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if(value is GameplayDamageExecutionAuthoring)
             {
-                yield return Group("伤害数值 / 类型","Physical读Defense，Magical读MagicDefense；True只跳过防御阶段。所有计算成功后一次提交HP/Shield。","Amount","DamageType");
-                yield return Group("结算阶段（列表顺序）","拖动重排；Critical/Miss读取捕获输入，可先接「捕获暴击/未命中」动作。","Stages","Immunity");
+                var damage=Group("伤害数值与类型","物理伤害读取防御，魔法伤害读取魔防。真实伤害跳过防御阶段。","DamageType","Amount");
+                damage.Labels["Amount"]="伤害数值";yield return damage;
+                yield return Group("结算阶段与免疫","阶段按列表顺序执行。暴击和未命中可以读取施放时捕获的输入。","Stages","Immunity");
                 yield return Group("结算后治疗","只在本次实际扣除 HP 后求值。公式可读取 Context.Data.Standard.Combat.AppliedDamage。",
                     "HealInstigatorAmount");
+            }
+            else if(value is GameplayDamageStageAuthoring)
+            {
+                var stage=Group("阶段参数",null,"Kind","Value");stage.Labels["Kind"]="阶段类型";yield return stage;
             }
             else if(value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring)
                 yield return Group("结算数值",value is GameplayHealExecutionAuthoring?"治疗受实际 MaxHealth 限制，结果保留溢出。":"瞬时增加实际 Shield；本动作不提供按来源的时限护盾。","Amount");

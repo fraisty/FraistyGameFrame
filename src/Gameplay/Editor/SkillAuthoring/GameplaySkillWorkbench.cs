@@ -92,8 +92,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var window=GetWindow<GameplaySkillWorkbench>();
             var owner=owners.OrderByDescending(x=>x.Document==window.Document).ThenByDescending(x=>actionId>=0&&x.Node.SourceActionId==actionId).FirstOrDefault();
             if(owner!=null){Open(owner.Document,owner.Node.Id);return;}
+            EditSharedSource(source);
+        }
+        internal static void EditSharedSource(GameplayDefinitionAsset source)
+        {
+            var window=GetWindow<GameplaySkillWorkbench>();
             window.SelectDocument(null);window._sharedSource=source;
-            window._feedback="共享定义 · "+source.name+"；此配置没有正式技能图所有者。";
+            window._feedback="正在编辑共享源 · "+source.name+"。修改会影响引用此资源的技能。";
             window._detailTab=0;window._inspectorOpen=true;window.UpdateSurface();window.ApplyPaneWidths();window.Show();window.Repaint();
         }
         public void SelectDocument(GameplaySkillDocumentAsset document,string nodeId=null,bool reveal=true)
@@ -164,7 +169,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             Canvas = new GameplayBehaviorGraphView { ConfigurationOwner=this, ViewModeChanged=reading=>{readingView.SetValueWithoutNotify(reading);viewCaption.text=reading?"会话排布 · 不写坐标":"作者原位";},PolicySelected=role=>{_selected=_document.AuthoringGraph.AbilityNodeId;_definition=null;_policySelection=role;_detailTab=0;_details.MarkDirtyRepaint();},Selected = id => { _policySelection=null;_selected = id; _definition = null;_detailTab=0;if(Canvas.HasInlinePreview(id))_inlinePreviewNode=id; _details.MarkDirtyRepaint(); }, Feedback = message => { _feedback = message; Repaint(); }, Populate = Populate, DeleteMain = DeleteMain,PreviewSeeked=RequestPreviewSeek,PreviewPlaying=id=>_previewClockOwner==id&&_previewPlaying,TogglePreview=TogglePreviewPlayback,HasPreview=HasPreview,DrawInlinePreview=DrawInlinePreview,InlinePreviewChanged=SetInlinePreview,PreviewRequested=id=>{_selected=id;_definition=null;_policySelection=null;_inlinePreviewNode=Canvas.HasInlinePreview(id)?id:null;OpenDetails(1);} };
             row.Add(Canvas);
             row.Add(_inspectorHandle=PaneHandle(delta=>{_inspectorWidth=Mathf.Clamp(_inspectorWidth-delta,300,650);ApplyPaneWidths();},()=>EditorPrefs.SetFloat("FRFrame.Workbench.InspectorWidth",_inspectorWidth)));
-            _inspector = new VisualElement();_inspector.style.flexShrink=0;_inspector.style.paddingLeft=7;_inspector.style.paddingRight=7;_inspector.style.backgroundColor=GameplayEditorStyles.Panel;
+            _inspector = new VisualElement();_inspector.style.flexShrink=0;_inspector.style.paddingLeft=7;_inspector.style.paddingRight=7;_inspector.style.backgroundColor=GameplayInspectorIMGUI.PanelColor;
             _details = new IMGUIContainer(DrawDetails); _details.style.flexGrow = 1; _inspector.Add(_details); row.Add(_inspector);
             rootVisualElement.RegisterCallback<GeometryChangedEvent>(_=>ApplyPaneWidths());
             ApplyPaneWidths();Canvas.Load(_document);Canvas.SelectNodeWithoutCamera(_selected);_shape=Shape();RememberSourceVersion();UpdateSurface();
@@ -247,15 +252,21 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private void DrawDetails()
         {
-
-            float previousLabel=EditorGUIUtility.labelWidth;EditorGUIUtility.labelWidth=Mathf.Clamp(_inspector.resolvedStyle.width*.4f,110,170);
+            var panelColor = GameplayInspectorIMGUI.PanelColor;
+            if (_inspector.style.backgroundColor.value != panelColor) _inspector.style.backgroundColor = panelColor;
+            using var pane = new GameplayInspectorIMGUI.Pane(_inspector.resolvedStyle.width);
             _detailTab=GUILayout.Toolbar(_detailTab,new[]{"业务参数","预览 / 范围","Scene / 调试","校验"});
-            _inspectorScroll = EditorGUILayout.BeginScrollView(_inspectorScroll);
+            using var scroll = new EditorGUILayout.ScrollViewScope(_inspectorScroll);
+            _inspectorScroll = scroll.scrollPosition;
             if (!string.IsNullOrEmpty(_feedback)) EditorGUILayout.HelpBox(_feedback, MessageType.Info);
             if(!_document&&_sharedSource){using(var source=new SerializedObject(_sharedSource))GameplayAuthoringInspector.Draw(source);}
             else if (!_document) EditorGUILayout.HelpBox("选择正式技能，或新建一个正式技能。", MessageType.Info);
             else {
                 if(_detailTab==0){
+                    if(!_diagnosticsStale){
+                        var firstError=_diagnostics.FirstOrDefault(issue=>issue.Severity==GameplayAuthoringIssueSeverity.Error);
+                        if(firstError.Message!=null)EditorGUILayout.HelpBox(firstError.Message,MessageType.Error);
+                    }
                     if(_policySelection!=null)Canvas.DrawPolicy(_policySelection,true);
                     else if(Canvas.SelectedEventId==null){if(!Canvas.IsTimelineInline(_selected)||_definition!=null)using(GameplayAuthoringInspector.UseFieldContext("Inspector"))GameplaySkillFieldSchema.Draw(Canvas.SerializedSource,_document,_selected,_definition,true);}
                     else {GUILayout.Label("选中调度事件 · 行为参数在卡片编辑",EditorStyles.wordWrappedLabel);if(GUILayout.Button("行为高级参数")){Canvas.SelectNodeWithoutCamera(_selected);Canvas.ClearEventSelection();}}
@@ -269,8 +280,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(Canvas.IsTimelineInline(_selected)&&GUILayout.Button("在画布展开独立卡片"))Canvas.RevealTimelineAction(_selected);
                 if (GUILayout.Button("主技能 Project Inspector")) Selection.activeObject = _document;
             }
-            EditorGUILayout.EndScrollView();EditorGUIUtility.labelWidth=previousLabel;
-
         }
         private void DrawInstallation()
         {

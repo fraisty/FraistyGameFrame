@@ -72,6 +72,17 @@ namespace FRFrame.Gameplay.Editor
 
     internal static class GameplayReferenceDrawerGUI
     {
+        private static bool TagAvailable(IEnumerable<string> scopes, string tag) =>
+            scopes.All(source => GameplayReferenceCatalogProvider.Visible(source).Any(owner => owner.Tags.Contains(tag,StringComparer.Ordinal)));
+
+        internal static bool HasTagIssue(SerializedProperty property)
+        {
+            if (!GameplayAuthoringInspector.InWorkbenchField) return false;
+            var value = property.FindPropertyRelative("Name").stringValue;
+            return !string.IsNullOrEmpty(value) && (!GameplayReferenceDiagnostics.IsValid(GameplayReferenceKind.Tag, value) ||
+                !TagAvailable(property.serializedObject.targetObjects.Select(GameplayReferenceCatalogProvider.Scope).Distinct(), value));
+        }
+
         internal static void Draw(Rect position, SerializedProperty property, GUIContent label,
             GameplayReferenceKind kind, string childName)
         {
@@ -87,10 +98,9 @@ namespace FRFrame.Gameplay.Editor
             var targets = property.serializedObject.targetObjects;
             var scopes = kind == GameplayReferenceKind.Tag ? targets.Select(GameplayReferenceCatalogProvider.Scope).Distinct().ToArray() : Array.Empty<string>();
             string scope = scopes.Length == 1 ? scopes[0] : null;
-            bool TagAvailable(string tag) => scopes.All(source => GameplayReferenceCatalogProvider.Visible(source).Any(owner => owner.Tags.Contains(tag,StringComparer.Ordinal)));
             string value = child.stringValue;
             bool known = catalog != null && (kind == GameplayReferenceKind.Tag
-                ? TagAvailable(value)
+                ? TagAvailable(scopes,value)
                 : (catalog.Attributes ?? Array.Empty<string>()).Contains(value, StringComparer.Ordinal));
             bool invalid = !string.IsNullOrEmpty(value) && (!GameplayReferenceDiagnostics.IsValid(kind, value) || !known);
             Color old = GUI.color;
@@ -103,34 +113,26 @@ namespace FRFrame.Gameplay.Editor
             else if (GUI.Button(pick, new GUIContent("选择", invalid ? "当前 Scope 不可用或未登记。可在 Reference 检查归属。" : value)))
             {
                 string path=child.propertyPath;
-                property.serializedObject.ApplyModifiedProperties();
+                if (targets.Length == 1 && targets[0] is GameplaySkillDocumentAsset document)
+                {
+                    if (!GameplayInspectorOperations.Flush(property.serializedObject, document))
+                    { EditorGUI.EndProperty(); return; }
+                }
+                else property.serializedObject.ApplyModifiedProperties();
                 var handles=targets.Select(target=>GameplaySourceHandle.Capture(target,path)).ToArray();
+                var sourceGuard=GameplaySkillFieldSchema.CurrentSourceGuard;
                 PopupWindow.Show(pick, new GameplayReferencePickerPopup(catalog, kind, scope,
                     selected => {try{
-                        if(kind==GameplayReferenceKind.Tag&&handles.Any(handle=>!GameplayReferenceCatalogProvider.Visible(GameplayReferenceCatalogProvider.Scope(handle.Owner))
-                            .Any(owner=>owner.Tags.Contains(selected,StringComparer.Ordinal))))throw new InvalidOperationException("此 Tag 已不在当前 Scope 中。");
-                        ApplyChoice(handles,selected);
+                        GameplayInspectorOperations.ChooseReference(handles,kind,selected,sourceGuard);
                     }catch(InvalidOperationException e){EditorUtility.DisplayDialog("引用位置已变化",e.Message,"关闭");}}));
             }
             if (GUI.Button(clear, new GUIContent("×", "清空此引用"))) child.stringValue = string.Empty;
+            if (invalid && kind == GameplayReferenceKind.Tag && GameplayAuthoringInspector.InWorkbenchField)
+                EditorGUI.LabelField(new Rect(position.x,position.y+height+EditorGUIUtility.standardVerticalSpacing,position.width,height),
+                    "标签未登记或当前 Scope 不可用",EditorStyles.miniBoldLabel);
             EditorGUI.EndProperty();
         }
 
-        internal static void ApplyChoice(GameplaySourceHandle[] handles,string value)
-        {
-            // The popup may outlive a reorder in the other Inspector. Resolve every native
-            // managed identity before recording Undo; never write its old array index.
-            var paths=new string[handles.Length];
-            for(int i=0;i<handles.Length;i++){
-                if(!handles[i].TryResolve(out paths[i]))throw new InvalidOperationException("原配置已删除或替换，请重新打开选择器。");
-                using(var source=new SerializedObject(handles[i].Owner))if(source.FindProperty(paths[i])?.propertyType!=SerializedPropertyType.String)throw new InvalidOperationException("原引用字段已改变，请重新选择。");
-            }
-            GameplaySharedAuthoringCommands.Transaction("选择正式 Gameplay 引用",handles.Select(h=>h.Owner).ToArray(),()=>{
-                for(int i=0;i<handles.Length;i++)using(var source=new SerializedObject(handles[i].Owner)){
-                    source.FindProperty(paths[i]).stringValue=value;source.ApplyModifiedPropertiesWithoutUndo();
-                }
-            });
-        }
     }
 
     [CustomPropertyDrawer(typeof(GameplayTagReference))]
@@ -155,7 +157,9 @@ namespace FRFrame.Gameplay.Editor
 
         public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
         {
-            if (!IsContextKey(property, out bool producer)) return base.GetPropertyHeight(property, label);
+            if (!IsContextKey(property, out bool producer))
+                return base.GetPropertyHeight(property, label) + (GameplayReferenceDrawerGUI.HasTagIssue(property) ?
+                    EditorGUIUtility.singleLineHeight + EditorGUIUtility.standardVerticalSpacing : 0);
             int rows = 2;
             var document = (GameplaySkillDocumentAsset)property.serializedObject.targetObject;
             string path = property.propertyPath;
