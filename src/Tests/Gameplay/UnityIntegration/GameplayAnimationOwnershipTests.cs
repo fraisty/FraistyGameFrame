@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FRFrame.Gameplay.Standard;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Unity;
@@ -10,6 +11,74 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
 {
     public sealed class GameplayAnimationOwnershipTests
     {
+        [Test]
+        public void CommittedEffectCuesSurviveSameFrameRemovalWithoutCastOrReplayAuthority()
+        {
+            var subject = new GameObject("Effect Cue target");
+            var prefab = new GameObject("Effect Cue prefab");
+            var asset = ScriptableObject.CreateInstance<GameplayPresentationCueAsset>();
+            try
+            {
+                asset.Prefab = prefab;
+                asset.Origin = GameplayPresentationCueAsset.PositionSource.PrimaryTarget;
+                using (var serialized = new UnityEditor.SerializedObject(asset))
+                {
+                    serialized.FindProperty("definitionId").stringValue = "Tests.EffectLifecycleCue";
+                    serialized.ApplyModifiedPropertiesWithoutUndo();
+                }
+                var build = new GameplayAuthoringBuildContext();
+                var cue = new GameplayPlayPresentationCueActionAuthoring { Cue = asset }.Build(build);
+                var probe = new EffectCueProbe();
+                var actions = new GameplayEffectLifecycleActions(new[] { cue, probe });
+                var overflow = new GameplayEffectStackingDefinition(new GameplayTag("Effect.Test.LifecycleCue"),
+                    GameplayEffectStackAggregation.AggregateByInstigator, 1, GameplayEffectStackDurationRefreshPolicy.NeverRefresh,
+                    GameplayEffectStackPeriodResetPolicy.NeverReset, GameplayEffectStackOverflowPolicy.ExecuteOverflow,
+                    overflowExecutions: new[] { (IGameplayEffectOverflowExecution)actions, new GameplayRemoveCurrentOnOverflowAuthoring().Build(build) });
+                var effect = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration, 4, 0,
+                    Array.Empty<GameplayEffectAttributeModifierDefinition>(), Array.Empty<GameplayTag>(), Array.Empty<IGameplayEffectExecution>(),
+                    overflow, onApplied: actions);
+                using (var world = new GameplayStandardWorld())
+                {
+                    var caster = world.CreateActor(default, 1);
+                    var target = world.CreateActor(default, 2);
+                    var controller = new GameplayUnityAnimationController(target, subject);
+                    target.Presentation = controller;
+                    var context = new GameplayContext(caster.Id, new GameplayTargetData(target.Id, target.Position));
+                    Assert.That(controller.TryPlayCue(asset.Build(build), context), Is.False);
+                    caster.ApplyEffect(context, effect);
+                    caster.ApplyEffect(context, effect);
+                    Assert.That(target.Effects.GetActiveEntriesSnapshot(), Is.Empty);
+                    Assert.That(probe.Kinds, Is.EqualTo(new[] { GameplayEffectLifecycleKind.Applied, GameplayEffectLifecycleKind.Overflow }));
+                    Assert.That(probe.Last.EffectLifecycle.IsExecuting, Is.False);
+                    Assert.That(cue.Execute(context, probe.Last, target), Is.EqualTo(GameplaySkillActionResult.Rejected));
+                    world.Advance(.01f);
+                    Assert.That(controller.ActiveCueCount, Is.EqualTo(2), "Both committed events play once despite the removed handle.");
+                    world.Advance(.01f);
+                    Assert.That(controller.ActiveCueCount, Is.EqualTo(2));
+                    world.Advance(1.1f);
+                    Assert.That(controller.ActiveCueCount, Is.Zero);
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(asset);
+                UnityEngine.Object.DestroyImmediate(prefab);
+                UnityEngine.Object.DestroyImmediate(subject);
+            }
+        }
+
+        private sealed class EffectCueProbe : IGameplaySkillAction
+        {
+            internal readonly List<GameplayEffectLifecycleKind> Kinds = new List<GameplayEffectLifecycleKind>();
+            internal GameplayEventData Last;
+            public GameplaySkillActionResult Execute(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host)
+            {
+                Last = triggerEvent;
+                Kinds.Add(triggerEvent.EffectLifecycle.Kind);
+                return GameplaySkillActionResult.Succeeded;
+            }
+        }
+
         /// <summary>Protects Timeline preview against ignoring the formal speed/context expression.</summary>
         [Test]
         public void PreviewSpeedUsesCapturedInputsAndSamplesActualAnimatorTime()

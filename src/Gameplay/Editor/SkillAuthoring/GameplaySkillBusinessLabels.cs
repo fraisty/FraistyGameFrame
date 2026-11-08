@@ -15,6 +15,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Enemies","敌方"},{"Allies","友方"},{"Any","任意"},{"All","全部"},{"Self","自身"},{"None","无"},
             {"Physical","物理伤害"},{"Magical","魔法伤害"},{"Magic","魔法伤害"},{"True","真实伤害"},
             {"Owner","施法者"},{"Target","当前目标"},{"Context","调用上下文"},{"OwnerFacing","施法者朝向"},{"TargetDirection","目标方向"},
+            {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},
             {"Vfx","特效"},{"Audio","音效"},{"Body","身体"},{"Active","主动"},{"Passive","被动"},
             {"Instant","瞬时"},{"Duration","限时持续"},{"Infinite","无限持续"},
             {"Straight","直线"},{"Homing","追踪"},{"Arc","弧线"},{"Parabolic","抛物线"},{"Bezier","贝塞尔曲线"},

@@ -177,7 +177,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     yield return new GameplaySkillCardField(effect.DurationValue == null ? "Duration" : "DurationValue", "持续秒数", effect.DurationValue != null);
                 if (effect.DurationPolicy != GameplayEffectDurationPolicy.Instant)
                     yield return new GameplaySkillCardField(effect.PeriodValue == null ? "Period" : "PeriodValue", "周期间隔", effect.PeriodValue != null);
-                if(effect.Stacking!=null){yield return new GameplaySkillCardField("Stacking.StackKey","叠层标识");yield return new GameplaySkillCardField("Stacking.MaxStacks","叠层上限");}
+                if(effect.Stacking!=null){yield return new GameplaySkillCardField("Stacking.StackKey","叠层标识");yield return new GameplaySkillCardField("Stacking.MaxStacks","叠层上限");yield return new GameplaySkillCardField("Stacking.Aggregation","叠层归属");}
+                if (effect.DurationPolicy != GameplayEffectDurationPolicy.Instant)
+                    yield return new GameplaySkillCardField("Presentation", "状态外观");
                 // A compound effect keeps its real execution ordering in the advanced editor.
                 if (effect.Executions.Length == 1 && effect.Modifiers.Length == 0)
                 {

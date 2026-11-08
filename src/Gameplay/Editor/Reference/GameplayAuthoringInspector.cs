@@ -181,8 +181,8 @@ namespace FRFrame.Gameplay.Editor
             Labels["AudioLoop"]="循环音效";Labels["Backend"]="播放后端";Labels["BlendDuration"]="混合时长（秒）";Labels["Clip"]="动画或音频片段";
             Labels["CriticalColor"]="暴击颜色";Labels["CriticalPrefix"]="暴击前缀";Labels["Cue"]="表现资源";Labels["DamageColor"]="伤害颜色";Labels["DamagePrefix"]="伤害前缀";
             Labels["FadeStartRatio"]="开始淡出的进度（0～1）";Labels["FixedPoint"]="固定位置";Labels["Follow"]="跟随位置";Labels["FollowSource"]="持续跟随来源";
-            Labels["Presentation"]="效果表现";Labels["StatusPrefab"]="持续状态预制体";Labels["FirstApplicationVfx"]="首次应用特效";
-            Labels["FirstApplicationOffset"]="首次特效偏移";Labels["FirstApplicationSeconds"]="首次特效时长（秒）";
+            Labels["Presentation"]="状态外观";Labels["StatusPrefab"]="持续状态预制体";
+            Labels["OnApplied"]="首次成功应用";Labels["OnStackChanged"]="层数变化";Labels["OnEnterMax"]="进入满层";Labels["OnPeriod"]="每次周期";
             Labels["ImmuneText"]="免疫文字";Labels["Layer"]="Animator层";Labels["Material"]="材质";Labels["MinimumSeparation"]="最小间距";
             Labels["MirrorFacing"]="随朝向镜像";Labels["MissColor"]="未命中颜色";Labels["MissText"]="未命中文字";Labels["ModelPrefab"]="Cubism模型预制体";
             Labels["NumberFormat"]="数字格式";Labels["OwnerSkillId"]="拥有者技能编号（0使用当前）";Labels["Pitch"]="音调";Labels["Point"]="地点来源或坐标";

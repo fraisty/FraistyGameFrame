@@ -207,9 +207,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var settings=(g.Nodes.Find(n=>n.Id==g.AbilityNodeId)?.Payload as GameplayAbilityNodePayload)?.Settings as GameplayAbilityDefinitionData;
             return string.Join(",",_detachedPolicies.Select(p=>p.Key))+"|"+settings?.Cost?.GetType().FullName+":"+(settings?.Charge!=null)+"|"+GameplayBehaviorGraphView.InlinePrimaryRule(_document)+":"+g.Scope+":"+g.AbilityNodeId+":"+g.PrimaryRuleNodeId+":"+string.Join(",",g.AdditionalRuleNodeIds)+"|"+
                 string.Join("|",g.Nodes.Select(n=>n.Id+":"+n.Payload.GetType().Name+":"+(n.Payload as GameplayActionNodePayload)?.Action?.GetType().FullName+":"+string.Join(",",GameplayGraphFields.OutputPorts(n))+":"+string.Join(",",n.Payload.Definitions.Select(b=>b.PropertyPath+"="+b.LocalId+"@"+(b.External?b.External.GetInstanceID():0)))))+"|"+
-                string.Join("|",g.LocalDefinitions.Select(d=>d.Id+":"+d.Payload.GetType().FullName+":"+string.Join(",",GameplayGraphFields.ActionArrays(d.Payload).Select(a=>a.Path).Concat(GameplayGraphEffectCallbacks.Slots(d.Payload).Select(s=>s.Key)))))+"|"+
+                string.Join("|",g.LocalDefinitions.Select(d=>d.Id+":"+d.Payload.GetType().FullName+":"+string.Join(",",GameplayGraphFields.ActionArrays(d.Payload).Select(GameplayGraphEffectCallbacks.ActionKey).Concat(GameplayGraphEffectCallbacks.Slots(d.Payload).Select(s=>s.Key)))+EffectShape(d.Payload)))+"|"+
                 string.Join("|",g.Connections.Select(e=>e.Id+":"+e.FromNodeId+":"+e.OutputPortKey+":"+e.ToNodeId+":"+e.InputPortKey+":"+e.Order))+"|"+
                 string.Join("|",g.Timelines.SelectMany(t=>t.Events).Select(e=>e.Id+":"+e.EntryNodeId+":"+(e.Conditions.Length>0)+":"+e.Target?.GetType().FullName));
+            static string EffectShape(GameplayLocalDefinitionPayload payload) => payload is GameplayEffectDefinitionData effect
+                ? ":" + effect.DurationPolicy + ":" + (effect.Period > 0) + ":" + effect.Stacking?.Overflow + ":" +
+                    string.Join(",", effect.Stacking?.OverflowExecutions.Select(e => e.AuthoringId + e.GetType().Name) ?? Enumerable.Empty<string>()) + ":" +
+                    string.Join(",", effect.CompletionExecutions.Select(e => e.AuthoringId + e.GetType().Name)) : "";
             }
             finally{ShapeAnalysisMilliseconds+=(System.Diagnostics.Stopwatch.GetTimestamp()-sample)*1000d/System.Diagnostics.Stopwatch.Frequency;}
         }
@@ -325,6 +329,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if (!_document || _document.AuthoringGraph == null) return;
             var link=Canvas.CreationLink;
+            bool effectLink=link!=null&&!link.Scheduled&&link.Input=="Execute"&&GameplayGraphEffectCallbacks.IsActionPort(link.Port)&&
+                _document.AuthoringGraph.LocalDefinitions.Any(d=>d.Id==link.Owner&&d.Payload is GameplayEffectDefinitionData);
             // Inspect candidates against the real source contract without editing the document.
             var candidates=link==null?null:(GameplayAuthoringGraph)GameplayGraphFields.Clone(_document.AuthoringGraph);
             var candidate=new GameplayAuthoringNode{Payload=new GameplayActionNodePayload()};
@@ -348,7 +354,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 if(link==null)Canvas.AddConfigurationEntries(menu,position);
                 if(link?.Input==GameplayGraphEffectCallbacks.Input)menu.AddDisabledItem(new GUIContent("技能/时间编排","效果生命周期只消费真实Effect定义，不能调用时间编排。"));
-                else menu.AddItem(new GUIContent("技能/时间编排"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateSequence(_document, position,link)));
+                else if(!effectLink)menu.AddItem(new GUIContent("技能/时间编排"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateSequence(_document, position,link)));
                 if(link==null)menu.AddItem(new GUIContent("[模板]/逐目标伤害与结束"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateDamageTemplate(_document,position)));
                 if(link==null)menu.AddItem(new GUIContent(_document.AuthoringGraph.PrimaryRuleNodeId==null?"技能/施放触发规则":"技能/附加触发规则"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateRule(_document, position)));
             }
@@ -385,6 +391,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 void AddOption(string label,string title,GameplayLocalDefinitionPayload value)
                 {
                     string reason=ContextReason(action,value,slot?.Path);
+                    if(effectLink&&reason!=null)return;
                     var caption=new GUIContent(category+"/"+label,reason??descriptor.Summary);
                     if(reason!=null)menu.AddDisabledItem(caption);
                     else menu.AddItem(caption,false,()=>Create(()=>GameplaySkillAuthoringCommands.CreateAction(

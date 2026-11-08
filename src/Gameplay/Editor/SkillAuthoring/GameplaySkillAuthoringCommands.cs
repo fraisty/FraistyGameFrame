@@ -239,8 +239,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         /// as pending authoring configuration with the same stable callback identity.</summary>
         public static void RemoveEffectCallback(GameplaySkillDocumentAsset document,string owner,string port)=>Transaction(document,"删除生命周期回调及配置",graph=>{
             var local=graph.LocalDefinitions.Single(d=>d.Id==owner);var effect=(GameplayEffectDefinitionData)local.Payload;
+            var removed=graph.Connections.Where(e=>e.FromNodeId==owner&&e.OutputPortKey==port).Select(e=>e.ToNodeId).ToArray();
             graph.Connections.RemoveAll(e=>e.FromNodeId==owner&&e.OutputPortKey==port);GameplayGraphEffectCallbacks.Remove(effect,port);
+            if(GameplayGraphEffectCallbacks.IsActionPort(port))CollectEffectActionNodes(graph,owner,removed);
         });
+
+        public static void ReorderEffectAction(GameplaySkillDocumentAsset document, string connectionId, int direction) =>
+            Transaction(document, "调整生命周期动作顺序", graph => {
+                var edge = graph.Connections.Single(e => e.Id == connectionId);
+                var steps = graph.Connections.Where(e => e.FromNodeId == edge.FromNodeId && e.OutputPortKey == edge.OutputPortKey)
+                    .OrderBy(e => e.Order).ToArray();
+                int at = Array.IndexOf(steps, edge), next = Mathf.Clamp(at + direction, 0, steps.Length - 1);
+                (edge.Order, steps[next].Order) = (steps[next].Order, edge.Order);
+            });
 
         /// <summary>An explicit template inserts ordinary, editable graph entities as a draft.
         /// The author connects its sequence to a rule; no hidden scheduling is inferred.</summary>
@@ -276,6 +287,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool insert=end?.Payload is GameplayActionNodePayload terminal&&terminal.Action is GameplayEndAbilityActionAuthoring;
             if(insert)graph.Connections.Remove(old[0]);
             ConnectInGraph(graph,link.Owner,link.Port,id,link.Input);
+            if (link.Input == "Execute")
+            {
+                string effectOwner = graph.LocalDefinitions.Any(d => d.Id == link.Owner && d.Payload is GameplayEffectDefinitionData) &&
+                    GameplayGraphEffectCallbacks.IsActionPort(link.Port) ? link.Owner : graph.Nodes.Find(n => n.Id == link.Owner)?.CallbackOwnerDefinitionId;
+                if (effectOwner != null) graph.Nodes.Single(n => n.Id == id).CallbackOwnerDefinitionId = effectOwner;
+            }
             if(insert){
                 var node=graph.Nodes.Single(n=>n.Id==id);var timeline=graph.Timelines.FirstOrDefault(t=>node.Payload.Definitions.Any(b=>b.LocalId==t.Id));
                 if(timeline!=null)timeline.Events.Add(new GameplayScheduledEntry{EntryNodeId=end.Id,TimeSeconds=timeline.DurationSeconds,Target=new GameplaySkillContextTargetAuthoring()});
@@ -402,6 +419,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     throw new InvalidOperationException("主卡请明确选择『清空技能内容』或『删除整个技能文件』。");
                 var released = graph.Nodes.Where(n => selected.Contains(n.Id)).SelectMany(n => n.Payload.Definitions)
                     .Select(b => b.LocalId).Where(id => !string.IsNullOrEmpty(id)).ToArray();
+                var callbackChildren = graph.Nodes.Where(n => selected.Contains(n.Id) && n.CallbackOwnerDefinitionId != null)
+                    .SelectMany(n => graph.Connections.Where(e => e.FromNodeId == n.Id).Select(e => (Owner: n.CallbackOwnerDefinitionId, Target: e.ToNodeId))).ToArray();
                 foreach (var id in selected)
                 {
                     foreach(var edge in graph.Connections.Where(e=>e.ToNodeId==id&&e.InputPortKey==GameplayGraphEffectCallbacks.Input).ToArray())DisconnectInGraph(graph,edge.Id);
@@ -411,7 +430,33 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     graph.AdditionalRuleNodeIds.Remove(id);
                     if (graph.PrimaryRuleNodeId == id) graph.PrimaryRuleNodeId = null;
                 }
+                foreach (var group in callbackChildren.GroupBy(e => e.Owner))
+                    CollectEffectActionNodes(graph, group.Key, group.Select(e => e.Target));
                 CollectOwned(graph, released);
+        }
+
+        // Only nodes created by this Effect are eligible. A second caller or Timeline keeps
+        // the reused branch, including its resources and descendants.
+        private static void CollectEffectActionNodes(GameplayAuthoringGraph graph, string owner, IEnumerable<string> roots)
+        {
+            var branch = new HashSet<string>();
+            var outgoing = graph.Connections.ToLookup(e => e.FromNodeId);
+            var privateNodes = graph.Nodes.Where(n => n.CallbackOwnerDefinitionId == owner).Select(n => n.Id).ToHashSet();
+            void Visit(string id)
+            {
+                if (!privateNodes.Contains(id) || !branch.Add(id)) return;
+                foreach (var edge in outgoing[id]) Visit(edge.ToNodeId);
+            }
+            foreach (var root in roots) Visit(root);
+            var shared = graph.Connections.Where(e => !branch.Contains(e.FromNodeId)).Select(e => e.ToNodeId)
+                .Concat(graph.Timelines.SelectMany(t => t.Events).Select(e => e.EntryNodeId)).ToArray();
+            void Retain(string id)
+            {
+                if (!branch.Remove(id)) return;
+                foreach (var edge in outgoing[id]) Retain(edge.ToNodeId);
+            }
+            foreach (var id in shared) Retain(id);
+            if (branch.Count != 0) DeleteFromGraph(graph, branch);
         }
 
         public static void ReorderEvent(GameplaySkillDocumentAsset document, string eventId, int direction)
@@ -461,10 +506,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         var receiver=graph.Nodes.Find(n=>n.Id==edge.ToNodeId);
                         if(receiver?.CallbackOwnerDefinitionId==definition.Id&&!graph.Connections.Any(e=>e.ToNodeId==edge.ToNodeId&&e.FromNodeId!=definition.Id)&&!graph.Timelines.SelectMany(t=>t.Events).Any(e=>e.EntryNodeId==edge.ToNodeId))DeleteFromGraph(graph,new[]{edge.ToNodeId});
                     }
-                    foreach(var receiver in graph.Nodes.Where(n=>n.CallbackOwnerDefinitionId==definition.Id))receiver.CallbackOwnerDefinitionId=null;
+                    var actionRoots = graph.Connections.Where(e => e.FromNodeId == definition.Id && GameplayGraphEffectCallbacks.IsActionPort(e.OutputPortKey))
+                        .Select(e => e.ToNodeId).ToArray();
                     foreach (var binding in definition.Definitions) if (!string.IsNullOrEmpty(binding.LocalId)) candidates.Add(binding.LocalId);
                     graph.Connections.RemoveAll(e => e.FromNodeId == definition.Id);
                     graph.LocalDefinitions.Remove(definition); changed = true;
+                    if (actionRoots.Length > 0) CollectEffectActionNodes(graph, definition.Id, actionRoots);
+                    foreach(var receiver in graph.Nodes.Where(n=>n.CallbackOwnerDefinitionId==definition.Id))receiver.CallbackOwnerDefinitionId=null;
                 }
             } while (changed);
         }
@@ -544,6 +592,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal static void CollectReleased(GameplayAuthoringGraph graph,IEnumerable<string> ids)=>CollectOwned(graph,new HashSet<string>(ids.Where(id=>!string.IsNullOrEmpty(id))));
         internal static void ConnectInGraph(GameplayAuthoringGraph graph,string owner,string port,string target,string input="Execute")
         {
+            if (input == "Execute" && (port == GameplayGraphEffectCallbacks.AddCompletionActions || port == GameplayGraphEffectCallbacks.AddOverflowActions))
+            {
+                var effect = (GameplayEffectDefinitionData)graph.LocalDefinitions.Single(d => d.Id == owner).Payload;
+                string reason = GameplayGraphPortPolicy.Unavailable(effect, port);
+                if (reason != null) throw new InvalidOperationException(reason);
+                if (port == GameplayGraphEffectCallbacks.AddOverflowActions) effect.Stacking.Overflow = GameplayEffectStackOverflowPolicy.ExecuteOverflow;
+                port = GameplayGraphEffectCallbacks.AddActions(effect, port);
+            }
             if(input==GameplayGraphEffectCallbacks.Input){
                 var source=graph.LocalDefinitions.Single(d=>d.Id==owner);var effect=source.Payload as GameplayEffectDefinitionData;
                 if(effect==null||GameplayGraphEffectCallbacks.EffectBinding(graph.Nodes.Single(n=>n.Id==target))==null)throw new InvalidOperationException("生命周期端口需要真实 Effect 定义输入。");

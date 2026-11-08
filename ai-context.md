@@ -458,6 +458,7 @@ Gameplay/
     GameplayEffectAuthoring.cs
     GameplayEffectCompletionAuthoring.cs
     GameplayEffectDefinitionAsset.cs
+    GameplayEffectLifecycleActionAuthoring.cs
     GameplayEffectOverflowAuthoring.cs
     GameplayFloatValueAuthoring.cs
     GameplayLevelFloatValueAuthoring.cs
@@ -524,6 +525,7 @@ Gameplay/
         GameplaySkillPreviewProviders.cs
         GameplayStandardRangePreview.cs
       GameplayBehaviorGraphView.cs
+      GameplayBehaviorGraphView.EffectLifecycle.cs
       GameplayBehaviorGraphView.Lifecycle.cs
       GameplayBehaviorGraphView.MainAnimation.cs
       GameplayBehaviorGraphView.Policies.cs
@@ -580,6 +582,7 @@ Gameplay/
     GameplayEffectDefinition.cs
     GameplayEffectDurationPolicy.cs
     GameplayEffectHandle.cs
+    GameplayEffectLifecycleActions.cs
     GameplayEffectStackingDefinition.cs
   Event/
     GameplayEventData.cs
@@ -60279,6 +60282,10 @@ namespace FRFrame.Gameplay.Authoring
         /// <summary>Only Duration natural expiry runs these, after modifiers, tags and handle have been removed.</summary>
         [SerializeReference] public GameplayEffectCompletionAuthoring[] CompletionExecutions = Array.Empty<GameplayEffectCompletionAuthoring>();
         [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnApplied = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnStackChanged = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnEnterMax = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnPeriod = Array.Empty<GameplaySkillActionAuthoring>();
 
         protected override void ValidateContent(GameplayAuthoringValidationContext v, string p)
         {
@@ -60304,6 +60311,12 @@ namespace FRFrame.Gameplay.Authoring
             ApplicationRequirements?.Validate(v, p + ".ApplicationRequirements");
             OngoingRequirements?.Validate(v, p + ".OngoingRequirements");
             Presentation?.Validate(v, p + ".Presentation");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnApplied, v, p + ".OnApplied");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnStackChanged, v, p + ".OnStackChanged");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnEnterMax, v, p + ".OnEnterMax");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnPeriod, v, p + ".OnPeriod");
+            if (Stacking == null && (OnStackChanged.Length > 0 || OnEnterMax.Length > 0))
+                v.Error(p + ".Stacking", "层数变化和进入满层需要叠层策略。");
             if (CompletionExecutions == null) v.Error(p + ".CompletionExecutions", "Completion list is null.");
             else
             {
@@ -60328,14 +60341,16 @@ namespace FRFrame.Gameplay.Authoring
             if (DurationPolicy == GameplayEffectDurationPolicy.Instant)
             {
                 if (Presentation != null) v.Error(p + ".Presentation", "状态表现需要持续效果。");
+                if (OnApplied.Length + OnStackChanged.Length + OnEnterMax.Length + OnPeriod.Length > 0)
+                    v.Error(p, "生命周期动作需要持续效果。");
                 if (Period != 0 || Stacking != null || modifierCount != 0 || tagCount != 0 || executionCount == 0)
                     v.Error(p, "Instant effects require executions and reject period, stack, modifiers and granted tags.");
                 if (OngoingRequirements != null && ((OngoingRequirements.All?.Length ?? 0) > 0 ||
                     (OngoingRequirements.Any?.Length ?? 0) > 0 || (OngoingRequirements.None?.Length ?? 0) > 0))
                     v.Error(p + ".OngoingRequirements", "Instant effects cannot have ongoing requirements.");
             }
-            else if ((Period == 0 && executionCount != 0) || (Period > 0 && executionCount == 0))
-                v.Error(p, "Persistent effects require executions exactly when Period is positive.");
+            else if ((Period > 0) != (executionCount != 0 || OnPeriod.Length > 0))
+                v.Error(p, "周期大于零时需要周期结算或已连接的周期动作。");
         }
 
         public GameplayEffectDefinition Build(GameplayAuthoringBuildContext context)
@@ -60352,7 +60367,9 @@ namespace FRFrame.Gameplay.Authoring
                 return new GameplayEffectDefinition(DurationPolicy, Duration, Period, modifiers,
                     GameplayTagQueryAuthoring.BuildTags(GrantedTags), executions, Stacking?.Build(context),
                     ApplicationRequirements?.Build(), OngoingRequirements?.Build(), completions,
-                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build(), Presentation?.Build());
+                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build(), Presentation?.Build(),
+                    GameplayEffectLifecycleActionAuthoring.Build(OnApplied, context), GameplayEffectLifecycleActionAuthoring.Build(OnStackChanged, context),
+                    GameplayEffectLifecycleActionAuthoring.Build(OnEnterMax, context), GameplayEffectLifecycleActionAuthoring.Build(OnPeriod, context));
             });
         }
     
@@ -60457,6 +60474,19 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if (definition == null) { v.Error(path, "缺少局部定义。"); continue; }
                 if (Identity(definition.Id, path + ".LocalDefinitions")) definitions[definition.Id] = definition;
                 if (definition.Payload == null || definition.Definitions == null) v.Error(path + "/" + definition.Id, "局部定义 Payload 或引用丢失。");
+                if (definition.Payload is GameplayEffectDefinitionData effect)
+                {
+                    void SlotsAreUnique(IEnumerable<string> identities, string group)
+                    {
+                        if (identities == null) return;
+                        var localIds = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (string id in identities)
+                            if (string.IsNullOrWhiteSpace(id) || !localIds.Add(id))
+                                v.Error(path + "/" + definition.Id + "." + group, "生命周期执行项的 ID 缺失或重复。");
+                    }
+                    SlotsAreUnique(effect.CompletionExecutions?.Select(e => e?.AuthoringId), "CompletionExecutions");
+                    SlotsAreUnique(effect.Stacking?.OverflowExecutions?.Select(e => e?.AuthoringId), "OverflowExecutions");
+                }
             }
             foreach (var timeline in graph.Timelines)
             {
@@ -60494,7 +60524,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 string[] ports;
                 if (nodes.TryGetValue(edge.FromNodeId ?? "", out var from)) ports = GameplayGraphFields.OutputPorts(from);
                 else if (definitions.TryGetValue(edge.FromNodeId ?? "", out var source) && source.Payload != null)
-                    ports = GameplayGraphFields.ActionArrays(source.Payload).Select(s => s.Path).Concat(GameplayGraphEffectCallbacks.Slots(source.Payload).Select(s=>s.Key)).ToArray();
+                    ports = GameplayGraphFields.ActionArrays(source.Payload).Select(GameplayGraphEffectCallbacks.ActionKey).Concat(GameplayGraphEffectCallbacks.Slots(source.Payload).Select(s=>s.Key)).ToArray();
                 else { v.Error(location, "连线来源不存在。"); continue; }
                 bool typed=definitions.TryGetValue(edge.FromNodeId??"",out var effectSource)&&GameplayGraphEffectCallbacks.Slots(effectSource.Payload).Any(s=>s.Key==edge.OutputPortKey);
                 if (!ports.Contains(edge.OutputPortKey) || edge.InputPortKey != (typed?GameplayGraphEffectCallbacks.Input:"Execute") || edge.Order < 0 ||
@@ -60713,7 +60743,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
             RejectLegacyRelationships(payload, id);
             if(payload is GameplayEffectDefinitionData effect)bindings=ActiveCallbacks(id,effect,bindings);
             foreach (var slot in GameplayGraphFields.ActionArrays(payload))
-                slot.Value = BuildOutput(id, slot.Path, false).Select(a => (GameplaySkillActionAuthoring)new CompiledAction(a)).ToArray();
+                slot.Value = BuildOutput(id, GameplayGraphEffectCallbacks.ActionKey(slot), false).Select(a => (GameplaySkillActionAuthoring)new CompiledAction(a)).ToArray();
             Push(id, payload, bindings);
             try { var v = Validation(id); payload.Validate(v, id); Throw(v); return payload.BuildDefinition(_context); }
             finally { _scopes.Pop(); }
@@ -60725,10 +60755,20 @@ namespace FRFrame.Gameplay.Authoring.Graph
         {
             var before=GameplayGraphEffectCallbacks.Slots(effect).ToArray();
             var connected=new HashSet<string>(before.Where(s=>Edges(id,s.Key).Any()||bindings.Any(b=>b.PropertyPath==s.Path)).Select(s=>s.Key));
-            effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>!(e is GameplayApplyEffectOnCompletionAuthoring)||connected.Contains("Completion/"+e.AuthoringId)).ToArray();
+            effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>e switch
+            {
+                GameplayApplyEffectOnCompletionAuthoring => connected.Contains("Completion/"+e.AuthoringId),
+                GameplayEffectCompletionActionsAuthoring => Edges(id,GameplayGraphEffectCallbacks.CompletionActionPrefix+e.AuthoringId).Any(),
+                _ => true
+            }).ToArray();
             if(effect.Stacking!=null){
                 bool hadExecutors=effect.Stacking.OverflowExecutions.Length>0;
-                effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>!(e is GameplayApplyEffectOnOverflowAuthoring)||connected.Contains("Overflow/"+e.AuthoringId)).ToArray();
+                effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>e switch
+                {
+                    GameplayApplyEffectOnOverflowAuthoring => connected.Contains("Overflow/"+e.AuthoringId),
+                    GameplayEffectOverflowActionsAuthoring => Edges(id,GameplayGraphEffectCallbacks.OverflowActionPrefix+e.AuthoringId).Any(),
+                    _ => true
+                }).ToArray();
                 if(hadExecutors&&effect.Stacking.Overflow==GameplayEffectStackOverflowPolicy.ExecuteOverflow&&effect.Stacking.OverflowExecutions.Length==0)effect.Stacking.Overflow=GameplayEffectStackOverflowPolicy.Reject;
             }
             var after=GameplayGraphEffectCallbacks.Slots(effect).ToDictionary(s=>s.Key);
@@ -60815,6 +60855,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         // as an authoring source, and never introduces another executable rule implementation.
         private sealed class CompiledAction : GameplaySkillActionAuthoring
         {
+            public override bool SupportsEffectLifecycle => true;
             private readonly IGameplaySkillAction _action;
             internal CompiledAction(IGameplaySkillAction action) { _action = action; }
             public override void Validate(GameplayAuthoringValidationContext validation, string path) { }
@@ -60867,6 +60908,8 @@ namespace FRFrame.Gameplay.Authoring.Graph
         }
         public static Inputs Output(object payload,string port,Inputs input)
         {
+            if (payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port))
+                return new Inputs(true, input.Point, "Effect 生命周期使用该组的实际目标。", optionalPoint: !input.Point);
             if(payload is GameplayEffectDefinitionData&&GameplayGraphEffectCallbacks.IsPort(payload,port))return input.With(true,input.Point,"Effect 续接到同一有效目标",false,input.OptionalPoint);
             if(payload is GameplaySearchTargetActionAuthoring){
                 if(port=="EachTarget")return input.With(true,true,"搜索的有效逐目标 Actor/Point");
@@ -60941,24 +60984,51 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(conditional!=Requirement.None)result[pair.Key]=conditional;
             }return result;
         }
-        private static string Reason(GameplayAuthoringGraph graph,Dictionary<string,List<Inputs>> inputs,string owner,string port,string target,string inputPort,bool scheduled)
+        private static HashSet<string> LifecycleActions(GameplayAuthoringGraph graph)
         {
-            if(inputPort!="Execute")return null;var node=graph.Nodes.Find(n=>n.Id==target);if(!(node?.Payload is GameplayActionNodePayload))return null;
+            var reached = new HashSet<string>();
+            var localEffects = graph.LocalDefinitions.Where(d => d.Payload is GameplayEffectDefinitionData).Select(d => d.Id).ToHashSet();
+            var roots = graph.Connections.Where(e => e.InputPortKey == "Execute" && localEffects.Contains(e.FromNodeId) &&
+                GameplayGraphEffectCallbacks.IsActionPort(e.OutputPortKey)).ToArray();
+            if (roots.Length == 0) return reached;
+            var outgoing = graph.Connections.Where(e => e.InputPortKey == "Execute").ToLookup(e => e.FromNodeId);
+            void Visit(string id)
+            {
+                if (!reached.Add(id)) return;
+                foreach (var edge in outgoing[id]) Visit(edge.ToNodeId);
+            }
+            foreach (var edge in roots) Visit(edge.ToNodeId);
+            return reached;
+        }
+
+        public static string LifecycleActionReason(GameplaySkillActionAuthoring action) => action?.SupportsEffectLifecycle == true ? null :
+            "此行为依赖施放授权，不能连接 Effect 生命周期。请选择声光、战斗飘字、条件、非施放托管效果或驱散。";
+
+        private static string Reason(GameplayAuthoringGraph graph,Dictionary<string,List<Inputs>> inputs,HashSet<string> lifecycle,string owner,string port,string target,string inputPort,bool scheduled)
+        {
+            if(inputPort!="Execute")return null;var node=graph.Nodes.Find(n=>n.Id==target);if(!(node?.Payload is GameplayActionNodePayload action))return null;
+            var ownerPayload=Payload(graph,owner);
+            if (!scheduled && (lifecycle.Contains(owner) || ownerPayload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port)))
+            {
+                string blocked = LifecycleActionReason(action.Action);
+                if (blocked != null) return blocked;
+            }
             GameplayScheduledEntry entry=null;if(scheduled){var timeline=graph.Timelines.FirstOrDefault(t=>t.Events.Any(e=>e.Id==owner));if(timeline==null)return "时间事件已改变，请重新拖线。";entry=timeline.Events.Single(e=>e.Id==owner);owner=timeline.Id;}
             if(!inputs.TryGetValue(owner,out var paths))paths=new List<Inputs>{Caller()};
             foreach(var input in paths){var actual=entry!=null?Target(entry.Target,input,true):Output(Payload(graph,owner),port,input);string reason=Impossible(RequiredNode(graph,node),actual);if(reason!=null)return reason;}return null;
         }
-        public static string ConnectionReason(GameplayAuthoringGraph graph,string owner,string port,string target,string inputPort="Execute")=>Reason(graph,Analyze(graph),owner,port,target,inputPort,false);
+        public static string ConnectionReason(GameplayAuthoringGraph graph,string owner,string port,string target,string inputPort="Execute")=>Reason(graph,Analyze(graph),LifecycleActions(graph),owner,port,target,inputPort,false);
         public static Func<string,string,string,string,bool,string> ConnectionChecker(GameplayAuthoringGraph graph)
-        {var inputs=Analyze(graph);return (owner,port,target,input,scheduled)=>Reason(graph,inputs,owner,port,target,input,scheduled);}
-        public static string ScheduledReason(GameplayAuthoringGraph graph,string eventId,string target)=>Reason(graph,Analyze(graph),eventId,"Schedule",target,"Execute",true);
+        {var inputs=Analyze(graph);var lifecycle=LifecycleActions(graph);return (owner,port,target,input,scheduled)=>Reason(graph,inputs,lifecycle,owner,port,target,input,scheduled);}
+        public static string ScheduledReason(GameplayAuthoringGraph graph,string eventId,string target)=>Reason(graph,Analyze(graph),LifecycleActions(graph),eventId,"Schedule",target,"Execute",true);
         public static void Validate(GameplayAuthoringGraph graph,GameplayAuthoringValidationContext validation,string path)
         {
             var inputs=Analyze(graph);
+            var lifecycle=LifecycleActions(graph);
             foreach(var pair in inputs){var node=graph.Nodes.Find(n=>n.Id==pair.Key);var local=graph.LocalDefinitions.Find(d=>d.Id==pair.Key);
                 foreach(var input in pair.Value){string reason=Impossible(node!=null?RequiredNode(graph,node):Required(local?.Payload),input);if(reason!=null)validation.Error(path+"/"+pair.Key,reason);}
             }
-            foreach(var edge in graph.Connections){string reason=Reason(graph,inputs,edge.FromNodeId,edge.OutputPortKey,edge.ToNodeId,edge.InputPortKey,false);if(reason!=null)validation.Error(path+"/"+edge.Id,reason);}
+            foreach(var edge in graph.Connections){string reason=Reason(graph,inputs,lifecycle,edge.FromNodeId,edge.OutputPortKey,edge.ToNodeId,edge.InputPortKey,false);if(reason!=null)validation.Error(path+"/"+edge.Id,reason);}
             foreach(var pair in ConditionalInputs(graph))validation.Warning(path+"/"+pair.Key,"条件输入：需调用者提供"+Describe(pair.Value)+"；缺失时运行拒绝并在 Trace 定位，不保证此行为必然执行。");
         }
     }
@@ -60974,12 +61044,39 @@ using UnityEngine;
 
 namespace FRFrame.Gameplay.Authoring.Graph
 {
-    /// <summary>Effect-to-Effect callbacks are typed references to the actual completion/overflow
-    /// executors, never SkillAction arrays. Stable callback IDs survive inspector array reorder.
-    /// A receiver's Effect input consumes its definition only, not its Execute/Then action chain.</summary>
+    /// <summary>Typed Effect references and ordered lifecycle action ports share an executor list.
+    /// A receiver's Effect input consumes only its definition; Execute runs its action chain.</summary>
     public static class GameplayGraphEffectCallbacks
     {
         public const string Completion="AddCompletion",Overflow="AddOverflow",Input="Effect";
+        public const string AddCompletionActions="EffectEvent/AddCompletion", AddOverflowActions="EffectEvent/AddOverflow";
+        public const string CompletionActionPrefix="EffectEvent/Completion/", OverflowActionPrefix="EffectEvent/Overflow/";
+        public const string Applied=nameof(GameplayEffectDefinitionData.OnApplied), StackChanged=nameof(GameplayEffectDefinitionData.OnStackChanged),
+            EnterMax=nameof(GameplayEffectDefinitionData.OnEnterMax), Period=nameof(GameplayEffectDefinitionData.OnPeriod);
+
+        public static bool IsActionPort(string key) => key == Applied || key == StackChanged || key == EnterMax || key == Period ||
+            key?.StartsWith("EffectEvent/", StringComparison.Ordinal) == true;
+
+        /// <summary>Array property paths are for binding; authoring keys survive executor reorder.</summary>
+        public static string ActionKey(GameplayGraphFields.Slot slot) => slot.Owner switch
+        {
+            GameplayEffectCompletionActionsAuthoring completion => CompletionActionPrefix + completion.AuthoringId,
+            GameplayEffectOverflowActionsAuthoring overflow => OverflowActionPrefix + overflow.AuthoringId,
+            _ => slot.Path
+        };
+
+        public static string AddActions(GameplayEffectDefinitionData effect, string port)
+        {
+            if (port == AddCompletionActions)
+            {
+                var item = new GameplayEffectCompletionActionsAuthoring();
+                effect.CompletionExecutions = effect.CompletionExecutions.Append(item).ToArray();
+                return CompletionActionPrefix + item.AuthoringId;
+            }
+            var overflow = new GameplayEffectOverflowActionsAuthoring();
+            effect.Stacking.OverflowExecutions = effect.Stacking.OverflowExecutions.Append(overflow).ToArray();
+            return OverflowActionPrefix + overflow.AuthoringId;
+        }
         public sealed class Slot {public string Key,Path;public bool IsCompletion;}
         public static IEnumerable<Slot> Slots(object value)
         {
@@ -61002,8 +61099,9 @@ namespace FRFrame.Gameplay.Authoring.Graph
         }
         public static void Remove(GameplayEffectDefinitionData effect,string key)
         {
-            if(key.StartsWith("Completion/",StringComparison.Ordinal))effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>"Completion/"+e.AuthoringId!=key).ToArray();
-            else if(effect.Stacking!=null){effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>"Overflow/"+e.AuthoringId!=key).ToArray();if(effect.Stacking.OverflowExecutions.Length==0)effect.Stacking.Overflow=GameplayEffectStackOverflowPolicy.Reject;}
+            if(key.StartsWith("Completion/",StringComparison.Ordinal)||key.StartsWith(CompletionActionPrefix,StringComparison.Ordinal))
+                effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>"Completion/"+e.AuthoringId!=key&&CompletionActionPrefix+e.AuthoringId!=key).ToArray();
+            else if(effect.Stacking!=null){effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>"Overflow/"+e.AuthoringId!=key&&OverflowActionPrefix+e.AuthoringId!=key).ToArray();if(effect.Stacking.OverflowExecutions.Length==0)effect.Stacking.Overflow=GameplayEffectStackOverflowPolicy.Reject;}
         }
         /// <summary>Lossless format upgrade: replace old callback configuration bindings with
         /// explicit typed edges. No executor, ownership flag, effect value or shared identity changes.</summary>
@@ -61215,10 +61313,18 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if(payload is GameplayAreaDefinitionData area&&port=="OnTick"&&area.TickInterval is GameplayConstantFloatValueAuthoring tick&&tick.Value<=0)
                 return "区域周期必须大于零；持续停留是每步回调，不等同于周期。";
             if(payload is GameplayEffectDefinitionData effect){
-                if((port==GameplayGraphEffectCallbacks.Completion||port.StartsWith("Completion/",StringComparison.Ordinal))&&effect.DurationPolicy!=GameplayEffectDurationPolicy.Duration)
+                if((port==GameplayGraphEffectCallbacks.Completion||port==GameplayGraphEffectCallbacks.AddCompletionActions||port.StartsWith("Completion/",StringComparison.Ordinal)||port.StartsWith(GameplayGraphEffectCallbacks.CompletionActionPrefix,StringComparison.Ordinal))&&effect.DurationPolicy!=GameplayEffectDurationPolicy.Duration)
                     return "自然完成仅在 Duration 自然到期时执行；先断开此分支再切换策略。";
-                if((port==GameplayGraphEffectCallbacks.Overflow||port.StartsWith("Overflow/",StringComparison.Ordinal))&&effect.Stacking?.Overflow!=GameplayEffectStackOverflowPolicy.ExecuteOverflow)
+                if((port==GameplayGraphEffectCallbacks.Overflow||port.StartsWith("Overflow/",StringComparison.Ordinal)||port.StartsWith(GameplayGraphEffectCallbacks.OverflowActionPrefix,StringComparison.Ordinal))&&effect.Stacking?.Overflow!=GameplayEffectStackOverflowPolicy.ExecuteOverflow)
                     return "溢出分支仅由 ExecuteOverflow 策略消费。";
+                if (port == GameplayGraphEffectCallbacks.AddOverflowActions && effect.Stacking == null)
+                    return "请先配置叠层，再添加溢出动作。";
+                if (GameplayGraphEffectCallbacks.IsActionPort(port) && effect.DurationPolicy == GameplayEffectDurationPolicy.Instant)
+                    return "只有持续效果可连接生命周期动作。";
+                if ((port == GameplayGraphEffectCallbacks.StackChanged || port == GameplayGraphEffectCallbacks.EnterMax) && effect.Stacking == null)
+                    return "层数变化和进入满层需要叠层策略。";
+                if (port == GameplayGraphEffectCallbacks.Period && effect.Period <= 0)
+                    return "每次周期需要大于零的周期设置。";
             }
             return null;
         }
@@ -61915,6 +62021,7 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable, Preserve]
     public sealed class GameplayDispelEffectsActionAuthoring : GameplaySkillActionAuthoring
     {
+        public override bool SupportsEffectLifecycle => true;
         public GameplayTagQueryAuthoring EffectTags = new GameplayTagQueryAuthoring();
         public override void Validate(GameplayAuthoringValidationContext validation, string path)
         {
@@ -62165,6 +62272,7 @@ namespace FRFrame.Gameplay.Authoring
     {
         public GameplayEffectDefinitionAsset Effect;
         public bool OwnedByAbility;
+        public override bool SupportsEffectLifecycle => !OwnedByAbility;
         public override void Validate(GameplayAuthoringValidationContext v, string p)
         {
             v.Asset(Effect, p + ".Effect");
@@ -62895,13 +63003,75 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayEffectCompletionAuthoring[] CompletionExecutions = Array.Empty<GameplayEffectCompletionAuthoring>();
 
         [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnApplied = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnStackChanged = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnEnterMax = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnPeriod = Array.Empty<GameplaySkillActionAuthoring>();
 
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        private GameplayEffectDefinitionData CaptureValues() => new GameplayEffectDefinitionData { DurationPolicy = DurationPolicy, Duration = Duration, Period = Period, EffectTags = EffectTags, PeriodicStart = PeriodicStart, DurationValue = DurationValue, PeriodValue = PeriodValue, Modifiers = Modifiers, GrantedTags = GrantedTags, Stacking = Stacking, ApplicationRequirements = ApplicationRequirements, OngoingRequirements = OngoingRequirements, Executions = Executions, CompletionExecutions = CompletionExecutions, Presentation = Presentation };
+        private GameplayEffectDefinitionData CaptureValues() => new GameplayEffectDefinitionData { DurationPolicy = DurationPolicy, Duration = Duration, Period = Period, EffectTags = EffectTags, PeriodicStart = PeriodicStart, DurationValue = DurationValue, PeriodValue = PeriodValue, Modifiers = Modifiers, GrantedTags = GrantedTags, Stacking = Stacking, ApplicationRequirements = ApplicationRequirements, OngoingRequirements = OngoingRequirements, Executions = Executions, CompletionExecutions = CompletionExecutions, Presentation = Presentation, OnApplied = OnApplied, OnStackChanged = OnStackChanged, OnEnterMax = OnEnterMax, OnPeriod = OnPeriod };
         public GameplayEffectDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => CaptureValues().Build(context));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 
+    }
+}
+````
+
+## File: Gameplay/Authoring/GameplayEffectLifecycleActionAuthoring.cs
+````csharp
+using System;
+using System.Linq;
+using UnityEngine;
+using UnityEngine.Scripting;
+
+namespace FRFrame.Gameplay.Authoring
+{
+    /// <summary>One ordered action slot amongst the existing typed overflow executions.</summary>
+    [Serializable, Preserve]
+    public sealed class GameplayEffectOverflowActionsAuthoring : GameplayEffectOverflowAuthoring
+    {
+        [SerializeReference] public GameplaySkillActionAuthoring[] Actions = Array.Empty<GameplaySkillActionAuthoring>();
+        public override void Validate(GameplayAuthoringValidationContext validation, string path) =>
+            GameplayEffectLifecycleActionAuthoring.Validate(Actions, validation, path + ".Actions");
+        public override IGameplayEffectOverflowExecution Build(GameplayAuthoringBuildContext context) =>
+            new GameplayEffectLifecycleActions(Actions.Select(action => context.BuildAction(action)));
+    }
+
+    /// <summary>One ordered action slot amongst the existing natural-completion executions.</summary>
+    [Serializable, Preserve]
+    public sealed class GameplayEffectCompletionActionsAuthoring : GameplayEffectCompletionAuthoring
+    {
+        [SerializeReference] public GameplaySkillActionAuthoring[] Actions = Array.Empty<GameplaySkillActionAuthoring>();
+        public override void Validate(GameplayAuthoringValidationContext validation, string path) =>
+            GameplayEffectLifecycleActionAuthoring.Validate(Actions, validation, path + ".Actions");
+        public override IGameplayEffectCompletionExecution Build(GameplayAuthoringBuildContext context) =>
+            new GameplayEffectLifecycleActions(Actions.Select(action => context.BuildAction(action)));
+    }
+
+    internal static class GameplayEffectLifecycleActionAuthoring
+    {
+        internal static GameplayEffectLifecycleActions Build(GameplaySkillActionAuthoring[] actions, GameplayAuthoringBuildContext context) =>
+            actions.Length == 0 ? null : new GameplayEffectLifecycleActions(actions.Select(action => context.BuildAction(action)));
+
+        internal static void Validate(GameplaySkillActionAuthoring[] actions, GameplayAuthoringValidationContext validation, string path)
+        {
+            for (int i = 0; i < actions.Length; i++)
+            {
+                var action = actions[i];
+                string location = path + "[" + i + "]";
+                if (action?.SupportsEffectLifecycle != true)
+                {
+                    validation.Error(location, "此行为需要施放授权，不能用于 Effect 生命周期。");
+                    continue;
+                }
+                action.Validate(validation, location);
+                action.ValidateReferences(validation, location);
+                if (action is GameplaySkillBranchActionAuthoring branch)
+                    foreach (var nested in Graph.GameplayGraphFields.ActionArrays(branch))
+                        Validate((GameplaySkillActionAuthoring[])nested.Value, validation, location + "." + nested.Path);
+            }
+        }
     }
 }
 ````
@@ -63200,6 +63370,8 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable]
     public abstract class GameplaySkillActionAuthoring
     {
+        /// <summary>Opt in only for synchronous actions that need no active ability grant and can use the Effect target as host.</summary>
+        public virtual bool SupportsEffectLifecycle => false;
         public abstract void Validate(GameplayAuthoringValidationContext validation, string path);
         public abstract IGameplaySkillAction Build(GameplayAuthoringBuildContext context);
         public virtual void ValidateReferences(GameplayAuthoringValidationContext validation, string path) { }
@@ -63373,6 +63545,7 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable, Preserve]
     public sealed class GameplaySkillBranchActionAuthoring : GameplaySkillActionAuthoring
     {
+        public override bool SupportsEffectLifecycle => true;
         [UnityEngine.SerializeReference] public GameplaySkillConditionAuthoring Condition;
         [UnityEngine.SerializeReference] public GameplaySkillActionAuthoring[] TrueActions = Array.Empty<GameplaySkillActionAuthoring>();
         [UnityEngine.SerializeReference] public GameplaySkillActionAuthoring[] FalseActions = Array.Empty<GameplaySkillActionAuthoring>();
@@ -64895,8 +65068,8 @@ namespace FRFrame.Gameplay.Editor
             Labels["AudioLoop"]="循环音效";Labels["Backend"]="播放后端";Labels["BlendDuration"]="混合时长（秒）";Labels["Clip"]="动画或音频片段";
             Labels["CriticalColor"]="暴击颜色";Labels["CriticalPrefix"]="暴击前缀";Labels["Cue"]="表现资源";Labels["DamageColor"]="伤害颜色";Labels["DamagePrefix"]="伤害前缀";
             Labels["FadeStartRatio"]="开始淡出的进度（0～1）";Labels["FixedPoint"]="固定位置";Labels["Follow"]="跟随位置";Labels["FollowSource"]="持续跟随来源";
-            Labels["Presentation"]="效果表现";Labels["StatusPrefab"]="持续状态预制体";Labels["FirstApplicationVfx"]="首次应用特效";
-            Labels["FirstApplicationOffset"]="首次特效偏移";Labels["FirstApplicationSeconds"]="首次特效时长（秒）";
+            Labels["Presentation"]="状态外观";Labels["StatusPrefab"]="持续状态预制体";
+            Labels["OnApplied"]="首次成功应用";Labels["OnStackChanged"]="层数变化";Labels["OnEnterMax"]="进入满层";Labels["OnPeriod"]="每次周期";
             Labels["ImmuneText"]="免疫文字";Labels["Layer"]="Animator层";Labels["Material"]="材质";Labels["MinimumSeparation"]="最小间距";
             Labels["MirrorFacing"]="随朝向镜像";Labels["MissColor"]="未命中颜色";Labels["MissText"]="未命中文字";Labels["ModelPrefab"]="Cubism模型预制体";
             Labels["NumberFormat"]="数字格式";Labels["OwnerSkillId"]="拥有者技能编号（0使用当前）";Labels["Pitch"]="音调";Labels["Point"]="地点来源或坐标";
@@ -66888,7 +67061,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("持续 / 周期（秒）","Period=0不执行周期；动态数值沿用正式求值器，非启用字段保留旧值。","DurationPolicy","Duration","DurationValue","Period","PeriodValue","PeriodicStart");
                 yield return Group("标签 / 应用与持续门禁","EffectTags用于驱散分类，GrantedTags在存续期间贡献标签。","EffectTags","GrantedTags","ApplicationRequirements","OngoingRequirements");
                 if ((value is GameplayEffectDefinitionData effect ? effect.DurationPolicy : ((GameplayEffectDefinitionAsset)value).DurationPolicy) != GameplayEffectDurationPolicy.Instant)
-                    yield return Group("效果表现","首次应用播放一次；持续表现随当前 Effect 实例清理。溢出声光在下方溢出执行中配置。","Presentation");
+                {
+                    yield return Group("状态外观","由实际 Effect 句柄创建、更新和回收；一次性表现从生命周期动作行连接。","Presentation");
+                    yield return Group("生命周期动作","只有真实提交才触发。满层是到达上限，溢出是满层后再次申请。","OnApplied","OnStackChanged","OnEnterMax","OnPeriod");
+                }
                 yield return Group("属性修改 / 结算","所有Execution均可配置，按正式数组顺序执行。","Modifiers","Executions");
                 yield return Group("叠层 / 溢出 / 自然完成","Overflow与Completion是不同的typed数组；取消/驱散不运行自然完成。","Stacking","CompletionExecutions");
             }
@@ -68053,8 +68229,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var definition = _document.AuthoringGraph.LocalDefinitions.Find(d => d.Id == binding.LocalId);
                 
                 if(definition!=null&&_outputs.Values.Any(p=>((Socket)p.userData).Owner==definition.Id)){var shared=new Label("复用局部配置 · 后续端口位于首个消费者卡片");shared.style.whiteSpace=WhiteSpace.Normal;shared.style.paddingLeft=10;card.extensionContainer.Add(shared);definition=null;}
-                if (definition != null) foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
-                if(definition!=null)foreach(var port in GameplayGraphEffectCallbacks.Ports(definition.Payload))ResourcePort(card,definition,binding,port);
+                if (definition?.Payload is GameplayEffectDefinitionData effect) AddEffectLifecycle(card, definition, effect);
+                else if (definition != null) foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
                 
             var timeline = _document.AuthoringGraph.Timelines.Find(t => t.Id == binding.LocalId);
                 if (timeline != null)
@@ -68165,6 +68341,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             port.RemoveManipulator(port.edgeConnector);port.AddManipulator(new EdgeConnector<Edge>(new CreationConnector(this)));
             port.portName = GameplaySkillFieldSchema.PortName(key); port.userData = new Socket { Owner = owner, Port = key, Scheduled = scheduled };
             port.AddManipulator(new ContextualMenuManipulator(evt=>{
+                if(local?.Payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(key))
+                {
+                    var socket = (Socket)port.userData;
+                    var status = GameplaySkillAuthoringCommands.IsReadOnly(_document) || EditorApplication.isPlayingOrWillChangePlaymode
+                        ? DropdownMenuAction.Status.Disabled : DropdownMenuAction.Status.Normal;
+                    evt.menu.AppendAction("添加并连接…", _ => ShowMenu(port.worldBound.center, source: socket), status);
+                    evt.menu.AppendAction("连接已有行为…", _ => ShowExistingEffectActions(socket, port.worldBound.center), status);
+                    evt.menu.AppendAction("编辑生命周期配置", _ => { Selected?.Invoke(card.viewDataKey); ConfigurationOwner?.OpenDetails(); });
+                    foreach (var edge in port.connections)
+                    {
+                        string id = edge.input.node.viewDataKey;
+                        evt.menu.AppendAction("定位 → " + edge.input.node.title, _ => FocusNode(id));
+                    }
+                }
                 foreach(var edge in port.connections.ToArray()){
                     string id=(edge.userData as Socket)?.Owner;
                     if(id==null)continue;
@@ -68307,6 +68497,135 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private void Try(Action action) { try { action();Feedback?.Invoke(null); } catch (Exception e) { Feedback?.Invoke(e.Message); } }
     }
 
+}
+````
+
+## File: Gameplay/Editor/SkillAuthoring/GameplayBehaviorGraphView.EffectLifecycle.cs
+````csharp
+using System;
+using System.Linq;
+using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
+using UnityEditor;
+using UnityEditor.Experimental.GraphView;
+using UnityEngine;
+using UnityEngine.UIElements;
+using Node = UnityEditor.Experimental.GraphView.Node;
+
+namespace FRFrame.Gameplay.Editor.SkillAuthoring
+{
+    public sealed partial class GameplayBehaviorGraphView
+    {
+        private void AddEffectLifecycle(Node card, GameplayLocalDefinition definition, GameplayEffectDefinitionData effect)
+        {
+            if (effect.DurationPolicy == GameplayEffectDurationPolicy.Instant) return;
+            string owner = definition.Id;
+            var section = new VisualElement { name = "EffectLifecycle", style = { marginLeft = 9, marginRight = 5, marginBottom = 5 } };
+            card.extensionContainer.Add(section);
+            section.Add(new Label("生命周期") { style = { unityFontStyleAndWeight = FontStyle.Bold, marginTop = 4 } });
+            Row("首次成功应用", GameplayGraphEffectCallbacks.Applied, "新的一组效果提交后执行。免疫或失败不会触发。");
+            if (effect.Stacking != null)
+            {
+                Row("层数变化", GameplayGraphEffectCallbacks.StackChanged, "仅该组真实增减层。持续外观自动读取层数。");
+                Row("进入满层", GameplayGraphEffectCallbacks.EnterMax, "从低于上限变为满层。满层外观自动更新；再次申请超限才是溢出。");
+            }
+            if (effect.Period > 0)
+                Row(effect.Executions.Length == 0 ? "每次周期" : "每次周期 · 先结算", GameplayGraphEffectCallbacks.Period,
+                    "使用 Effect 时钟的实际周期；原结算在同一周期先执行。");
+            if (effect.Stacking != null)
+            {
+                var overflow = Row("叠层溢出", GameplayGraphEffectCallbacks.AddOverflowActions,
+                    "再次申请超限时按下列顺序执行；可添加普通动作或引用后续 Effect 定义。", "+ 行为");
+                if (effect.Stacking.Overflow == GameplayEffectStackOverflowPolicy.ExecuteOverflow)
+                    Dock(overflow, GameplayGraphEffectCallbacks.Overflow, "+ 效果", "添加仅消费定义的后续 Effect。");
+                for (int i = 0; i < effect.Stacking.OverflowExecutions.Length; i++)
+                {
+                    var item = effect.Stacking.OverflowExecutions[i];
+                    string step = (i + 1) + " · ";
+                    if (item is GameplayApplyEffectOnOverflowAuthoring)
+                        Row(step + "施加效果", "Overflow/" + item.AuthoringId, "只消费所连接的 Effect 定义。", "");
+                    else if (item is GameplayEffectOverflowActionsAuthoring)
+                        Row(step + "行为", GameplayGraphEffectCallbacks.OverflowActionPrefix + item.AuthoringId,
+                            "在同一溢出列表的这个位置执行普通动作。", "");
+                    else if (item is GameplayRemoveCurrentOnOverflowAuthoring)
+                        Row(step + "移除当前组", null, "精确清理这次溢出的组。");
+                    else if (item != null) Row(step + GameplaySkillNodeDescriptors.Get(item.GetType()).DisplayName, null, "由此溢出执行项直接消费。");
+                }
+            }
+            if (effect.DurationPolicy == GameplayEffectDurationPolicy.Duration)
+            {
+                var expiry = Row("自然到期", GameplayGraphEffectCallbacks.AddCompletionActions,
+                    "先清理效果，再按顺序运行后续；驱散和取消不触发。", "+ 行为");
+                Dock(expiry, GameplayGraphEffectCallbacks.Completion, "+ 效果", "添加仅消费定义的后续 Effect。");
+                for (int i = 0; i < effect.CompletionExecutions.Length; i++)
+                {
+                    var item = effect.CompletionExecutions[i];
+                    string step = (i + 1) + " · ";
+                    if (item is GameplayApplyEffectOnCompletionAuthoring)
+                        Row(step + "施加效果", "Completion/" + item.AuthoringId, "只消费所连接的 Effect 定义。", "");
+                    else if (item is GameplayEffectCompletionActionsAuthoring)
+                        Row(step + "行为", GameplayGraphEffectCallbacks.CompletionActionPrefix + item.AuthoringId,
+                            "在自然到期列表的这个位置运行。", "");
+                }
+            }
+            Row("移除 · 自动回收状态外观", null, "驱散、取消和溢出清理具体 Effect；目标死亡时释放视图。规则保留的状态在复活时可恢复。");
+
+            VisualElement Row(string caption, string key, string hint, string portCaption = "")
+            {
+                var row = new VisualElement { style = { flexDirection = FlexDirection.Row, alignItems = Align.Center, minHeight = 20 }, tooltip = hint };
+                var label = new Label(caption) { style = { flexGrow = 1, flexShrink = 1, overflow = Overflow.Hidden, textOverflow = TextOverflow.Ellipsis, whiteSpace = WhiteSpace.NoWrap } };
+                if (key != null)
+                {
+                    label.AddToClassList("effect-lifecycle-row");
+                    label.userData = (owner, key, caption, hint);
+                    Dock(row, key, portCaption, hint);
+                }
+                row.Insert(0, label);
+                section.Add(row);
+                return row;
+            }
+
+            void Dock(VisualElement row, string key, string caption, string hint)
+            {
+                var port = AddPort(card, owner, key);
+                port.RemoveFromHierarchy();
+                port.portName = caption.Length == 0 && !_document.AuthoringGraph.Connections.Any(e => e.FromNodeId == owner && e.OutputPortKey == key) ? "+" : caption;
+                port.tooltip = hint;
+                port.style.flexShrink = 0;
+                if (GameplayGraphEffectCallbacks.IsActionPort(key)) port.portColor = new Color(.35f, .83f, .81f);
+                row.Add(port);
+            }
+        }
+
+        private void RefreshEffectLifecycleRows(Node card)
+        {
+            var graph = _document.AuthoringGraph;
+            foreach (var label in card.extensionContainer.Query<Label>(className: "effect-lifecycle-row").ToList())
+            {
+                var (owner, key, caption, hint) = ((string, string, string, string))label.userData;
+                string steps = GameplaySkillNodeDisplay.EffectActionSteps(graph, owner, key);
+                string text = string.IsNullOrEmpty(steps) ? caption : caption + " · " + steps;
+                if (label.text != text) label.text = text;
+                label.tooltip = hint + "\n" + text;
+            }
+        }
+
+        private void ShowExistingEffectActions(Socket source, Vector2 anchor)
+        {
+            var graph = _document.AuthoringGraph;
+            var check = GameplayGraphContextPolicy.ConnectionChecker(graph);
+            GameplaySkillCreationMenu.Show(this, "连接已有行为", menu => {
+                foreach (var node in graph.Nodes.Where(n => n.Payload is GameplayActionNodePayload))
+                {
+                    if (check(source.Owner, source.Port, node.Id, "Execute", false) != null ||
+                        graph.Connections.Any(e => e.FromNodeId == source.Owner && e.OutputPortKey == source.Port && e.ToNodeId == node.Id)) continue;
+                    string id = node.Id;
+                    menu.AddItem(new GUIContent(GameplaySkillNodeDisplay.Name(node, graph) + " · " + id.Substring(0, 5)), false,
+                        () => Try(() => GameplaySkillAuthoringCommands.Connect(_document, source.Owner, source.Port, id)));
+                }
+            }, anchor);
+        }
+    }
 }
 ````
 
@@ -68639,7 +68958,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 card.extensionContainer.Add(new Button(()=>ShowPolicyChoices(role)){text="更换配置 / 关联来源…"});
                 card.extensionContainer.Add(new Button(()=>DetachPolicy(role)){text="清除关联…（临时重连 / Undo）"});
             }else card.extensionContainer.Add(new Button(()=>ReconnectPolicy(role)){text="重新关联此配置"});
-            if(role=="Recharge"&&connected){var binding=AbilityPayload.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect");var local=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding?.LocalId);if(local!=null&&!_outputs.Values.Any(p=>(p.userData as Socket)?.Owner==local.Id)){foreach(var branch in GameplayGraphFields.ActionArrays(local.Payload))ResourcePort(card,local,binding,branch.Path);foreach(var branch in GameplayGraphEffectCallbacks.Ports(local.Payload))ResourcePort(card,local,binding,branch);}}
+            if(role=="Recharge"&&connected){var binding=AbilityPayload.Definitions.SingleOrDefault(b=>b.PropertyPath=="CooldownEffect");var local=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding?.LocalId);if(local!=null&&!_outputs.Values.Any(p=>(p.userData as Socket)?.Owner==local.Id)){foreach(var branch in GameplayGraphFields.ActionArrays(local.Payload).Select(GameplayGraphEffectCallbacks.ActionKey).Where(key=>_document.AuthoringGraph.Connections.Any(e=>e.FromNodeId==local.Id&&e.OutputPortKey==key)))ResourcePort(card,local,binding,branch);foreach(var branch in GameplayGraphEffectCallbacks.Ports(local.Payload))ResourcePort(card,local,binding,branch);}}
             string key=GameplaySkillEditorState.Key(_document)+".Policy."+role;
             var position=SessionState.GetVector3(key,new Vector3(skill.GetPosition().x-390,skill.GetPosition().y+(role=="Cost"?0:300),0));
             card.SetPosition(new Rect(position,new Vector2(310,0)));AddElement(card);_policyCards[role]=card;card.RefreshExpandedState();card.RefreshPorts();
@@ -68894,10 +69213,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             _nodeIndexes.Clear();_consumerCards.Clear();_externalSources.Clear();_externalDependencyGuids.Clear();_connectionChecker=null;
             if(!_document)return;var graph=_document.AuthoringGraph;
             var definitions=graph.LocalDefinitions.ToDictionary(d=>d.Id);var timelines=graph.Timelines.ToDictionary(t=>t.Id);
+            var graphNodes=graph.Nodes.ToDictionary(n=>n.Id);var outgoing=graph.Connections.ToLookup(e=>e.FromNodeId);
             for(int i=0;i<graph.Nodes.Count;i++){
                 var node=graph.Nodes[i];_nodeIndexes[node.Id]=i;
                 string card=node.Id==graph.PrimaryRuleNodeId&&InlinePrimaryRule(_document)?graph.AbilityNodeId:node.Id;
-                var seen=new HashSet<string>();Visit(node.Id,node.Payload.Definitions);
+                var seen=new HashSet<string>();var lifecycle=new HashSet<string>();Visit(node.Id,node.Payload.Definitions);
                 void Visit(string owner,IEnumerable<GameplayDefinitionBinding> bindings){
                     if(string.IsNullOrEmpty(owner)||!seen.Add(owner))return;
                     if(!_consumerCards.TryGetValue(owner,out var cards))_consumerCards[owner]=cards=new HashSet<string>();cards.Add(card);
@@ -68905,6 +69225,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         if(definitions.TryGetValue(b.LocalId,out var local))Visit(local.Id,local.Definitions);
                         if(timelines.TryGetValue(b.LocalId,out var timeline)){Visit(timeline.Id,Array.Empty<GameplayDefinitionBinding>());foreach(var e in timeline.Events)Visit(e.EntryNodeId,graph.Nodes.Find(n=>n.Id==e.EntryNodeId)?.Payload.Definitions??new List<GameplayDefinitionBinding>());}
                     }
+                    if(definitions.TryGetValue(owner,out var definition)&&definition.Payload is GameplayEffectDefinitionData)
+                        foreach(var edge in outgoing[owner])VisitStep(edge.ToNodeId,edge.InputPortKey=="Execute");
+                }
+                void VisitStep(string id,bool execute){
+                    if(!graphNodes.TryGetValue(id,out var target))return;
+                    Visit(id,target.Payload.Definitions);
+                    if(execute&&lifecycle.Add(id))foreach(var edge in outgoing[id].Where(e=>e.OutputPortKey=="Then"))VisitStep(edge.ToNodeId,true);
                 }
             }
             foreach(var source in _externalSources){string path=UnityEditor.AssetDatabase.GetAssetPath(source);if(!string.IsNullOrEmpty(path))_externalDependencyGuids.UnionWith(UnityEditor.AssetDatabase.GetDependencies(path,true).Select(UnityEditor.AssetDatabase.AssetPathToGUID).Where(guid=>!string.IsNullOrEmpty(guid)));}
@@ -68934,6 +69261,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     Set("ExecutionStatus",(active.Contains(id)?"正式执行":data.Payload is GameplayRuleNodePayload?"未启用 · 不参与执行":"未接入执行流程 · 不参与执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地"));
                     var editors=node.extensionContainer.Query<GameplaySkillCardEditor>().ToList();foreach(var editor in editors)editor.Refresh();
                     Set("BusinessSummary",GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,editors.Any(e=>e.HasFields)));
+                    RefreshEffectLifecycleRows(node);
                     if(data.Payload is GameplayAbilityNodePayload)Set("AbilitySummary",_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能");
                     foreach(var binding in data.Payload.Definitions){var definition=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);if(definition!=null)Set("Definition-"+definition.Id,DefinitionSummary(definition));}
                     foreach(var label in node.extensionContainer.Query<Label>(className:"animation-source").ToList()){var animation=Record((string)label.userData);if(animation==null)continue;object values=GameplaySkillNodeDisplay.BoundValues(animation,_document.AuthoringGraph);string text=IsTimelineInline(animation.Id)?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(animation.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):GameplaySkillNodeDisplay.EventLabel(animation,_document.AuthoringGraph)+" · 参数在独立动画卡";if(label.text!=text)label.text=text;}
@@ -69332,8 +69660,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public bool Layout {get;private set;}
         public IReadOnlyCollection<string> Owners {get;private set;}
         private GameplaySkillAuthoringChange() { }
-        private static readonly HashSet<string> StructuralFields=new HashSet<string>{"Action","Payload","Settings","Target","Trigger","size","Mode","CastEvent","Scope","Once"};
-        private static readonly HashSet<string> ContextFields=new HashSet<string>{"Target","Trigger","Conditions","PreserveTriggerContext","Shape","Origin","Direction","Directional","RotateOwner","DurationPolicy","Motion","StraightDestination","Overflow","Period","PeriodValue","TickInterval","Cancel"};
+        private static readonly HashSet<string> StructuralFields=new HashSet<string>{"Action","Payload","Settings","Target","Trigger","size","Mode","CastEvent","Scope","Once","Stacking","DurationPolicy","Period","Overflow"};
+        private static readonly HashSet<string> ContextFields=new HashSet<string>{"Target","Trigger","Conditions","PreserveTriggerContext","Shape","Origin","Direction","Directional","RotateOwner","DurationPolicy","Motion","StraightDestination","Overflow","Period","PeriodValue","TickInterval","Cancel","OwnedByAbility"};
         public static GameplaySkillAuthoringChange Full(bool structural=false)=>new GameplaySkillAuthoringChange{Unknown=true,Structural=structural,Context=true,Owners=Array.Empty<string>()};
         public static GameplaySkillAuthoringChange Local(IEnumerable<string> owners,bool layout=false)=>new GameplaySkillAuthoringChange{Owners=owners.Where(x=>!string.IsNullOrEmpty(x)).Distinct().ToArray(),Layout=layout};
         /// <summary>Array indexes are used only while resolving this immediate edit. Consumers
@@ -69613,8 +69941,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         /// as pending authoring configuration with the same stable callback identity.</summary>
         public static void RemoveEffectCallback(GameplaySkillDocumentAsset document,string owner,string port)=>Transaction(document,"删除生命周期回调及配置",graph=>{
             var local=graph.LocalDefinitions.Single(d=>d.Id==owner);var effect=(GameplayEffectDefinitionData)local.Payload;
+            var removed=graph.Connections.Where(e=>e.FromNodeId==owner&&e.OutputPortKey==port).Select(e=>e.ToNodeId).ToArray();
             graph.Connections.RemoveAll(e=>e.FromNodeId==owner&&e.OutputPortKey==port);GameplayGraphEffectCallbacks.Remove(effect,port);
+            if(GameplayGraphEffectCallbacks.IsActionPort(port))CollectEffectActionNodes(graph,owner,removed);
         });
+
+        public static void ReorderEffectAction(GameplaySkillDocumentAsset document, string connectionId, int direction) =>
+            Transaction(document, "调整生命周期动作顺序", graph => {
+                var edge = graph.Connections.Single(e => e.Id == connectionId);
+                var steps = graph.Connections.Where(e => e.FromNodeId == edge.FromNodeId && e.OutputPortKey == edge.OutputPortKey)
+                    .OrderBy(e => e.Order).ToArray();
+                int at = Array.IndexOf(steps, edge), next = Mathf.Clamp(at + direction, 0, steps.Length - 1);
+                (edge.Order, steps[next].Order) = (steps[next].Order, edge.Order);
+            });
 
         /// <summary>An explicit template inserts ordinary, editable graph entities as a draft.
         /// The author connects its sequence to a rule; no hidden scheduling is inferred.</summary>
@@ -69650,6 +69989,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool insert=end?.Payload is GameplayActionNodePayload terminal&&terminal.Action is GameplayEndAbilityActionAuthoring;
             if(insert)graph.Connections.Remove(old[0]);
             ConnectInGraph(graph,link.Owner,link.Port,id,link.Input);
+            if (link.Input == "Execute")
+            {
+                string effectOwner = graph.LocalDefinitions.Any(d => d.Id == link.Owner && d.Payload is GameplayEffectDefinitionData) &&
+                    GameplayGraphEffectCallbacks.IsActionPort(link.Port) ? link.Owner : graph.Nodes.Find(n => n.Id == link.Owner)?.CallbackOwnerDefinitionId;
+                if (effectOwner != null) graph.Nodes.Single(n => n.Id == id).CallbackOwnerDefinitionId = effectOwner;
+            }
             if(insert){
                 var node=graph.Nodes.Single(n=>n.Id==id);var timeline=graph.Timelines.FirstOrDefault(t=>node.Payload.Definitions.Any(b=>b.LocalId==t.Id));
                 if(timeline!=null)timeline.Events.Add(new GameplayScheduledEntry{EntryNodeId=end.Id,TimeSeconds=timeline.DurationSeconds,Target=new GameplaySkillContextTargetAuthoring()});
@@ -69776,6 +70121,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     throw new InvalidOperationException("主卡请明确选择『清空技能内容』或『删除整个技能文件』。");
                 var released = graph.Nodes.Where(n => selected.Contains(n.Id)).SelectMany(n => n.Payload.Definitions)
                     .Select(b => b.LocalId).Where(id => !string.IsNullOrEmpty(id)).ToArray();
+                var callbackChildren = graph.Nodes.Where(n => selected.Contains(n.Id) && n.CallbackOwnerDefinitionId != null)
+                    .SelectMany(n => graph.Connections.Where(e => e.FromNodeId == n.Id).Select(e => (Owner: n.CallbackOwnerDefinitionId, Target: e.ToNodeId))).ToArray();
                 foreach (var id in selected)
                 {
                     foreach(var edge in graph.Connections.Where(e=>e.ToNodeId==id&&e.InputPortKey==GameplayGraphEffectCallbacks.Input).ToArray())DisconnectInGraph(graph,edge.Id);
@@ -69785,7 +70132,33 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     graph.AdditionalRuleNodeIds.Remove(id);
                     if (graph.PrimaryRuleNodeId == id) graph.PrimaryRuleNodeId = null;
                 }
+                foreach (var group in callbackChildren.GroupBy(e => e.Owner))
+                    CollectEffectActionNodes(graph, group.Key, group.Select(e => e.Target));
                 CollectOwned(graph, released);
+        }
+
+        // Only nodes created by this Effect are eligible. A second caller or Timeline keeps
+        // the reused branch, including its resources and descendants.
+        private static void CollectEffectActionNodes(GameplayAuthoringGraph graph, string owner, IEnumerable<string> roots)
+        {
+            var branch = new HashSet<string>();
+            var outgoing = graph.Connections.ToLookup(e => e.FromNodeId);
+            var privateNodes = graph.Nodes.Where(n => n.CallbackOwnerDefinitionId == owner).Select(n => n.Id).ToHashSet();
+            void Visit(string id)
+            {
+                if (!privateNodes.Contains(id) || !branch.Add(id)) return;
+                foreach (var edge in outgoing[id]) Visit(edge.ToNodeId);
+            }
+            foreach (var root in roots) Visit(root);
+            var shared = graph.Connections.Where(e => !branch.Contains(e.FromNodeId)).Select(e => e.ToNodeId)
+                .Concat(graph.Timelines.SelectMany(t => t.Events).Select(e => e.EntryNodeId)).ToArray();
+            void Retain(string id)
+            {
+                if (!branch.Remove(id)) return;
+                foreach (var edge in outgoing[id]) Retain(edge.ToNodeId);
+            }
+            foreach (var id in shared) Retain(id);
+            if (branch.Count != 0) DeleteFromGraph(graph, branch);
         }
 
         public static void ReorderEvent(GameplaySkillDocumentAsset document, string eventId, int direction)
@@ -69835,10 +70208,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         var receiver=graph.Nodes.Find(n=>n.Id==edge.ToNodeId);
                         if(receiver?.CallbackOwnerDefinitionId==definition.Id&&!graph.Connections.Any(e=>e.ToNodeId==edge.ToNodeId&&e.FromNodeId!=definition.Id)&&!graph.Timelines.SelectMany(t=>t.Events).Any(e=>e.EntryNodeId==edge.ToNodeId))DeleteFromGraph(graph,new[]{edge.ToNodeId});
                     }
-                    foreach(var receiver in graph.Nodes.Where(n=>n.CallbackOwnerDefinitionId==definition.Id))receiver.CallbackOwnerDefinitionId=null;
+                    var actionRoots = graph.Connections.Where(e => e.FromNodeId == definition.Id && GameplayGraphEffectCallbacks.IsActionPort(e.OutputPortKey))
+                        .Select(e => e.ToNodeId).ToArray();
                     foreach (var binding in definition.Definitions) if (!string.IsNullOrEmpty(binding.LocalId)) candidates.Add(binding.LocalId);
                     graph.Connections.RemoveAll(e => e.FromNodeId == definition.Id);
                     graph.LocalDefinitions.Remove(definition); changed = true;
+                    if (actionRoots.Length > 0) CollectEffectActionNodes(graph, definition.Id, actionRoots);
+                    foreach(var receiver in graph.Nodes.Where(n=>n.CallbackOwnerDefinitionId==definition.Id))receiver.CallbackOwnerDefinitionId=null;
                 }
             } while (changed);
         }
@@ -69918,6 +70294,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal static void CollectReleased(GameplayAuthoringGraph graph,IEnumerable<string> ids)=>CollectOwned(graph,new HashSet<string>(ids.Where(id=>!string.IsNullOrEmpty(id))));
         internal static void ConnectInGraph(GameplayAuthoringGraph graph,string owner,string port,string target,string input="Execute")
         {
+            if (input == "Execute" && (port == GameplayGraphEffectCallbacks.AddCompletionActions || port == GameplayGraphEffectCallbacks.AddOverflowActions))
+            {
+                var effect = (GameplayEffectDefinitionData)graph.LocalDefinitions.Single(d => d.Id == owner).Payload;
+                string reason = GameplayGraphPortPolicy.Unavailable(effect, port);
+                if (reason != null) throw new InvalidOperationException(reason);
+                if (port == GameplayGraphEffectCallbacks.AddOverflowActions) effect.Stacking.Overflow = GameplayEffectStackOverflowPolicy.ExecuteOverflow;
+                port = GameplayGraphEffectCallbacks.AddActions(effect, port);
+            }
             if(input==GameplayGraphEffectCallbacks.Input){
                 var source=graph.LocalDefinitions.Single(d=>d.Id==owner);var effect=source.Payload as GameplayEffectDefinitionData;
                 if(effect==null||GameplayGraphEffectCallbacks.EffectBinding(graph.Nodes.Single(n=>n.Id==target))==null)throw new InvalidOperationException("生命周期端口需要真实 Effect 定义输入。");
@@ -69956,6 +70340,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Enemies","敌方"},{"Allies","友方"},{"Any","任意"},{"All","全部"},{"Self","自身"},{"None","无"},
             {"Physical","物理伤害"},{"Magical","魔法伤害"},{"Magic","魔法伤害"},{"True","真实伤害"},
             {"Owner","施法者"},{"Target","当前目标"},{"Context","调用上下文"},{"OwnerFacing","施法者朝向"},{"TargetDirection","目标方向"},
+            {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},
             {"Vfx","特效"},{"Audio","音效"},{"Body","身体"},{"Active","主动"},{"Passive","被动"},
             {"Instant","瞬时"},{"Duration","限时持续"},{"Infinite","无限持续"},
             {"Straight","直线"},{"Homing","追踪"},{"Arc","弧线"},{"Parabolic","抛物线"},{"Bezier","贝塞尔曲线"},
@@ -70162,7 +70547,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     yield return new GameplaySkillCardField(effect.DurationValue == null ? "Duration" : "DurationValue", "持续秒数", effect.DurationValue != null);
                 if (effect.DurationPolicy != GameplayEffectDurationPolicy.Instant)
                     yield return new GameplaySkillCardField(effect.PeriodValue == null ? "Period" : "PeriodValue", "周期间隔", effect.PeriodValue != null);
-                if(effect.Stacking!=null){yield return new GameplaySkillCardField("Stacking.StackKey","叠层标识");yield return new GameplaySkillCardField("Stacking.MaxStacks","叠层上限");}
+                if(effect.Stacking!=null){yield return new GameplaySkillCardField("Stacking.StackKey","叠层标识");yield return new GameplaySkillCardField("Stacking.MaxStacks","叠层上限");yield return new GameplaySkillCardField("Stacking.Aggregation","叠层归属");}
+                if (effect.DurationPolicy != GameplayEffectDurationPolicy.Instant)
+                    yield return new GameplaySkillCardField("Presentation", "状态外观");
                 // A compound effect keeps its real execution ordering in the advanced editor.
                 if (effect.Executions.Length == 1 && effect.Modifiers.Length == 0)
                 {
@@ -70574,7 +70961,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     bool spatial = payload is GameplayAreaDefinitionData || payload is GameplayProjectileDefinitionData ||
                         payload is GameplaySummonDefinitionData;
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload))
-                        RunOutput(id, slot.Path, spatial ? input : Empty);
+                        RunOutput(id, GameplayGraphEffectCallbacks.ActionKey(slot), spatial || payload is GameplayEffectDefinitionData ? input : Empty);
                     foreach (var slot in GameplayGraphEffectCallbacks.Slots(payload))
                         foreach (var edge in edges[(id, slot.Key)])
                             VisitDefinition(GameplayGraphEffectCallbacks.EffectBinding(nodes[edge.ToNodeId].node)?.LocalId, input);
@@ -71443,6 +71830,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         public static string PortName(string path)
         {
+            if(path==GameplayGraphEffectCallbacks.Applied)return "首次成功应用";
+            if(path==GameplayGraphEffectCallbacks.StackChanged)return "层数变化";
+            if(path==GameplayGraphEffectCallbacks.EnterMax)return "进入满层";
+            if(path==GameplayGraphEffectCallbacks.Period)return "每次周期";
+            if(path==GameplayGraphEffectCallbacks.AddCompletionActions||path.StartsWith(GameplayGraphEffectCallbacks.CompletionActionPrefix,StringComparison.Ordinal))return "自然到期 · 行为";
+            if(path==GameplayGraphEffectCallbacks.AddOverflowActions||path.StartsWith(GameplayGraphEffectCallbacks.OverflowActionPrefix,StringComparison.Ordinal))return "叠层溢出 · 行为";
             if(path==GameplayGraphEffectCallbacks.Completion)return "自然完成 · 添加效果";
             if(path==GameplayGraphEffectCallbacks.Overflow)return "叠层溢出 · 添加效果";
             if(path.StartsWith("Completion/",StringComparison.Ordinal))return "自然完成 · 续接效果";
@@ -71549,7 +71942,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             object value = root.propertyType == SerializedPropertyType.ManagedReference ? root.managedReferenceValue : root.boxedValue;
             if (value == null) return;
             var resources = GameplayGraphFields.ResourceSlots(value).ToDictionary(s => s.Path, s => s.ValueType);
-            var arrays = new HashSet<string>(GameplayGraphFields.ActionArrays(value).Select(s => s.Path));
+            var arrays = GameplayGraphFields.ActionArrays(value).ToDictionary(s => s.Path);
             string inactiveKey="Inactive:"+doc.GetInstanceID()+":"+root.propertyPath;bool showInactive=Open.Contains(inactiveKey);
             DrawChildren(root, value, "");
             if(value is GameplayEffectDefinitionData||value is GameplayProjectileDefinitionData||value is GameplayAreaDefinitionData){
@@ -71594,7 +71987,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         continue;
                     }
 
-                    if (arrays.Contains(path)) { EditorGUILayout.LabelField(PortName(path), "在画布端口连接行为", EditorStyles.miniLabel); continue; }
+                    if (arrays.TryGetValue(path, out var actionSlot))
+                    {
+                        string port = GameplayGraphEffectCallbacks.ActionKey(actionSlot);
+                        if (value is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port)) DrawLifecycleActions(port);
+                        else EditorGUILayout.LabelField(PortName(path), "在画布端口连接行为", EditorStyles.miniLabel);
+                        continue;
+                    }
                     if (resources.TryGetValue(path, out var resource)) { DrawBinding(doc, serialized, ownerId, bindings, bindingPath, resource, visited,edit); continue; }
                     var fieldInfo = GameplayGraphFields.SerializedFields(owner.GetType()).FirstOrDefault(f => f.Name == it.name);
                     Type fieldType = fieldInfo?.FieldType;
@@ -71631,13 +72030,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     {
                         var element = p.GetArrayElementAtIndex(j); Type elementType = fieldType?.GetElementType();
                         EditorGUILayout.BeginHorizontal(); GUILayout.Label("顺序 " + (j + 1), EditorStyles.miniLabel);
-                        if (GUILayout.Button("↑", GUILayout.Width(25)) && j > 0) { p.MoveArrayElement(j, j - 1);edit.Structural=true; GUI.changed = true; }
-                        if (GUILayout.Button("↓", GUILayout.Width(25)) && j + 1 < p.arraySize) { p.MoveArrayElement(j, j + 1);edit.Structural=true; GUI.changed = true; }
+                        if (GUILayout.Button("↑", GUILayout.Width(25)) && j > 0) { p.MoveArrayElement(j, j - 1);edit.Structural=true;edit.Paths.Add(p.propertyPath); GUI.changed = true; }
+                        if (GUILayout.Button("↓", GUILayout.Width(25)) && j + 1 < p.arraySize) { p.MoveArrayElement(j, j + 1);edit.Structural=true;edit.Paths.Add(p.propertyPath); GUI.changed = true; }
                         if (GUILayout.Button("×", GUILayout.Width(25))) {
                             object item=element.propertyType==SerializedPropertyType.ManagedReference?element.managedReferenceValue:null;
-                            string callbackKey=item is GameplayApplyEffectOnCompletionAuthoring completion?"Completion/"+completion.AuthoringId:item is GameplayApplyEffectOnOverflowAuthoring overflow?"Overflow/"+overflow.AuthoringId:null;
+                            string callbackKey=item switch {
+                                GameplayApplyEffectOnCompletionAuthoring completion => "Completion/"+completion.AuthoringId,
+                                GameplayApplyEffectOnOverflowAuthoring overflow => "Overflow/"+overflow.AuthoringId,
+                                GameplayEffectCompletionActionsAuthoring completion => GameplayGraphEffectCallbacks.CompletionActionPrefix+completion.AuthoringId,
+                                GameplayEffectOverflowActionsAuthoring overflow => GameplayGraphEffectCallbacks.OverflowActionPrefix+overflow.AuthoringId,
+                                _ => null
+                            };
                             if(callbackKey!=null){EditorGUILayout.EndHorizontal();ApplyFields(serialized,doc);GameplaySkillAuthoringCommands.RemoveEffectCallback(doc,ownerId,callbackKey);GUIUtility.ExitGUI();}
-                            p.DeleteArrayElementAtIndex(j);edit.Structural=true; GUI.changed = true; EditorGUILayout.EndHorizontal(); break;
+                            p.DeleteArrayElementAtIndex(j);edit.Structural=true;edit.Paths.Add(p.propertyPath); GUI.changed = true; EditorGUILayout.EndHorizontal(); break;
                         }
                         EditorGUILayout.EndHorizontal();
                         DrawStructured(element, elementType, path + ".Array.data[" + j + "]");
@@ -71662,6 +72067,26 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 else if (p.propertyType == SerializedPropertyType.Generic)
                 { object current = p.boxedValue; if (current != null) { GUILayout.Label(GameplayAuthoringInspector.Label(p), EditorStyles.boldLabel); EditorGUI.indentLevel++; DrawChildren(p, current, path); EditorGUI.indentLevel--; } }
                 else Field(p);
+            }
+
+            void DrawLifecycleActions(string port)
+            {
+                var graph = doc.AuthoringGraph;
+                var steps = graph.Connections.Where(e => e.FromNodeId == ownerId && e.OutputPortKey == port).OrderBy(e => e.Order).ToArray();
+                string unavailable = GameplayGraphPortPolicy.Unavailable(graph, ownerId, port);
+                EditorGUILayout.LabelField(PortName(port), unavailable ?? (steps.Length == 0 ? "从画布行尾连接" : "按下列顺序执行"), EditorStyles.miniLabel);
+                foreach (var step in steps)
+                {
+                    var target = graph.Nodes.Single(n => n.Id == step.ToNodeId);
+                    EditorGUILayout.BeginHorizontal();
+                    if (GUILayout.Button(GameplaySkillNodeDisplay.Name(target, graph))) GameplaySkillWorkbench.Open(doc, target.Id);
+                    using (new EditorGUI.DisabledScope(step == steps[0])) if (GUILayout.Button("↑", GUILayout.Width(25))) Move(-1);
+                    using (new EditorGUI.DisabledScope(step == steps[steps.Length - 1])) if (GUILayout.Button("↓", GUILayout.Width(25))) Move(1);
+                    if (GUILayout.Button(new GUIContent("断开", "保留行为卡及其资源作为草稿。"), GUILayout.Width(46)))
+                    { ApplyFields(serialized, doc); GameplaySkillAuthoringCommands.Disconnect(doc, step.Id); GUIUtility.ExitGUI(); }
+                    EditorGUILayout.EndHorizontal();
+                    void Move(int direction) { ApplyFields(serialized, doc); GameplaySkillAuthoringCommands.ReorderEffectAction(doc, step.Id, direction); GUIUtility.ExitGUI(); }
+                }
             }
             void Pick(SerializedProperty property, Type type, bool append)
             {
@@ -71737,10 +72162,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if (binding?.External)
             {
-                EditorGUILayout.ObjectField("来源",binding.External,resourceType,false);
+                bool sharedEffect = binding.External is GameplayEffectDefinitionAsset;
+                using(new EditorGUI.DisabledScope(sharedEffect)) EditorGUILayout.ObjectField("来源",binding.External,resourceType,false);
                 string key="Shared:"+doc.GetInstanceID()+":"+ownerId+":"+path;
-                bool open=EditorGUILayout.Foldout(Open.Contains(key),"共享资源业务配置",true);
-                if(open){Open.Add(key);using(var shared=new SerializedObject(binding.External))GameplayAuthoringInspector.Draw(shared);}else Open.Remove(key);
+                bool open=EditorGUILayout.Foldout(Open.Contains(key),sharedEffect?"共享效果业务配置 · 只读":"共享资源业务配置",true);
+                if(open){Open.Add(key);using(new EditorGUI.DisabledScope(sharedEffect))using(var shared=new SerializedObject(binding.External))GameplayAuthoringInspector.Draw(shared);}else Open.Remove(key);
+                if(sharedEffect&&GUILayout.Button("打开共享效果源（显式编辑）"))GameplaySkillWorkbench.OpenSource(binding.External);
                 if(GUILayout.Button("定位共享资源")){Selection.activeObject=binding.External;EditorGUIUtility.PingObject(binding.External);}
             }
             if (timeline == null)
@@ -72186,6 +72613,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 type.Name == "GameplayApplyEffectOnCompletionAuthoring" ? "自然完成施加效果" :
                 type.Name == "GameplayApplyEffectOnOverflowAuthoring" ? "溢出施加效果" :
                 type.Name == "GameplayRemoveCurrentOnOverflowAuthoring" ? "溢出移除当前效果" :
+                type == typeof(GameplayEffectOverflowActionsAuthoring) ? "溢出行为" :
+                type == typeof(GameplayEffectCompletionActionsAuthoring) ? "自然到期行为" :
                 type.Name == "GameplayEffectStackingAuthoring" ? "叠层策略" :
                 type.Name == "GameplayTagQueryAuthoring" ? "标签查询" :
                 type.Name == "GameplayAbilityChargeAuthoring" ? "充能策略" :
@@ -72226,6 +72655,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 ## File: Gameplay/Editor/SkillAuthoring/GameplaySkillNodeDisplay.cs
 ````csharp
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Authoring.Graph;
@@ -72300,14 +72730,34 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(effect==null)return null;
                 string state=effect.DurationPolicy==GameplayEffectDurationPolicy.Instant?"瞬时结算":effect.DurationPolicy==GameplayEffectDurationPolicy.Infinite?"无限持续":"持续效果";
                 int count=effect.Executions.Length+effect.Modifiers.Length;
-                string presentation=effect.Presentation==null?null:GameplaySkillFieldSchema.ValueSummary(effect.Presentation);
-                var overflow=effect.Stacking?.OverflowExecutions.Select(GameplaySkillFieldSchema.ValueSummary).Where(s=>!string.IsNullOrEmpty(s)).ToArray();
                 return state+(count>1?" · 复合 "+count+" 项":"")+(!hasFields&&effect.Stacking!=null?" · 叠层上限 "+effect.Stacking.MaxStacks:"")+
-                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"")+
-                    (presentation==null?"":"\n效果表现 · "+presentation)+
-                    (overflow?.Length>0?"\n"+string.Join("\n",overflow):"");
+                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"");
             }
             return hasFields?null:Summary(node,graph);
+        }
+        internal static string EffectActionSteps(GameplayAuthoringGraph graph, string owner, string port)
+        {
+            var steps = new List<string>();
+            Append(owner, port);
+            return string.Join(" → ", steps);
+
+            void Append(string from, string key)
+            {
+                foreach (var edge in graph.Connections.Where(e => e.FromNodeId == from && e.OutputPortKey == key).OrderBy(e => e.Order))
+                {
+                    var node = graph.Nodes.Find(n => n.Id == edge.ToNodeId);
+                    if (node == null) continue;
+                    var action = (node.Payload as GameplayActionNodePayload)?.Action;
+                    string name = Name(node, graph);
+                    if (action != null && GameplaySkillNodeDescriptors.Get(action.GetType()).IsPresentationCue)
+                    {
+                        string resource = GameplaySkillFieldSchema.ValueSummary(BoundValues(node, graph));
+                        if (resource != null) name = resource.Split('\n')[0];
+                    }
+                    steps.Add(name);
+                    if (edge.InputPortKey == "Execute") Append(edge.ToNodeId, "Then");
+                }
+            }
         }
         internal static string SharedSummary(GameplayDefinitionAsset source)
         {
@@ -72960,9 +73410,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var settings=(g.Nodes.Find(n=>n.Id==g.AbilityNodeId)?.Payload as GameplayAbilityNodePayload)?.Settings as GameplayAbilityDefinitionData;
             return string.Join(",",_detachedPolicies.Select(p=>p.Key))+"|"+settings?.Cost?.GetType().FullName+":"+(settings?.Charge!=null)+"|"+GameplayBehaviorGraphView.InlinePrimaryRule(_document)+":"+g.Scope+":"+g.AbilityNodeId+":"+g.PrimaryRuleNodeId+":"+string.Join(",",g.AdditionalRuleNodeIds)+"|"+
                 string.Join("|",g.Nodes.Select(n=>n.Id+":"+n.Payload.GetType().Name+":"+(n.Payload as GameplayActionNodePayload)?.Action?.GetType().FullName+":"+string.Join(",",GameplayGraphFields.OutputPorts(n))+":"+string.Join(",",n.Payload.Definitions.Select(b=>b.PropertyPath+"="+b.LocalId+"@"+(b.External?b.External.GetInstanceID():0)))))+"|"+
-                string.Join("|",g.LocalDefinitions.Select(d=>d.Id+":"+d.Payload.GetType().FullName+":"+string.Join(",",GameplayGraphFields.ActionArrays(d.Payload).Select(a=>a.Path).Concat(GameplayGraphEffectCallbacks.Slots(d.Payload).Select(s=>s.Key)))))+"|"+
+                string.Join("|",g.LocalDefinitions.Select(d=>d.Id+":"+d.Payload.GetType().FullName+":"+string.Join(",",GameplayGraphFields.ActionArrays(d.Payload).Select(GameplayGraphEffectCallbacks.ActionKey).Concat(GameplayGraphEffectCallbacks.Slots(d.Payload).Select(s=>s.Key)))+EffectShape(d.Payload)))+"|"+
                 string.Join("|",g.Connections.Select(e=>e.Id+":"+e.FromNodeId+":"+e.OutputPortKey+":"+e.ToNodeId+":"+e.InputPortKey+":"+e.Order))+"|"+
                 string.Join("|",g.Timelines.SelectMany(t=>t.Events).Select(e=>e.Id+":"+e.EntryNodeId+":"+(e.Conditions.Length>0)+":"+e.Target?.GetType().FullName));
+            static string EffectShape(GameplayLocalDefinitionPayload payload) => payload is GameplayEffectDefinitionData effect
+                ? ":" + effect.DurationPolicy + ":" + (effect.Period > 0) + ":" + effect.Stacking?.Overflow + ":" +
+                    string.Join(",", effect.Stacking?.OverflowExecutions.Select(e => e.AuthoringId + e.GetType().Name) ?? Enumerable.Empty<string>()) + ":" +
+                    string.Join(",", effect.CompletionExecutions.Select(e => e.AuthoringId + e.GetType().Name)) : "";
             }
             finally{ShapeAnalysisMilliseconds+=(System.Diagnostics.Stopwatch.GetTimestamp()-sample)*1000d/System.Diagnostics.Stopwatch.Frequency;}
         }
@@ -73078,6 +73532,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if (!_document || _document.AuthoringGraph == null) return;
             var link=Canvas.CreationLink;
+            bool effectLink=link!=null&&!link.Scheduled&&link.Input=="Execute"&&GameplayGraphEffectCallbacks.IsActionPort(link.Port)&&
+                _document.AuthoringGraph.LocalDefinitions.Any(d=>d.Id==link.Owner&&d.Payload is GameplayEffectDefinitionData);
             // Inspect candidates against the real source contract without editing the document.
             var candidates=link==null?null:(GameplayAuthoringGraph)GameplayGraphFields.Clone(_document.AuthoringGraph);
             var candidate=new GameplayAuthoringNode{Payload=new GameplayActionNodePayload()};
@@ -73101,7 +73557,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 if(link==null)Canvas.AddConfigurationEntries(menu,position);
                 if(link?.Input==GameplayGraphEffectCallbacks.Input)menu.AddDisabledItem(new GUIContent("技能/时间编排","效果生命周期只消费真实Effect定义，不能调用时间编排。"));
-                else menu.AddItem(new GUIContent("技能/时间编排"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateSequence(_document, position,link)));
+                else if(!effectLink)menu.AddItem(new GUIContent("技能/时间编排"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateSequence(_document, position,link)));
                 if(link==null)menu.AddItem(new GUIContent("[模板]/逐目标伤害与结束"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateDamageTemplate(_document,position)));
                 if(link==null)menu.AddItem(new GUIContent(_document.AuthoringGraph.PrimaryRuleNodeId==null?"技能/施放触发规则":"技能/附加触发规则"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateRule(_document, position)));
             }
@@ -73138,6 +73594,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 void AddOption(string label,string title,GameplayLocalDefinitionPayload value)
                 {
                     string reason=ContextReason(action,value,slot?.Path);
+                    if(effectLink&&reason!=null)return;
                     var caption=new GUIContent(category+"/"+label,reason??descriptor.Summary);
                     if(reason!=null)menu.AddDisabledItem(caption);
                     else menu.AddItem(caption,false,()=>Create(()=>GameplaySkillAuthoringCommands.CreateAction(
@@ -73424,7 +73881,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if(!effectOnly&&node!=null&&values!=null&&PreviewFactories.Any(p=>p.Supports(values)))result.Add(new PreviewChoice{Node=node,Values=values,Start=time,Owner=binding.LocalId,EventId=eventId,Key=origin+":"+id+":"+binding.PropertyPath,Label=time.ToString("0.###")+"s · "+GameplaySkillFieldSchema.NodeName(node)+" · "+string.Join("/",origin.Split('/').Select(part=>part.Substring(0,Math.Min(4,part.Length))))});
                     if(!string.IsNullOrEmpty(binding.LocalId))visit(binding.LocalId,time,origin,eventId,false);
                 }
-                if(effectOnly)return;
+                if(effectOnly || local?.Payload is GameplayEffectDefinitionData)return;
                 foreach(var edge in graph.Connections.Where(e=>e.FromNodeId==id).OrderBy(e=>e.Order))visit(edge.ToNodeId,time,origin,eventId,edge.InputPortKey==GameplayGraphEffectCallbacks.Input);
             };
             visit(root,0,root,null,false);_previewChoices[root]=result;return result;
@@ -74902,12 +75359,21 @@ namespace FRFrame.Gameplay
     public sealed class GameplayEffectOverflowContext
     {
         private readonly GameplayEffectContainer _container;
+        private readonly GameplaySourceId _source;
+        private readonly int _maxStacks;
+        private bool _dispatching = true;
         public GameplayEffectHandle Handle { get; }
         public GameplayEffectApplicationContext Application { get; }
         public int StackCount { get; }
         internal GameplayEffectOverflowContext(GameplayEffectContainer container, GameplayEffectHandle handle,
-            GameplayEffectApplicationContext application, int count)
-        { _container = container; Handle = handle; Application = application.WithStackCount(count); StackCount = count; }
+            GameplayEffectApplicationContext application, int count, GameplaySourceId source, int maxStacks)
+        { _container = container; Handle = handle; Application = application.WithStackCount(count); StackCount = count; _source = source; _maxStacks = maxStacks; }
+        internal void Close() => _dispatching = false;
+        internal void Run(GameplayEffectLifecycleActions actions)
+        {
+            if (_dispatching) actions.Run(_container, GameplayEffectLifecycleKind.Overflow, Handle, _source,
+                Application, StackCount, _maxStacks, GameplayEffectRemovalCause.Overflow);
+        }
         public GameplayEffectApplicationResult Apply(GameplayEffectDefinition next) => _container.Apply(next, Application);
         public bool RemoveCurrent() => _container.Remove(Handle, GameplayEffectRemovalCause.Overflow);
         public bool RemoveLayer(GameplayEffectLayerHandle layer) => layer.EffectHandle == Handle &&
@@ -74945,6 +75411,7 @@ namespace FRFrame.Gameplay
     public sealed class GameplayEffectCompletionContext
     {
         private readonly GameplayEffectContainer _container;
+        private bool _dispatching = true;
         public GameplayEffectDefinition Definition { get; }
         public GameplayEffectHandle Handle { get; }
         public GameplaySourceId SourceId { get; }
@@ -74963,6 +75430,14 @@ namespace FRFrame.Gameplay
 
         /// <summary>Applies to the same target using the completed application's Context, Instigator and SetByCaller snapshot.</summary>
         public GameplayEffectApplicationResult Apply(GameplayEffectDefinition next) => _container.Apply(next, Application);
+
+        internal void Close() => _dispatching = false;
+        internal void Run(GameplayEffectLifecycleActions actions)
+        {
+            if (_dispatching && Application != null)
+                actions.Run(_container, GameplayEffectLifecycleKind.NaturalExpiry, Handle, SourceId,
+                    Application, Application.StackCount, Definition.Stacking?.MaxStacks ?? 1, GameplayEffectRemovalCause.NaturalExpiry);
+        }
     }
 }
 ````
@@ -75029,7 +75504,7 @@ namespace FRFrame.Gameplay
         public GameplayEffectHandle Apply(GameplayEffectDefinition definition)
         {
             if (definition == null) throw new ArgumentNullException(nameof(definition));
-            if (definition.DurationPolicy == GameplayEffectDurationPolicy.Instant || definition.Period > 0 || definition.Stacking != null || definition.CompletionExecutions.Count > 0)
+            if (definition.DurationPolicy == GameplayEffectDurationPolicy.Instant || definition.Period > 0 || definition.Stacking != null || definition.CompletionExecutions.Count > 0 || definition.OnApplied != null)
                 throw new InvalidOperationException("This effect requires context-aware Apply.");
             foreach (var m in definition.Modifiers) if (m.MagnitudeValue.RequiresApplicationContext) throw new InvalidOperationException("Dynamic modifiers require context.");
             if (definition.DurationValue?.RequiresApplicationContext == true || definition.PeriodValue?.RequiresApplicationContext == true)
@@ -75065,7 +75540,7 @@ namespace FRFrame.Gameplay
             var entry = CreateEntry(definition, application, timing);
             var layer = entry.Layers[0].Handle;
             entry.ActivationInitialPending=deferInitial;
-            if (!deferInitial) { NotifyPresentation(entry); ExecuteInitial(entry, application); }
+            if (!deferInitial) PublishApplied(entry);
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.NewActiveEffect, entry.Handle, 1, layer);
         }
         private static Timing EvaluateTiming(GameplayEffectDefinition d, GameplayEffectApplicationContext app)
@@ -75133,16 +75608,20 @@ namespace FRFrame.Gameplay
                 if (s.Overflow == GameplayEffectStackOverflowPolicy.Reject) return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RejectedAtLimit, e.Handle, e.StackCount);
                 if (s.Overflow == GameplayEffectStackOverflowPolicy.ExecuteOverflow)
                 {
-                    var context = new GameplayEffectOverflowContext(this, e.Handle, app, e.StackCount);
-                    foreach (var rule in s.OverflowExecutions) rule.Execute(context);
+                    var context = new GameplayEffectOverflowContext(this, e.Handle, app, e.StackCount, e.SourceId, s.MaxStacks);
+                    try { foreach (var rule in s.OverflowExecutions) rule.Execute(context); }
+                    finally { context.Close(); }
                     bool active = _entries.ContainsKey(e.Handle);
                     return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.OverflowExecuted, active ? e.Handle : default, active ? e.StackCount : 0);
                 }
                 CommitReapplication(e, app, timing); ExecuteInitial(e, app);
                 return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RefreshedAtLimit, e.Handle, e.StackCount);
             }
+            int previous = e.StackCount;
             var layer = CreateLayer(e, app, timing); e.Layers.Add(layer);
-            CommitReapplication(e, app, timing); int count = e.StackCount; NotifyPresentation(e); ExecuteInitial(e, app);
+            CommitReapplication(e, app, timing); int count = e.StackCount;
+            PublishStackChange(e, app, previous);
+            if (IsActive(e.Handle)) ExecuteInitial(e, app);
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.StackIncreased, e.Handle, count, layer.Handle);
         }
         private static void CommitReapplication(Entry e, GameplayEffectApplicationContext app, Timing timing)
@@ -75161,8 +75640,27 @@ namespace FRFrame.Gameplay
         {
             if(!_entries.TryGetValue(handle,out var entry)||!entry.ActivationInitialPending)return;
             entry.ActivationInitialPending=false; // Exactly once, including exceptions and reentry.
+            PublishApplied(entry);
+        }
+        private void PublishApplied(Entry entry)
+        {
             NotifyPresentation(entry);
-            ExecuteInitial(entry,entry.Application);
+            var application = entry.Application;
+            entry.Definition.OnApplied?.Run(this, GameplayEffectLifecycleKind.Applied, entry.Handle, entry.SourceId,
+                application, 0, entry.Definition.Stacking?.MaxStacks ?? 1);
+            if (entry.Definition.Stacking?.MaxStacks == 1)
+                entry.Definition.OnEnterMax?.Run(this, GameplayEffectLifecycleKind.EnterMax, entry.Handle, entry.SourceId, application, 0, 1);
+            if (IsActive(entry.Handle)) ExecuteInitial(entry, application);
+        }
+        private void PublishStackChange(Entry entry, GameplayEffectApplicationContext application, int previous)
+        {
+            NotifyPresentation(entry);
+            int max = entry.Definition.Stacking.MaxStacks;
+            entry.Definition.OnStackChanged?.Run(this, GameplayEffectLifecycleKind.StackChanged, entry.Handle, entry.SourceId,
+                application, previous, max);
+            if (previous < max && application.StackCount == max)
+                entry.Definition.OnEnterMax?.Run(this, GameplayEffectLifecycleKind.EnterMax, entry.Handle, entry.SourceId,
+                    application, previous, max);
         }
         private void NotifyPresentation(Entry entry)
         {
@@ -75196,7 +75694,8 @@ namespace FRFrame.Gameplay
                 if (cause == GameplayEffectRemovalCause.NaturalExpiry && e.Definition.CompletionExecutions.Count > 0)
                 {
                     var context = new GameplayEffectCompletionContext(this, e.Definition, handle, e.SourceId, e.Application);
-                    foreach (var rule in e.Definition.CompletionExecutions) rule.Execute(context);
+                    try { foreach (var rule in e.Definition.CompletionExecutions) rule.Execute(context); }
+                    finally { context.Close(); }
                 }
             }
             finally { Removed?.Invoke(observation); }
@@ -75213,7 +75712,11 @@ namespace FRFrame.Gameplay
             RemoveSurvivingLayer(e, layer); return true;
         }
         private void RemoveSurvivingLayer(Entry entry, Layer layer)
-        { CleanupLayer(layer); entry.Layers.Remove(layer); SelectSurvivingApplication(entry); NotifyPresentation(entry); }
+        {
+            int previous = entry.StackCount;
+            CleanupLayer(layer); entry.Layers.Remove(layer); SelectSurvivingApplication(entry);
+            PublishStackChange(entry, entry.Application, previous);
+        }
         private static void CleanupLayer(Layer layer)
         {
             var groups = new Dictionary<GameplayAttribute, List<GameplayModifierHandle>>();
@@ -75264,7 +75767,12 @@ namespace FRFrame.Gameplay
             {
                 e.NextPeriodAt += e.Period;
                 var application = e.Application.WithStackCount(e.StackCount);
-                try { foreach (var rule in e.Definition.Executions) rule.Execute(application); }
+                try
+                {
+                    foreach (var rule in e.Definition.Executions) rule.Execute(application);
+                    e.Definition.OnPeriod?.Run(this, GameplayEffectLifecycleKind.Period, e.Handle, e.SourceId,
+                        application, application.StackCount, e.Definition.Stacking?.MaxStacks ?? 1);
+                }
                 catch { if (expiryDue) RemoveEntry(e.Handle, GameplayEffectRemovalCause.Explicit); throw; }
             }
             if (!_entries.ContainsKey(e.Handle)) return;
@@ -75304,7 +75812,8 @@ namespace FRFrame.Gameplay
                 throw new ArgumentException("Explicit cooldown duration requires a simple tag-only Effect.");
             if(application!=null&&!ReferenceEquals(application.Target.Attributes,_target))throw new ArgumentException("Cooldown application must target this container.");
             var entry = CreateEntry(definition, application, new Timing(duration, 0));
-            NotifyPresentation(entry);
+            if (application != null) PublishApplied(entry);
+            else NotifyPresentation(entry);
             return entry.Handle;
         }
         internal bool TryGetAppliedDuration(GameplayEffectHandle handle,out float duration)
@@ -75468,6 +75977,10 @@ namespace FRFrame.Gameplay
         public IReadOnlyList<IGameplayEffectCompletionExecution> CompletionExecutions { get; }
         /// <summary>Optional backend-owned presentation data. The rule container never plays it.</summary>
         public IGameplayEffectPresentationDefinition Presentation { get; }
+        internal GameplayEffectLifecycleActions OnApplied { get; }
+        internal GameplayEffectLifecycleActions OnStackChanged { get; }
+        internal GameplayEffectLifecycleActions OnEnterMax { get; }
+        internal GameplayEffectLifecycleActions OnPeriod { get; }
 
         /// <summary>
         /// 此定义在应用期间提供的 exact 标签。集合只读，来源由每个 Effect 实例独立分配。
@@ -75532,7 +76045,9 @@ namespace FRFrame.Gameplay
             IEnumerable<GameplayTag> effectTags = null,
             GameplayEffectPeriodicStartPolicy periodicStart = GameplayEffectPeriodicStartPolicy.AfterFirstPeriod,
             IGameplayFloatValue durationValue = null, IGameplayFloatValue periodValue = null,
-            IGameplayEffectPresentationDefinition presentation = null)
+            IGameplayEffectPresentationDefinition presentation = null, GameplayEffectLifecycleActions onApplied = null,
+            GameplayEffectLifecycleActions onStackChanged = null, GameplayEffectLifecycleActions onEnterMax = null,
+            GameplayEffectLifecycleActions onPeriod = null)
         {
             if (durationPolicy != GameplayEffectDurationPolicy.Duration &&
                 durationPolicy != GameplayEffectDurationPolicy.Infinite &&
@@ -75588,15 +76103,17 @@ namespace FRFrame.Gameplay
                 throw new ArgumentException("Executions must not contain null.", nameof(executions));
             if (durationPolicy == GameplayEffectDurationPolicy.Instant)
             {
-                if (presentation != null) throw new ArgumentException("Effect status presentation requires a persistent effect.");
+                if (presentation != null || onApplied != null || onStackChanged != null || onEnterMax != null || onPeriod != null)
+                    throw new ArgumentException("Effect lifecycle actions and status presentation require a persistent effect.");
                 if (ongoingRequirements != null && !ongoingRequirements.IsEmpty)
                     throw new ArgumentException("Instant effects cannot have ongoing requirements.", nameof(ongoingRequirements));
                 if (period != 0f || stacking != null || modifierCopy.Count != 0 || tagCopy.Count != 0 || executionCopy.Count == 0)
                     throw new ArgumentException("Instant effects require executions and reject persistent modifiers or tags.");
             }
-            else if ((period == 0f && executionCopy.Count != 0) ||
-                     (period > 0f && executionCopy.Count == 0))
-                throw new ArgumentException("Persistent effects require executions exactly when Period is positive.", nameof(executions));
+            else if ((period > 0f) != (executionCopy.Count != 0 || onPeriod != null))
+                throw new ArgumentException("Persistent effects require executions or actions exactly when Period is positive.", nameof(executions));
+            if (stacking == null && (onStackChanged != null || onEnterMax != null))
+                throw new ArgumentException("Stack lifecycle actions require a stacking policy.");
 
             DurationPolicy = durationPolicy;
             Duration = durationPolicy == GameplayEffectDurationPolicy.Duration ? duration : 0f;
@@ -75605,6 +76122,7 @@ namespace FRFrame.Gameplay
             PeriodValue = periodValue;
             PeriodicStart = periodicStart;
             Presentation = presentation;
+            OnApplied = onApplied; OnStackChanged = onStackChanged; OnEnterMax = onEnterMax; OnPeriod = onPeriod;
             EffectTags = classification.AsReadOnly();
             Stacking = stacking;
             ApplicationRequirements = applicationRequirements ?? GameplayTagQuery.Empty;
@@ -75675,6 +76193,69 @@ namespace FRFrame.Gameplay
 
         public static bool operator ==(GameplayEffectHandle left, GameplayEffectHandle right) => left.Equals(right);
         public static bool operator !=(GameplayEffectHandle left, GameplayEffectHandle right) => !left.Equals(right);
+    }
+}
+````
+
+## File: Gameplay/Effect/GameplayEffectLifecycleActions.cs
+````csharp
+using System.Collections.Generic;
+
+namespace FRFrame.Gameplay
+{
+    public enum GameplayEffectLifecycleKind { Applied, StackChanged, EnterMax, Period, Overflow, NaturalExpiry }
+
+    /// <summary>Evidence of a committed Effect event. Only the container can issue it; the
+    /// synchronous authorization expires when its action list returns.</summary>
+    public sealed class GameplayEffectLifecycleEvent
+    {
+        private readonly GameplayEffectContainer _container;
+        public GameplayEffectLifecycleKind Kind { get; }
+        public GameplayEffectHandle Handle { get; }
+        public GameplaySourceId EffectSourceId { get; }
+        public GameplayEffectApplicationContext Application { get; }
+        public int PreviousStacks { get; }
+        public int StackCount => Application.StackCount;
+        public int MaxStacks { get; }
+        public GameplayEffectRemovalCause? Cause { get; }
+        public bool IsExecuting { get; private set; } = true;
+
+        internal GameplayEffectLifecycleEvent(GameplayEffectContainer container, GameplayEffectLifecycleKind kind,
+            GameplayEffectHandle handle, GameplaySourceId effectSourceId, GameplayEffectApplicationContext application,
+            int previousStacks, int maxStacks, GameplayEffectRemovalCause? cause)
+        {
+            _container = container; Kind = kind; Handle = handle; EffectSourceId = effectSourceId;
+            Application = application; PreviousStacks = previousStacks; MaxStacks = maxStacks; Cause = cause;
+        }
+
+        internal void Close() => IsExecuting = false;
+
+        /// <summary>Applies a continuation to the same target with the committed source and value snapshot.</summary>
+        public GameplayEffectApplicationResult ApplyToTarget(GameplayEffectDefinition definition) =>
+            IsExecuting ? _container.Apply(definition, Application) : default;
+    }
+
+    /// <summary>The same ordinary Skill actions run in each of the Effect's synchronous lifecycle slots.</summary>
+    public sealed class GameplayEffectLifecycleActions : IGameplayEffectOverflowExecution, IGameplayEffectCompletionExecution
+    {
+        private readonly IReadOnlyList<IGameplaySkillAction> _actions;
+        public GameplayEffectLifecycleActions(IEnumerable<IGameplaySkillAction> actions) =>
+            _actions = GameplaySkillBranchAction.Copy(actions);
+
+        void IGameplayEffectOverflowExecution.Execute(GameplayEffectOverflowContext context) => context.Run(this);
+        void IGameplayEffectCompletionExecution.Execute(GameplayEffectCompletionContext context) => context.Run(this);
+
+        internal void Run(GameplayEffectContainer container, GameplayEffectLifecycleKind kind, GameplayEffectHandle handle,
+            GameplaySourceId source, GameplayEffectApplicationContext application, int previousStacks, int maxStacks,
+            GameplayEffectRemovalCause? cause = null)
+        {
+            // The target hosts the continuation even when the original caster has left. The
+            // immutable Application still carries the caster's identity, attributes and values.
+            if (_actions.Count == 0 || !(application?.Target is IGameplaySkillHost host)) return;
+            var lifecycle = new GameplayEffectLifecycleEvent(container, kind, handle, source, application, previousStacks, maxStacks, cause);
+            try { GameplaySkillActionRunner.Execute(_actions, application.Context, new GameplayEventData(lifecycle), host); }
+            finally { lifecycle.Close(); }
+        }
     }
 }
 ````
@@ -75786,7 +76367,19 @@ namespace FRFrame.Gameplay
         public float Magnitude { get; }
         /// <summary>Optional immutable child/hit envelope. Legacy events leave this null.</summary>
         public GameplayContext Context { get; }
+        /// <summary>Optional synchronous Effect evidence. This envelope is passed to the runner, never published by Tag.</summary>
+        public GameplayEffectLifecycleEvent EffectLifecycle { get; }
         public bool HasContext => Context != null;
+
+        internal GameplayEventData(GameplayEffectLifecycleEvent lifecycle)
+        {
+            EffectLifecycle = lifecycle;
+            Context = lifecycle.Application.Context;
+            InstigatorId = Context.InstigatorId;
+            TargetId = lifecycle.Application.Target.TargetId;
+            Magnitude = lifecycle.StackCount;
+            EventTag = default;
+        }
 
         /// <summary>Preserves the full source, target geometry and scalar snapshot with consistent event IDs.</summary>
         public GameplayEventData(GameplayTag eventTag, GameplayContext context, float magnitude)
@@ -75810,6 +76403,7 @@ namespace FRFrame.Gameplay
                 throw new ArgumentOutOfRangeException(nameof(magnitude), "Event magnitude must be finite.");
 
             Context = null;
+            EffectLifecycle = null;
             EventTag = eventTag;
             InstigatorId = instigatorId;
             TargetId = targetId;
@@ -77710,15 +78304,14 @@ namespace FRFrame.Gameplay.Unity.Editor
 {
     public sealed class GameplayAnimationNodeDescriptor:IGameplaySkillNodeEditorDescriptorProvider
     {
-        public bool Supports(Type type)=>type==typeof(GameplayPlayAnimationActionAuthoring)||type==typeof(GameplayPlayPresentationCueActionAuthoring)||type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset)||type==typeof(GameplayUnityEffectPresentationAuthoring)||type==typeof(GameplayPlayEffectCueOnOverflowAuthoring);
+        public bool Supports(Type type)=>type==typeof(GameplayPlayAnimationActionAuthoring)||type==typeof(GameplayPlayPresentationCueActionAuthoring)||type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset)||type==typeof(GameplayUnityEffectPresentationAuthoring);
         public GameplaySkillNodeEditorDescriptor Describe(Type type,SerializedProperty property)
         {
             if(type==typeof(GameplayPlayAnimationActionAuthoring))return new GameplaySkillNodeEditorDescriptor(property?.FindPropertyRelative("Queue")?.boolValue==true?"排队动画":"播放动画","FRFrame/表现","播放正式动画资源；Queue在同一channel等待，取消施法释放当前与排队请求。",visualKind:GameplayNodeVisualKind.Presentation,isAnimation:true);
             if(type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset))return new GameplaySkillNodeEditorDescriptor("战斗飘字","FRFrame/表现","展示同来源已提交结果；复用Core UIWidget/Pool。不会决定伤害或另建规则时钟。",visualKind:GameplayNodeVisualKind.Presentation);
-            if(type==typeof(GameplayUnityEffectPresentationAuthoring))return new GameplaySkillNodeEditorDescriptor("Unity 状态表现","FRFrame/表现","首次应用与存续表现，按真实 Effect 实例追踪层数与清理。",visualKind:GameplayNodeVisualKind.Presentation);
-            if(type==typeof(GameplayPlayEffectCueOnOverflowAuthoring))return new GameplaySkillNodeEditorDescriptor("溢出播放声光","FRFrame/表现","按溢出执行列表顺序，在实际受影响目标位置播放。",visualKind:GameplayNodeVisualKind.Presentation);
+            if(type==typeof(GameplayUnityEffectPresentationAuthoring))return new GameplaySkillNodeEditorDescriptor("Unity 状态外观","FRFrame/表现","跟踪真实 Effect 句柄与层数；首次或满层声光可从相应生命周期行连接。",visualKind:GameplayNodeVisualKind.Presentation);
             var cue=property?.FindPropertyRelative("Cue")?.objectReferenceValue as GameplayPresentationCueAsset;
-            return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","直接正式资源绑定；复用 FRFrame Pool/Audio，绑定当前施法并精确清理。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
+            return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","复用 FRFrame Pool/Audio。时间编排由施放授权，Effect 事件由实际提交授权。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
         }
     }
     /// <summary>SDK-neutral preview uses exactly the Runtime asset factory. It owns only presentation
@@ -78043,12 +78636,61 @@ using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Authoring.Graph;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
+using UnityEditor.UIElements;
+using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace FRFrame.Gameplay.Unity.Editor
 {
     /// <summary>Unity backends expose their real plain-data sources to the shared V2 editor.</summary>
-    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider, IGameplaySkillValueCreationPresets
+    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider, IGameplaySkillValueCreationPresets, IGameplaySkillFieldControlProvider
     {
+        public bool SupportsControl(SerializedProperty property) => property.propertyType == SerializedPropertyType.ManagedReference &&
+            property.managedReferenceFieldTypename.EndsWith("." + nameof(GameplayEffectPresentationAuthoring), StringComparison.Ordinal) &&
+            (property.managedReferenceValue == null || property.managedReferenceValue is GameplayUnityEffectPresentationAuthoring);
+
+        public VisualElement CreateControl(SerializedProperty property, string label, Func<bool> canWrite, out Action refresh)
+        {
+            var serialized = property.serializedObject;
+            var document = (GameplaySkillDocumentAsset)serialized.targetObject;
+            string path = property.propertyPath;
+            var row = new VisualElement { style = { flexDirection = FlexDirection.Row } };
+            var field = new ObjectField(label) { objectType = typeof(GameObject), allowSceneObjects = false, style = { flexGrow = 1, minWidth = 0 } };
+            field.labelElement.style.minWidth = 72;
+            var edit = new Button(() => { if (field.value != null) AssetDatabase.OpenAsset(field.value); }) { text = "编辑", tooltip = "在 Prefab 模式编辑粒子、徽记、字体和满层外观。" };
+            var issue = new Label { style = { whiteSpace = WhiteSpace.Normal, color = new Color(1, .65f, .3f) } };
+            var container = new VisualElement();
+            row.Add(field); row.Add(edit); container.Add(row); container.Add(issue);
+            void Sync()
+            {
+                var current = serialized.FindProperty(path)?.managedReferenceValue as GameplayUnityEffectPresentationAuthoring;
+                field.SetValueWithoutNotify(current?.StatusPrefab);
+                edit.SetEnabled(field.value != null);
+                issue.style.display = string.IsNullOrEmpty(issue.text) ? DisplayStyle.None : DisplayStyle.Flex;
+            }
+            field.RegisterValueChangedCallback(change => {
+                if (!canWrite()) { Sync(); return; }
+                serialized.UpdateIfRequiredOrScript();
+                var prefab = change.newValue as GameObject;
+                var source = serialized.FindProperty(path);
+                source.managedReferenceValue = prefab == null ? null : new GameplayUnityEffectPresentationAuthoring { StatusPrefab = prefab };
+                GameplaySkillCardFields.Apply(serialized, document, path, out string error);
+                issue.text = error ?? "";
+                Sync();
+                change.StopPropagation();
+            });
+            refresh = Sync;
+            return container;
+        }
+
+        public bool DrawSourceLink(SerializedProperty root, SerializedProperty property)
+        {
+            if (!SupportsControl(property)) return false;
+            var prefab = (property.managedReferenceValue as GameplayUnityEffectPresentationAuthoring)?.StatusPrefab;
+            EditorGUILayout.LabelField("状态外观", prefab == null ? "在 Buff 卡选择预制体" : prefab.name);
+            if (prefab != null && GUILayout.Button("定位状态预制体")) EditorGUIUtility.PingObject(prefab);
+            return true;
+        }
         public IEnumerable<GameplaySkillCardField> CardFields(object values)
         {
             if(values is GameplayAnimationData){yield return new GameplaySkillCardField("Channel","播放通道");yield return new GameplaySkillCardField("Speed","速度",true);yield return new GameplaySkillCardField("Loop","循环");}
@@ -78085,13 +78727,12 @@ namespace FRFrame.Gameplay.Unity.Editor
                 if(audio)
                     yield return new GameplayBusinessInspectorGroup(null,"音频播放",null,"Volume","Pitch","AudioLoop");
                 yield return new GameplayBusinessInspectorGroup(null,audio?"停止与清理":"回收与清理",
-                    audio?"时限以秒计。到期停止音频，随技能清理可能提前停止。":"一次性粒子可以播完回收。循环或其它特效请用手动时限，随技能清理可以提前回收。",
+                    audio?"到时停止音频。时间编排可随施放清理；Effect 已提交声光按自身时限播放。":"一次性粒子可播完回收，循环特效请设回收时限。随技能结束清理仅用于施放编排。",
                     "RecycleWhenParticlesFinish","Duration","OwnedByAbility");
             }
         }
         public string Summary(object values) {
-            if(values is GameplayUnityEffectPresentationAuthoring effect)return (effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图")+(effect.FirstApplicationVfx?" · 首次 "+effect.FirstApplicationVfx.name:"");
-            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow)return "溢出声光 · "+(overflow.Prefab?overflow.Prefab.name:"")+(overflow.Clip?" "+overflow.Clip.name:"");
+            if(values is GameplayUnityEffectPresentationAuthoring effect)return effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图";
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
             if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
@@ -78122,8 +78763,6 @@ namespace FRFrame.Gameplay.Unity.Editor
             type == typeof(GameplayFloatingTextData) ? "战斗飘字" : type == typeof(GameplayUnityProjectileData) ? "Unity 弹体" : type == typeof(GameplayUnityAreaData) ? "Unity 区域" : type == typeof(GameplayUnitySummonData) ? "Unity 召唤" : null;
         public bool IsFieldVisible(object values,string field)
         {
-            if(values is GameplayUnityEffectPresentationAuthoring effect&&(field=="FirstApplicationOffset"||field=="FirstApplicationSeconds"))return effect.FirstApplicationVfx!=null;
-            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow&&field=="Volume")return overflow.Clip!=null;
             GameplayPresentationCueAsset.CueKind kind;
             GameplayPresentationCueAsset.PositionSource origin;
             bool autoRecycle;
@@ -79329,6 +79968,7 @@ namespace FRFrame.Gameplay.Unity
     public sealed class GameplayPlayPresentationCueActionAuthoring:GameplaySkillActionAuthoring
     {
         public GameplayPresentationCueAsset Cue;
+        public override bool SupportsEffectLifecycle => true;
         public override void Validate(GameplayAuthoringValidationContext validation,string path)=>validation.Asset(Cue,path+".Cue");
         public override void ValidateReferences(GameplayAuthoringValidationContext validation,string path)=>validation.Asset(Cue,path+".Cue");
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new Action(context.ResolveDefinition(Cue, this, nameof(Cue), () => Cue.Build(context)));
@@ -79336,9 +79976,21 @@ namespace FRFrame.Gameplay.Unity
         {
             private readonly GameplayPresentationCueDefinition _definition;
             internal Action(GameplayPresentationCueDefinition definition)=>_definition=definition;
-            public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)=>
-                host is GameplayStandardActor actor&&actor.Presentation is GameplayUnityAnimationController controller&&controller.TryPlayCue(_definition,context)
-                    ?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;
+            public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
+            {
+                if (triggerEvent.EffectLifecycle is { } lifecycle)
+                {
+                    if (!lifecycle.IsExecuting) return GameplaySkillActionResult.Rejected;
+                    if (host is GameplayStandardActor target &&
+                        (!(target.Presentation is GameplayUnityAnimationController presenter) || !presenter.TryQueueEffectCue(_definition, context, lifecycle)))
+                        target.RecordSkillTrace(new GameplaySkillTraceRecord(target.Id, context, default,
+                            GameplaySkillTraceStage.ActionRejected, "EffectCue", detail: "目标缺少可用 Unity Cue 播放器，或 Cue 位置无法解析。"));
+                    // Optional playback never prevents the next committed gameplay step.
+                    return GameplaySkillActionResult.Succeeded;
+                }
+                return host is GameplayStandardActor actor && actor.Presentation is GameplayUnityAnimationController controller &&
+                    controller.TryPlayCue(_definition,context) ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+            }
         }
     }
 }
@@ -79442,6 +80094,7 @@ namespace FRFrame.Gameplay.Unity
     public sealed class GameplayShowCombatTextActionAuthoring:GameplaySkillActionAuthoring
     {
         public GameplayFloatingTextAsset Source;
+        public override bool SupportsEffectLifecycle => true;
         public override void Validate(GameplayAuthoringValidationContext validation,string path)=>validation.Asset(Source,path+".Source");
         public override void ValidateReferences(GameplayAuthoringValidationContext validation,string path)=>validation.Asset(Source,path+".Source");
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new Action(context.ResolveDefinition(Source, this, nameof(Source), () => Source.Build(context)));
@@ -79451,6 +80104,21 @@ namespace FRFrame.Gameplay.Unity
             internal Action(GameplayFloatingTextDefinition definition)=>_definition=definition;
             public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
             {
+                if (triggerEvent.EffectLifecycle is { } lifecycle)
+                {
+                    if (!lifecycle.IsExecuting) return GameplaySkillActionResult.Rejected;
+                    if (host is GameplayStandardActor targetActor)
+                    {
+                        if (targetActor.Presentation is GameplayUnityAnimationController presenter)
+                        {
+                            try { if (presenter.TryShowAuthoredCombatText(_definition, context)) return GameplaySkillActionResult.Succeeded; }
+                            catch (Exception error) { UnityEngine.Debug.LogException(error, presenter.Subject); }
+                        }
+                        targetActor.RecordSkillTrace(new GameplaySkillTraceRecord(targetActor.Id, context, default,
+                            GameplaySkillTraceStage.ActionRejected, "EffectCombatText", detail: "目标缺少播放后端或本次生命周期没有可领取的战斗结果。"));
+                    }
+                    return GameplaySkillActionResult.Succeeded;
+                }
                 if(!(host is GameplayStandardActor actor)||!actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target)||
                     !(target.Presentation is GameplayUnityAnimationController controller))return GameplaySkillActionResult.Rejected;
                 return controller.TryShowAuthoredCombatText(_definition,context)?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;
@@ -79895,6 +80563,8 @@ namespace FRFrame.Gameplay.Unity
     public sealed partial class GameplayUnityAnimationController
     {
         private readonly List<CueLease> _cues=new List<CueLease>();
+        private readonly Queue<(GameplayPresentationCueDefinition Definition, Vector3 Point, Transform Parent,
+            bool Mirror, GameplayEffectApplicationContext Application)> _committedEffectCues = new();
         private GameObjectPoolModule _ownedPool;
         private AudioManager _ownedAudio;
         /// <summary>Optional existing application services. When absent, standalone Labs instantiate
@@ -79914,27 +80584,63 @@ namespace FRFrame.Gameplay.Unity
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
-            float duration=0;
-            if(!definition.RecycleWhenParticlesFinish){
-                duration=GameplayValueEvaluator.Evaluate(definition.Duration,PresentationValueContext(context));
-                if(!float.IsFinite(duration)||duration<=0)throw new ArithmeticException("Cue duration must be positive.");
+            float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, PresentationValueContext(context));
+            if (!TryResolveCuePose(definition, context, Actor, out var point, out var parent)) return false;
+            return PlayCueAt(definition, point, parent, duration, Subject.transform.localScale.x < 0, grant);
+        }
+
+        internal bool TryQueueEffectCue(GameplayPresentationCueDefinition definition, GameplayContext context, GameplayEffectLifecycleEvent lifecycle)
+        {
+            if (_disposed || Subject == null || Actor.IsDisposed || !lifecycle.IsExecuting ||
+                !ReferenceEquals(lifecycle.Application.Target, Actor) || context.TargetData.PrimaryTargetId != Actor.Id) return false;
+            Actor.World.TryGetActor(lifecycle.Application.Context.InstigatorId, out var instigator);
+            if (!TryResolveCuePose(definition, context, instigator, out var point, out var parent)) return false;
+            var subject = (instigator?.Presentation as GameplayUnityAnimationController)?.Subject;
+            bool mirror = (subject != null ? subject : Subject).transform.localScale.x < 0;
+            _committedEffectCues.Enqueue((definition, point, parent, mirror, lifecycle.Application));
+            return true;
+        }
+
+        private void PlayCommittedEffectCues()
+        {
+            while (_committedEffectCues.TryDequeue(out var cue))
+            {
+                try
+                {
+                    float duration = cue.Definition.RecycleWhenParticlesFinish ? 0 : CueDuration(cue.Definition, cue.Application);
+                    PlayCueAt(cue.Definition, cue.Point, cue.Parent, duration, cue.Mirror);
+                }
+                catch (Exception error) { Debug.LogException(error, Subject); }
             }
-            Vector3 point;Transform parent=null;
+        }
+
+        private static float CueDuration(GameplayPresentationCueDefinition definition, GameplayEffectApplicationContext application)
+        {
+            float duration = GameplayValueEvaluator.Evaluate(definition.Duration, application);
+            if (!float.IsFinite(duration) || duration <= 0) throw new ArithmeticException("Cue duration must be positive.");
+            return duration;
+        }
+
+        private bool TryResolveCuePose(GameplayPresentationCueDefinition definition, GameplayContext context,
+            GameplayStandardActor owner, out Vector3 point, out Transform parent)
+        {
+            point=default;parent=null;
             if(definition.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint)
             {if(!context.TargetData.HasPoint)return false;var p=context.TargetData.Point;point=new Vector3(p.X,p.Y,p.Z);}
             else
             {
-                var target=Actor;
-                if(definition.Origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget&&!Actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out target))return false;
+                var target=owner;
+                if(definition.Origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget)Actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out target);
+                if(target==null)return false;
                 var p=target.Position;point=new Vector3(p.X,p.Y,p.Z);
                 parent=(target.Presentation as GameplayUnityAnimationController)?.Subject?.transform;
                 if(parent!=null&&!string.IsNullOrEmpty(definition.Binding)){parent=parent.Find(definition.Binding)??parent;point=parent.position;}
             }
-            return PlayCueAt(definition, point, parent, duration, grant);
+            return true;
         }
 
         private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent,
-            float duration, GameplayAbilityHandle grant=default)
+            float duration, bool mirror, GameplayAbilityHandle grant=default)
         {
             var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
@@ -79948,7 +80654,7 @@ namespace FRFrame.Gameplay.Unity
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
                     var offset=definition.Offset;var scale=definition.Scale;
-                    if(definition.MirrorFacing&&Subject.transform.localScale.x<0){offset.x=-offset.x;scale.x=-scale.x;}
+                    if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
                     view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=Quaternion.identity;
                     cue.Particles=view.GetComponentsInChildren<ParticleSystem>();
                     foreach(var particles in cue.Particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);particles.Pause(false);}
@@ -79962,7 +80668,7 @@ namespace FRFrame.Gameplay.Unity
                     if(!cue.Audio.IsValid){cue.Dispose();return false;}
                 }
                 _cues.Add(cue);
-                if(definition.OwnedByAbility&&!Actor.Abilities.TryOwnLifetime(grant,cue)){cue.Dispose();return false;}
+                if(grant.IsValid&&definition.OwnedByAbility&&!Actor.Abilities.TryOwnLifetime(grant,cue)){cue.Dispose();return false;}
                 return true;
             }
             catch{cue.Dispose();throw;}
@@ -80023,26 +80729,45 @@ namespace FRFrame.Gameplay.Unity
     public sealed partial class GameplayUnityAnimationController
     {
         private readonly Queue<(GameplayEffectHandle Handle, GameplayEffectDefinition Definition, int Stacks)> _effectChanges = new();
-        private readonly Queue<(GameplayEffectCue Cue, Vector3 Position)> _effectCues = new();
         private readonly Dictionary<GameplayEffectHandle, EffectViewLease> _effectViews = new();
         private readonly Dictionary<GameplayEffectDefinition, EffectViewLease> _effectBadges = new();
+        private bool _statusVisible;
 
-        private void ObserveEffectState(GameplayEffectPresentationState state) =>
-            _effectChanges.Enqueue((state.Handle, state.Definition, state.StackCount));
+        private void ObserveEffectState(GameplayEffectPresentationState state)
+        {
+            if (ReferenceEquals(Actor.Presentation, this)) _effectChanges.Enqueue((state.Handle, state.Definition, state.StackCount));
+        }
 
         private void ObserveEffectRemoval(GameplayEffectRemovalObservation removal)
         {
-            if (removal.Definition.Presentation != null) _effectChanges.Enqueue((removal.Handle, removal.Definition, 0));
+            if (removal.Definition.Presentation != null && ReferenceEquals(Actor.Presentation, this))
+                _effectChanges.Enqueue((removal.Handle, removal.Definition, 0));
         }
 
-        internal void QueueEffectCue(GameplayEffectCue cue)
+        /// <summary>Releases status views before temporarily replacing the actor's model driver.
+        /// On the next advance as active driver, current statuses are restored without replaying their events.</summary>
+        public void ReleaseEffectStatusViews()
         {
-            var point = Actor.Position;
-            _effectCues.Enqueue((cue, new Vector3(point.X, point.Y, point.Z)));
+            ReleaseStatusViews();
+            _effectChanges.Clear();
+            _statusVisible = false;
         }
 
         private void AdvanceEffectPresentation(float amount)
         {
+            bool visible = Actor.IsTargetable;
+            if (_statusVisible != visible)
+            {
+                _statusVisible = visible;
+                _effectChanges.Clear();
+                if (visible)
+                {
+                    foreach (var entry in Actor.Effects.GetActiveEntriesSnapshot())
+                        if (entry.Definition.Presentation is GameplayUnityEffectPresentation presentation)
+                            CreateEffectView(entry.Handle, entry.Definition, presentation).SetStacks(entry.StackCount, pulse: false);
+                }
+                else ReleaseStatusViews();
+            }
             while (_effectChanges.TryDequeue(out var change))
             {
                 if (change.Stacks == 0)
@@ -80050,23 +80775,13 @@ namespace FRFrame.Gameplay.Unity
                     if (_effectViews.Remove(change.Handle, out var removed)) removed.Release();
                     continue;
                 }
-                if (change.Definition.Presentation is not GameplayUnityEffectPresentation presentation || !Actor.Effects.IsActive(change.Handle)) continue;
+                if (!visible || change.Definition.Presentation is not GameplayUnityEffectPresentation presentation ||
+                    !Actor.Effects.IsActive(change.Handle)) continue;
                 if (!_effectViews.TryGetValue(change.Handle, out var lease))
-                {
-                    lease = new EffectViewLease(change.Definition, presentation.StatusPrefab, SpatialViewPool);
-                    if (lease.View != null) ApplyViewRenderLayer(lease.View.gameObject);
-                    _effectViews.Add(change.Handle, lease);
-                    if (Actor.IsTargetable && presentation.FirstApplication != null) QueueEffectCue(presentation.FirstApplication);
-                }
+                    lease = CreateEffectView(change.Handle, change.Definition, presentation);
                 lease.SetStacks(change.Stacks);
             }
-
-            while (_effectCues.TryDequeue(out var playback))
-            {
-                var cue = playback.Cue;
-                if (cue.Vfx != null) PlayCueAt(cue.Vfx, playback.Position, null, cue.Duration);
-                if (cue.Audio != null) PlayCueAt(cue.Audio, playback.Position, null, cue.Duration);
-            }
+            PlayCommittedEffectCues();
 
             if (_effectViews.Count == 0) return;
             _effectBadges.Clear();
@@ -80076,22 +80791,32 @@ namespace FRFrame.Gameplay.Unity
             var point = Actor.Position;
             foreach (var lease in _effectViews.Values)
             {
-                if (lease.View == null) continue;
                 lease.View.transform.position = new Vector3(point.X, point.Y, point.Z);
-                if (lease.View.gameObject.activeSelf != Actor.IsTargetable) lease.View.gameObject.SetActive(Actor.IsTargetable);
-                if (Actor.IsTargetable) lease.View.Advance(amount, ReferenceEquals(_effectBadges[lease.Definition], lease));
+                lease.View.Advance(amount, ReferenceEquals(_effectBadges[lease.Definition], lease));
             }
+        }
+
+        private EffectViewLease CreateEffectView(GameplayEffectHandle handle, GameplayEffectDefinition definition, GameplayUnityEffectPresentation presentation)
+        {
+            var lease = new EffectViewLease(definition, presentation.StatusPrefab, SpatialViewPool);
+            ApplyViewRenderLayer(lease.View.gameObject);
+            _effectViews.Add(handle, lease);
+            return lease;
         }
 
         private void DisposeEffectPresentation()
         {
             Actor.Effects.PresentationChanged -= ObserveEffectState;
             Actor.Effects.Removed -= ObserveEffectRemoval;
+            ReleaseEffectStatusViews();
+            _committedEffectCues.Clear();
+        }
+
+        private void ReleaseStatusViews()
+        {
             foreach (var lease in _effectViews.Values) lease.Release();
             _effectViews.Clear();
             _effectBadges.Clear();
-            _effectChanges.Clear();
-            _effectCues.Clear();
         }
 
         private sealed class EffectViewLease
@@ -80106,7 +80831,6 @@ namespace FRFrame.Gameplay.Unity
             internal EffectViewLease(GameplayEffectDefinition definition, GameObject prefab, GameObjectPoolModule pool)
             {
                 Definition = definition;
-                if (prefab == null) return;
                 _pool = pool;
                 _name = prefab.name;
                 _key = new ResourceKey("Gameplay.DirectPrefab", prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
@@ -80116,11 +80840,11 @@ namespace FRFrame.Gameplay.Unity
                 View.Begin();
             }
 
-            internal void SetStacks(int count)
+            internal void SetStacks(int count, bool pulse = true)
             {
                 int cap = Definition.Stacking?.MaxStacks ?? 1;
                 bool full = cap > 1 && count == cap;
-                View?.SetStacks(count, full, full && Stacks < cap);
+                View.SetStacks(count, full, pulse && full && Stacks < cap);
                 Stacks = count;
             }
 
@@ -80406,96 +81130,30 @@ namespace FRFrame.Gameplay.Unity
 ````csharp
 using System;
 using FRFrame.Gameplay.Authoring;
-using FRFrame.Gameplay.Standard;
 using UnityEngine;
 using UnityEngine.Scripting;
 
 namespace FRFrame.Gameplay.Unity
 {
-    /// <summary>Unity resources for an individual persistent Effect, authored on that Effect's card.</summary>
+    /// <summary>Persistent status appearance owned by the actual Effect handle. One-shot Cue actions are authored on its event ports.</summary>
     [Serializable, Preserve]
     public sealed class GameplayUnityEffectPresentationAuthoring : GameplayEffectPresentationAuthoring
     {
         public GameObject StatusPrefab;
-        public GameObject FirstApplicationVfx;
-        public Vector3 FirstApplicationOffset;
-        public float FirstApplicationSeconds = .5f;
 
         public override void Validate(GameplayAuthoringValidationContext validation, string path)
         {
-            if (StatusPrefab == null && FirstApplicationVfx == null)
-                validation.Error(path, "请至少绑定状态预制体或首次应用特效。");
-            if (StatusPrefab != null && !StatusPrefab.TryGetComponent<GameplayEffectStatusView>(out _))
-                validation.Error(path + ".StatusPrefab", "状态预制体根节点需要 GameplayEffectStatusView。");
-            if (FirstApplicationVfx != null && (!float.IsFinite(FirstApplicationSeconds) || FirstApplicationSeconds <= 0))
-                validation.Error(path + ".FirstApplicationSeconds", "首次应用特效时长必须大于零。");
+            if (StatusPrefab == null || !StatusPrefab.TryGetComponent<GameplayEffectStatusView>(out _))
+                validation.Error(path + ".StatusPrefab", "请选择根节点带 GameplayEffectStatusView 的状态预制体。");
         }
 
-        public override IGameplayEffectPresentationDefinition Build() => new GameplayUnityEffectPresentation(
-            StatusPrefab, FirstApplicationVfx == null ? null : GameplayEffectCue.AtTarget(
-                FirstApplicationVfx, null, FirstApplicationOffset, FirstApplicationSeconds));
-    }
-
-    /// <summary>An ordered overflow action. It plays at the actual affected target and can outlive the Effect.</summary>
-    [Serializable, Preserve]
-    public sealed class GameplayPlayEffectCueOnOverflowAuthoring : GameplayEffectOverflowAuthoring
-    {
-        public GameObject Prefab;
-        public AudioClip Clip;
-        [Range(0, 1)] public float Volume = .72f;
-        public Vector3 Offset;
-        public float Duration = .65f;
-
-        public override void Validate(GameplayAuthoringValidationContext validation, string path)
-        {
-            if (Prefab == null && Clip == null) validation.Error(path, "请至少绑定一个特效或音频。");
-            if (!float.IsFinite(Duration) || Duration <= 0) validation.Error(path + ".Duration", "溢出表现时长必须大于零。");
-            if (Clip != null && (!float.IsFinite(Volume) || Volume < 0 || Volume > 1)) validation.Error(path + ".Volume", "音量须为 0～1。");
-        }
-
-        public override IGameplayEffectOverflowExecution Build(GameplayAuthoringBuildContext context) =>
-            new Playback(GameplayEffectCue.AtTarget(Prefab, Clip, Offset, Duration, Volume));
-
-        private sealed class Playback : IGameplayEffectOverflowExecution
-        {
-            private readonly GameplayEffectCue _cue;
-            internal Playback(GameplayEffectCue cue) => _cue = cue;
-            public void Execute(GameplayEffectOverflowContext context)
-            {
-                if (context.Application.Target is GameplayStandardActor actor &&
-                    actor.Presentation is GameplayUnityAnimationController controller)
-                    controller.QueueEffectCue(_cue);
-            }
-        }
+        public override IGameplayEffectPresentationDefinition Build() => new GameplayUnityEffectPresentation(StatusPrefab);
     }
 
     internal sealed class GameplayUnityEffectPresentation : IGameplayEffectPresentationDefinition
     {
         internal readonly GameObject StatusPrefab;
-        internal readonly GameplayEffectCue FirstApplication;
-        internal GameplayUnityEffectPresentation(GameObject statusPrefab, GameplayEffectCue firstApplication)
-        { StatusPrefab = statusPrefab; FirstApplication = firstApplication; }
-    }
-
-    internal sealed class GameplayEffectCue
-    {
-        internal readonly GameplayPresentationCueDefinition Vfx, Audio;
-        internal readonly float Duration;
-
-        private GameplayEffectCue(GameplayPresentationCueDefinition vfx, GameplayPresentationCueDefinition audio, float duration)
-        { Vfx = vfx; Audio = audio; Duration = duration; }
-
-        internal static GameplayEffectCue AtTarget(GameObject prefab, AudioClip clip, Vector3 offset, float duration, float volume = 1)
-        {
-            var origin = GameplayPresentationCueAsset.PositionSource.Owner;
-            var time = new GameplayConstantFloatValue(duration);
-            return new GameplayEffectCue(
-                prefab == null ? null : new GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind.Vfx,
-                    prefab, null, origin, offset, false, 1, 1, false, time, ownedByAbility: false),
-                clip == null ? null : new GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind.Audio,
-                    null, clip, origin, offset, false, volume, 1, false, time, ownedByAbility: false),
-                duration);
-        }
+        internal GameplayUnityEffectPresentation(GameObject statusPrefab) => StatusPrefab = statusPrefab;
     }
 }
 ````
@@ -83577,6 +84235,12 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySkillActionExecution ExecuteWithContext(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host) => ExecuteGuarded(context, triggerEvent, host, null);
         public GameplaySkillActionExecution ExecuteGuarded(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host, Func<bool> canContinue)
         {
+            if (triggerEvent.EffectLifecycle is { IsExecuting: true } lifecycle)
+            {
+                bool applied = !OwnedByAbility && lifecycle.Application.Target.TargetId == context.TargetData.PrimaryTargetId &&
+                    lifecycle.ApplyToTarget(Effect).Succeeded;
+                return new GameplaySkillActionExecution(applied ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected, context);
+            }
             if (!(host is GameplayStandardActor actor) || actor.IsDisposed) throw new InvalidOperationException("Standard target effects require a standard world actor.");
             GameplayAbilityHandle owner = default;
             if (OwnedByAbility && Effect.DurationPolicy != GameplayEffectDurationPolicy.Instant)
@@ -91934,6 +92598,7 @@ namespace FRFrame.Tests.Gameplay.Extensions
 ## File: Tests/Gameplay/UnityIntegration/GameplayAnimationOwnershipTests.cs
 ````csharp
 using System;
+using System.Collections.Generic;
 using FRFrame.Gameplay.Standard;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Unity;
@@ -91945,6 +92610,74 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
 {
     public sealed class GameplayAnimationOwnershipTests
     {
+        [Test]
+        public void CommittedEffectCuesSurviveSameFrameRemovalWithoutCastOrReplayAuthority()
+        {
+            var subject = new GameObject("Effect Cue target");
+            var prefab = new GameObject("Effect Cue prefab");
+            var asset = ScriptableObject.CreateInstance<GameplayPresentationCueAsset>();
+            try
+            {
+                asset.Prefab = prefab;
+                asset.Origin = GameplayPresentationCueAsset.PositionSource.PrimaryTarget;
+                using (var serialized = new UnityEditor.SerializedObject(asset))
+                {
+                    serialized.FindProperty("definitionId").stringValue = "Tests.EffectLifecycleCue";
+                    serialized.ApplyModifiedPropertiesWithoutUndo();
+                }
+                var build = new GameplayAuthoringBuildContext();
+                var cue = new GameplayPlayPresentationCueActionAuthoring { Cue = asset }.Build(build);
+                var probe = new EffectCueProbe();
+                var actions = new GameplayEffectLifecycleActions(new[] { cue, probe });
+                var overflow = new GameplayEffectStackingDefinition(new GameplayTag("Effect.Test.LifecycleCue"),
+                    GameplayEffectStackAggregation.AggregateByInstigator, 1, GameplayEffectStackDurationRefreshPolicy.NeverRefresh,
+                    GameplayEffectStackPeriodResetPolicy.NeverReset, GameplayEffectStackOverflowPolicy.ExecuteOverflow,
+                    overflowExecutions: new[] { (IGameplayEffectOverflowExecution)actions, new GameplayRemoveCurrentOnOverflowAuthoring().Build(build) });
+                var effect = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration, 4, 0,
+                    Array.Empty<GameplayEffectAttributeModifierDefinition>(), Array.Empty<GameplayTag>(), Array.Empty<IGameplayEffectExecution>(),
+                    overflow, onApplied: actions);
+                using (var world = new GameplayStandardWorld())
+                {
+                    var caster = world.CreateActor(default, 1);
+                    var target = world.CreateActor(default, 2);
+                    var controller = new GameplayUnityAnimationController(target, subject);
+                    target.Presentation = controller;
+                    var context = new GameplayContext(caster.Id, new GameplayTargetData(target.Id, target.Position));
+                    Assert.That(controller.TryPlayCue(asset.Build(build), context), Is.False);
+                    caster.ApplyEffect(context, effect);
+                    caster.ApplyEffect(context, effect);
+                    Assert.That(target.Effects.GetActiveEntriesSnapshot(), Is.Empty);
+                    Assert.That(probe.Kinds, Is.EqualTo(new[] { GameplayEffectLifecycleKind.Applied, GameplayEffectLifecycleKind.Overflow }));
+                    Assert.That(probe.Last.EffectLifecycle.IsExecuting, Is.False);
+                    Assert.That(cue.Execute(context, probe.Last, target), Is.EqualTo(GameplaySkillActionResult.Rejected));
+                    world.Advance(.01f);
+                    Assert.That(controller.ActiveCueCount, Is.EqualTo(2), "Both committed events play once despite the removed handle.");
+                    world.Advance(.01f);
+                    Assert.That(controller.ActiveCueCount, Is.EqualTo(2));
+                    world.Advance(1.1f);
+                    Assert.That(controller.ActiveCueCount, Is.Zero);
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(asset);
+                UnityEngine.Object.DestroyImmediate(prefab);
+                UnityEngine.Object.DestroyImmediate(subject);
+            }
+        }
+
+        private sealed class EffectCueProbe : IGameplaySkillAction
+        {
+            internal readonly List<GameplayEffectLifecycleKind> Kinds = new List<GameplayEffectLifecycleKind>();
+            internal GameplayEventData Last;
+            public GameplaySkillActionResult Execute(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host)
+            {
+                Last = triggerEvent;
+                Kinds.Add(triggerEvent.EffectLifecycle.Kind);
+                return GameplaySkillActionResult.Succeeded;
+            }
+        }
+
         /// <summary>Protects Timeline preview against ignoring the formal speed/context expression.</summary>
         [Test]
         public void PreviewSpeedUsesCapturedInputsAndSamplesActualAnimatorTime()

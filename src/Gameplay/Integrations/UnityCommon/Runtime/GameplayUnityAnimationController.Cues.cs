@@ -9,6 +9,8 @@ namespace FRFrame.Gameplay.Unity
     public sealed partial class GameplayUnityAnimationController
     {
         private readonly List<CueLease> _cues=new List<CueLease>();
+        private readonly Queue<(GameplayPresentationCueDefinition Definition, Vector3 Point, Transform Parent,
+            bool Mirror, GameplayEffectApplicationContext Application)> _committedEffectCues = new();
         private GameObjectPoolModule _ownedPool;
         private AudioManager _ownedAudio;
         /// <summary>Optional existing application services. When absent, standalone Labs instantiate
@@ -28,27 +30,63 @@ namespace FRFrame.Gameplay.Unity
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
-            float duration=0;
-            if(!definition.RecycleWhenParticlesFinish){
-                duration=GameplayValueEvaluator.Evaluate(definition.Duration,PresentationValueContext(context));
-                if(!float.IsFinite(duration)||duration<=0)throw new ArithmeticException("Cue duration must be positive.");
+            float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, PresentationValueContext(context));
+            if (!TryResolveCuePose(definition, context, Actor, out var point, out var parent)) return false;
+            return PlayCueAt(definition, point, parent, duration, Subject.transform.localScale.x < 0, grant);
+        }
+
+        internal bool TryQueueEffectCue(GameplayPresentationCueDefinition definition, GameplayContext context, GameplayEffectLifecycleEvent lifecycle)
+        {
+            if (_disposed || Subject == null || Actor.IsDisposed || !lifecycle.IsExecuting ||
+                !ReferenceEquals(lifecycle.Application.Target, Actor) || context.TargetData.PrimaryTargetId != Actor.Id) return false;
+            Actor.World.TryGetActor(lifecycle.Application.Context.InstigatorId, out var instigator);
+            if (!TryResolveCuePose(definition, context, instigator, out var point, out var parent)) return false;
+            var subject = (instigator?.Presentation as GameplayUnityAnimationController)?.Subject;
+            bool mirror = (subject != null ? subject : Subject).transform.localScale.x < 0;
+            _committedEffectCues.Enqueue((definition, point, parent, mirror, lifecycle.Application));
+            return true;
+        }
+
+        private void PlayCommittedEffectCues()
+        {
+            while (_committedEffectCues.TryDequeue(out var cue))
+            {
+                try
+                {
+                    float duration = cue.Definition.RecycleWhenParticlesFinish ? 0 : CueDuration(cue.Definition, cue.Application);
+                    PlayCueAt(cue.Definition, cue.Point, cue.Parent, duration, cue.Mirror);
+                }
+                catch (Exception error) { Debug.LogException(error, Subject); }
             }
-            Vector3 point;Transform parent=null;
+        }
+
+        private static float CueDuration(GameplayPresentationCueDefinition definition, GameplayEffectApplicationContext application)
+        {
+            float duration = GameplayValueEvaluator.Evaluate(definition.Duration, application);
+            if (!float.IsFinite(duration) || duration <= 0) throw new ArithmeticException("Cue duration must be positive.");
+            return duration;
+        }
+
+        private bool TryResolveCuePose(GameplayPresentationCueDefinition definition, GameplayContext context,
+            GameplayStandardActor owner, out Vector3 point, out Transform parent)
+        {
+            point=default;parent=null;
             if(definition.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint)
             {if(!context.TargetData.HasPoint)return false;var p=context.TargetData.Point;point=new Vector3(p.X,p.Y,p.Z);}
             else
             {
-                var target=Actor;
-                if(definition.Origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget&&!Actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out target))return false;
+                var target=owner;
+                if(definition.Origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget)Actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out target);
+                if(target==null)return false;
                 var p=target.Position;point=new Vector3(p.X,p.Y,p.Z);
                 parent=(target.Presentation as GameplayUnityAnimationController)?.Subject?.transform;
                 if(parent!=null&&!string.IsNullOrEmpty(definition.Binding)){parent=parent.Find(definition.Binding)??parent;point=parent.position;}
             }
-            return PlayCueAt(definition, point, parent, duration, grant);
+            return true;
         }
 
         private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent,
-            float duration, GameplayAbilityHandle grant=default)
+            float duration, bool mirror, GameplayAbilityHandle grant=default)
         {
             var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
@@ -62,7 +100,7 @@ namespace FRFrame.Gameplay.Unity
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
                     var offset=definition.Offset;var scale=definition.Scale;
-                    if(definition.MirrorFacing&&Subject.transform.localScale.x<0){offset.x=-offset.x;scale.x=-scale.x;}
+                    if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
                     view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=Quaternion.identity;
                     cue.Particles=view.GetComponentsInChildren<ParticleSystem>();
                     foreach(var particles in cue.Particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);particles.Pause(false);}
@@ -76,7 +114,7 @@ namespace FRFrame.Gameplay.Unity
                     if(!cue.Audio.IsValid){cue.Dispose();return false;}
                 }
                 _cues.Add(cue);
-                if(definition.OwnedByAbility&&!Actor.Abilities.TryOwnLifetime(grant,cue)){cue.Dispose();return false;}
+                if(grant.IsValid&&definition.OwnedByAbility&&!Actor.Abilities.TryOwnLifetime(grant,cue)){cue.Dispose();return false;}
                 return true;
             }
             catch{cue.Dispose();throw;}

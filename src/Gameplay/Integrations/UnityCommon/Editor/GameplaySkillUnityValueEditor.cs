@@ -4,12 +4,61 @@ using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Authoring.Graph;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
+using UnityEditor.UIElements;
+using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace FRFrame.Gameplay.Unity.Editor
 {
     /// <summary>Unity backends expose their real plain-data sources to the shared V2 editor.</summary>
-    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider, IGameplaySkillValueCreationPresets
+    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider, IGameplaySkillValueCreationPresets, IGameplaySkillFieldControlProvider
     {
+        public bool SupportsControl(SerializedProperty property) => property.propertyType == SerializedPropertyType.ManagedReference &&
+            property.managedReferenceFieldTypename.EndsWith("." + nameof(GameplayEffectPresentationAuthoring), StringComparison.Ordinal) &&
+            (property.managedReferenceValue == null || property.managedReferenceValue is GameplayUnityEffectPresentationAuthoring);
+
+        public VisualElement CreateControl(SerializedProperty property, string label, Func<bool> canWrite, out Action refresh)
+        {
+            var serialized = property.serializedObject;
+            var document = (GameplaySkillDocumentAsset)serialized.targetObject;
+            string path = property.propertyPath;
+            var row = new VisualElement { style = { flexDirection = FlexDirection.Row } };
+            var field = new ObjectField(label) { objectType = typeof(GameObject), allowSceneObjects = false, style = { flexGrow = 1, minWidth = 0 } };
+            field.labelElement.style.minWidth = 72;
+            var edit = new Button(() => { if (field.value != null) AssetDatabase.OpenAsset(field.value); }) { text = "编辑", tooltip = "在 Prefab 模式编辑粒子、徽记、字体和满层外观。" };
+            var issue = new Label { style = { whiteSpace = WhiteSpace.Normal, color = new Color(1, .65f, .3f) } };
+            var container = new VisualElement();
+            row.Add(field); row.Add(edit); container.Add(row); container.Add(issue);
+            void Sync()
+            {
+                var current = serialized.FindProperty(path)?.managedReferenceValue as GameplayUnityEffectPresentationAuthoring;
+                field.SetValueWithoutNotify(current?.StatusPrefab);
+                edit.SetEnabled(field.value != null);
+                issue.style.display = string.IsNullOrEmpty(issue.text) ? DisplayStyle.None : DisplayStyle.Flex;
+            }
+            field.RegisterValueChangedCallback(change => {
+                if (!canWrite()) { Sync(); return; }
+                serialized.UpdateIfRequiredOrScript();
+                var prefab = change.newValue as GameObject;
+                var source = serialized.FindProperty(path);
+                source.managedReferenceValue = prefab == null ? null : new GameplayUnityEffectPresentationAuthoring { StatusPrefab = prefab };
+                GameplaySkillCardFields.Apply(serialized, document, path, out string error);
+                issue.text = error ?? "";
+                Sync();
+                change.StopPropagation();
+            });
+            refresh = Sync;
+            return container;
+        }
+
+        public bool DrawSourceLink(SerializedProperty root, SerializedProperty property)
+        {
+            if (!SupportsControl(property)) return false;
+            var prefab = (property.managedReferenceValue as GameplayUnityEffectPresentationAuthoring)?.StatusPrefab;
+            EditorGUILayout.LabelField("状态外观", prefab == null ? "在 Buff 卡选择预制体" : prefab.name);
+            if (prefab != null && GUILayout.Button("定位状态预制体")) EditorGUIUtility.PingObject(prefab);
+            return true;
+        }
         public IEnumerable<GameplaySkillCardField> CardFields(object values)
         {
             if(values is GameplayAnimationData){yield return new GameplaySkillCardField("Channel","播放通道");yield return new GameplaySkillCardField("Speed","速度",true);yield return new GameplaySkillCardField("Loop","循环");}
@@ -46,13 +95,12 @@ namespace FRFrame.Gameplay.Unity.Editor
                 if(audio)
                     yield return new GameplayBusinessInspectorGroup(null,"音频播放",null,"Volume","Pitch","AudioLoop");
                 yield return new GameplayBusinessInspectorGroup(null,audio?"停止与清理":"回收与清理",
-                    audio?"时限以秒计。到期停止音频，随技能清理可能提前停止。":"一次性粒子可以播完回收。循环或其它特效请用手动时限，随技能清理可以提前回收。",
+                    audio?"到时停止音频。时间编排可随施放清理；Effect 已提交声光按自身时限播放。":"一次性粒子可播完回收，循环特效请设回收时限。随技能结束清理仅用于施放编排。",
                     "RecycleWhenParticlesFinish","Duration","OwnedByAbility");
             }
         }
         public string Summary(object values) {
-            if(values is GameplayUnityEffectPresentationAuthoring effect)return (effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图")+(effect.FirstApplicationVfx?" · 首次 "+effect.FirstApplicationVfx.name:"");
-            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow)return "溢出声光 · "+(overflow.Prefab?overflow.Prefab.name:"")+(overflow.Clip?" "+overflow.Clip.name:"");
+            if(values is GameplayUnityEffectPresentationAuthoring effect)return effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图";
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
             if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
@@ -83,8 +131,6 @@ namespace FRFrame.Gameplay.Unity.Editor
             type == typeof(GameplayFloatingTextData) ? "战斗飘字" : type == typeof(GameplayUnityProjectileData) ? "Unity 弹体" : type == typeof(GameplayUnityAreaData) ? "Unity 区域" : type == typeof(GameplayUnitySummonData) ? "Unity 召唤" : null;
         public bool IsFieldVisible(object values,string field)
         {
-            if(values is GameplayUnityEffectPresentationAuthoring effect&&(field=="FirstApplicationOffset"||field=="FirstApplicationSeconds"))return effect.FirstApplicationVfx!=null;
-            if(values is GameplayPlayEffectCueOnOverflowAuthoring overflow&&field=="Volume")return overflow.Clip!=null;
             GameplayPresentationCueAsset.CueKind kind;
             GameplayPresentationCueAsset.PositionSource origin;
             bool autoRecycle;

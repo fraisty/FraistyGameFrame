@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Authoring.Graph;
@@ -73,14 +74,34 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(effect==null)return null;
                 string state=effect.DurationPolicy==GameplayEffectDurationPolicy.Instant?"瞬时结算":effect.DurationPolicy==GameplayEffectDurationPolicy.Infinite?"无限持续":"持续效果";
                 int count=effect.Executions.Length+effect.Modifiers.Length;
-                string presentation=effect.Presentation==null?null:GameplaySkillFieldSchema.ValueSummary(effect.Presentation);
-                var overflow=effect.Stacking?.OverflowExecutions.Select(GameplaySkillFieldSchema.ValueSummary).Where(s=>!string.IsNullOrEmpty(s)).ToArray();
                 return state+(count>1?" · 复合 "+count+" 项":"")+(!hasFields&&effect.Stacking!=null?" · 叠层上限 "+effect.Stacking.MaxStacks:"")+
-                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"")+
-                    (presentation==null?"":"\n效果表现 · "+presentation)+
-                    (overflow?.Length>0?"\n"+string.Join("\n",overflow):"");
+                    (effect.GrantedTags.Length>0?"\n授予状态 · "+string.Join(" / ",effect.GrantedTags.Take(3).Select(t=>t.Name)):"");
             }
             return hasFields?null:Summary(node,graph);
+        }
+        internal static string EffectActionSteps(GameplayAuthoringGraph graph, string owner, string port)
+        {
+            var steps = new List<string>();
+            Append(owner, port);
+            return string.Join(" → ", steps);
+
+            void Append(string from, string key)
+            {
+                foreach (var edge in graph.Connections.Where(e => e.FromNodeId == from && e.OutputPortKey == key).OrderBy(e => e.Order))
+                {
+                    var node = graph.Nodes.Find(n => n.Id == edge.ToNodeId);
+                    if (node == null) continue;
+                    var action = (node.Payload as GameplayActionNodePayload)?.Action;
+                    string name = Name(node, graph);
+                    if (action != null && GameplaySkillNodeDescriptors.Get(action.GetType()).IsPresentationCue)
+                    {
+                        string resource = GameplaySkillFieldSchema.ValueSummary(BoundValues(node, graph));
+                        if (resource != null) name = resource.Split('\n')[0];
+                    }
+                    steps.Add(name);
+                    if (edge.InputPortKey == "Execute") Append(edge.ToNodeId, "Then");
+                }
+            }
         }
         internal static string SharedSummary(GameplayDefinitionAsset source)
         {

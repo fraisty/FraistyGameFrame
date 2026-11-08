@@ -31,6 +31,8 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable]
     public abstract class GameplaySkillActionAuthoring
     {
+        /// <summary>Opt in only for synchronous actions that need no active ability grant and can use the Effect target as host.</summary>
+        public virtual bool SupportsEffectLifecycle => false;
         public abstract void Validate(GameplayAuthoringValidationContext validation, string path);
         public abstract IGameplaySkillAction Build(GameplayAuthoringBuildContext context);
         public virtual void ValidateReferences(GameplayAuthoringValidationContext validation, string path) { }

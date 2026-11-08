@@ -39,6 +39,8 @@ namespace FRFrame.Gameplay.Authoring.Graph
         }
         public static Inputs Output(object payload,string port,Inputs input)
         {
+            if (payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port))
+                return new Inputs(true, input.Point, "Effect 生命周期使用该组的实际目标。", optionalPoint: !input.Point);
             if(payload is GameplayEffectDefinitionData&&GameplayGraphEffectCallbacks.IsPort(payload,port))return input.With(true,input.Point,"Effect 续接到同一有效目标",false,input.OptionalPoint);
             if(payload is GameplaySearchTargetActionAuthoring){
                 if(port=="EachTarget")return input.With(true,true,"搜索的有效逐目标 Actor/Point");
@@ -113,24 +115,51 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(conditional!=Requirement.None)result[pair.Key]=conditional;
             }return result;
         }
-        private static string Reason(GameplayAuthoringGraph graph,Dictionary<string,List<Inputs>> inputs,string owner,string port,string target,string inputPort,bool scheduled)
+        private static HashSet<string> LifecycleActions(GameplayAuthoringGraph graph)
         {
-            if(inputPort!="Execute")return null;var node=graph.Nodes.Find(n=>n.Id==target);if(!(node?.Payload is GameplayActionNodePayload))return null;
+            var reached = new HashSet<string>();
+            var localEffects = graph.LocalDefinitions.Where(d => d.Payload is GameplayEffectDefinitionData).Select(d => d.Id).ToHashSet();
+            var roots = graph.Connections.Where(e => e.InputPortKey == "Execute" && localEffects.Contains(e.FromNodeId) &&
+                GameplayGraphEffectCallbacks.IsActionPort(e.OutputPortKey)).ToArray();
+            if (roots.Length == 0) return reached;
+            var outgoing = graph.Connections.Where(e => e.InputPortKey == "Execute").ToLookup(e => e.FromNodeId);
+            void Visit(string id)
+            {
+                if (!reached.Add(id)) return;
+                foreach (var edge in outgoing[id]) Visit(edge.ToNodeId);
+            }
+            foreach (var edge in roots) Visit(edge.ToNodeId);
+            return reached;
+        }
+
+        public static string LifecycleActionReason(GameplaySkillActionAuthoring action) => action?.SupportsEffectLifecycle == true ? null :
+            "此行为依赖施放授权，不能连接 Effect 生命周期。请选择声光、战斗飘字、条件、非施放托管效果或驱散。";
+
+        private static string Reason(GameplayAuthoringGraph graph,Dictionary<string,List<Inputs>> inputs,HashSet<string> lifecycle,string owner,string port,string target,string inputPort,bool scheduled)
+        {
+            if(inputPort!="Execute")return null;var node=graph.Nodes.Find(n=>n.Id==target);if(!(node?.Payload is GameplayActionNodePayload action))return null;
+            var ownerPayload=Payload(graph,owner);
+            if (!scheduled && (lifecycle.Contains(owner) || ownerPayload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port)))
+            {
+                string blocked = LifecycleActionReason(action.Action);
+                if (blocked != null) return blocked;
+            }
             GameplayScheduledEntry entry=null;if(scheduled){var timeline=graph.Timelines.FirstOrDefault(t=>t.Events.Any(e=>e.Id==owner));if(timeline==null)return "时间事件已改变，请重新拖线。";entry=timeline.Events.Single(e=>e.Id==owner);owner=timeline.Id;}
             if(!inputs.TryGetValue(owner,out var paths))paths=new List<Inputs>{Caller()};
             foreach(var input in paths){var actual=entry!=null?Target(entry.Target,input,true):Output(Payload(graph,owner),port,input);string reason=Impossible(RequiredNode(graph,node),actual);if(reason!=null)return reason;}return null;
         }
-        public static string ConnectionReason(GameplayAuthoringGraph graph,string owner,string port,string target,string inputPort="Execute")=>Reason(graph,Analyze(graph),owner,port,target,inputPort,false);
+        public static string ConnectionReason(GameplayAuthoringGraph graph,string owner,string port,string target,string inputPort="Execute")=>Reason(graph,Analyze(graph),LifecycleActions(graph),owner,port,target,inputPort,false);
         public static Func<string,string,string,string,bool,string> ConnectionChecker(GameplayAuthoringGraph graph)
-        {var inputs=Analyze(graph);return (owner,port,target,input,scheduled)=>Reason(graph,inputs,owner,port,target,input,scheduled);}
-        public static string ScheduledReason(GameplayAuthoringGraph graph,string eventId,string target)=>Reason(graph,Analyze(graph),eventId,"Schedule",target,"Execute",true);
+        {var inputs=Analyze(graph);var lifecycle=LifecycleActions(graph);return (owner,port,target,input,scheduled)=>Reason(graph,inputs,lifecycle,owner,port,target,input,scheduled);}
+        public static string ScheduledReason(GameplayAuthoringGraph graph,string eventId,string target)=>Reason(graph,Analyze(graph),LifecycleActions(graph),eventId,"Schedule",target,"Execute",true);
         public static void Validate(GameplayAuthoringGraph graph,GameplayAuthoringValidationContext validation,string path)
         {
             var inputs=Analyze(graph);
+            var lifecycle=LifecycleActions(graph);
             foreach(var pair in inputs){var node=graph.Nodes.Find(n=>n.Id==pair.Key);var local=graph.LocalDefinitions.Find(d=>d.Id==pair.Key);
                 foreach(var input in pair.Value){string reason=Impossible(node!=null?RequiredNode(graph,node):Required(local?.Payload),input);if(reason!=null)validation.Error(path+"/"+pair.Key,reason);}
             }
-            foreach(var edge in graph.Connections){string reason=Reason(graph,inputs,edge.FromNodeId,edge.OutputPortKey,edge.ToNodeId,edge.InputPortKey,false);if(reason!=null)validation.Error(path+"/"+edge.Id,reason);}
+            foreach(var edge in graph.Connections){string reason=Reason(graph,inputs,lifecycle,edge.FromNodeId,edge.OutputPortKey,edge.ToNodeId,edge.InputPortKey,false);if(reason!=null)validation.Error(path+"/"+edge.Id,reason);}
             foreach(var pair in ConditionalInputs(graph))validation.Warning(path+"/"+pair.Key,"条件输入：需调用者提供"+Describe(pair.Value)+"；缺失时运行拒绝并在 Trace 定位，不保证此行为必然执行。");
         }
     }

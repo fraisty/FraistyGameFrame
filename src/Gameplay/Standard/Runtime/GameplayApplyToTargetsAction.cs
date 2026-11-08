@@ -19,6 +19,12 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySkillActionExecution ExecuteWithContext(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host) => ExecuteGuarded(context, triggerEvent, host, null);
         public GameplaySkillActionExecution ExecuteGuarded(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host, Func<bool> canContinue)
         {
+            if (triggerEvent.EffectLifecycle is { IsExecuting: true } lifecycle)
+            {
+                bool applied = !OwnedByAbility && lifecycle.Application.Target.TargetId == context.TargetData.PrimaryTargetId &&
+                    lifecycle.ApplyToTarget(Effect).Succeeded;
+                return new GameplaySkillActionExecution(applied ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected, context);
+            }
             if (!(host is GameplayStandardActor actor) || actor.IsDisposed) throw new InvalidOperationException("Standard target effects require a standard world actor.");
             GameplayAbilityHandle owner = default;
             if (OwnedByAbility && Effect.DurationPolicy != GameplayEffectDurationPolicy.Instant)

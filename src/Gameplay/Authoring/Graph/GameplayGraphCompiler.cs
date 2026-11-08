@@ -74,6 +74,19 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if (definition == null) { v.Error(path, "缺少局部定义。"); continue; }
                 if (Identity(definition.Id, path + ".LocalDefinitions")) definitions[definition.Id] = definition;
                 if (definition.Payload == null || definition.Definitions == null) v.Error(path + "/" + definition.Id, "局部定义 Payload 或引用丢失。");
+                if (definition.Payload is GameplayEffectDefinitionData effect)
+                {
+                    void SlotsAreUnique(IEnumerable<string> identities, string group)
+                    {
+                        if (identities == null) return;
+                        var localIds = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (string id in identities)
+                            if (string.IsNullOrWhiteSpace(id) || !localIds.Add(id))
+                                v.Error(path + "/" + definition.Id + "." + group, "生命周期执行项的 ID 缺失或重复。");
+                    }
+                    SlotsAreUnique(effect.CompletionExecutions?.Select(e => e?.AuthoringId), "CompletionExecutions");
+                    SlotsAreUnique(effect.Stacking?.OverflowExecutions?.Select(e => e?.AuthoringId), "OverflowExecutions");
+                }
             }
             foreach (var timeline in graph.Timelines)
             {
@@ -111,7 +124,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 string[] ports;
                 if (nodes.TryGetValue(edge.FromNodeId ?? "", out var from)) ports = GameplayGraphFields.OutputPorts(from);
                 else if (definitions.TryGetValue(edge.FromNodeId ?? "", out var source) && source.Payload != null)
-                    ports = GameplayGraphFields.ActionArrays(source.Payload).Select(s => s.Path).Concat(GameplayGraphEffectCallbacks.Slots(source.Payload).Select(s=>s.Key)).ToArray();
+                    ports = GameplayGraphFields.ActionArrays(source.Payload).Select(GameplayGraphEffectCallbacks.ActionKey).Concat(GameplayGraphEffectCallbacks.Slots(source.Payload).Select(s=>s.Key)).ToArray();
                 else { v.Error(location, "连线来源不存在。"); continue; }
                 bool typed=definitions.TryGetValue(edge.FromNodeId??"",out var effectSource)&&GameplayGraphEffectCallbacks.Slots(effectSource.Payload).Any(s=>s.Key==edge.OutputPortKey);
                 if (!ports.Contains(edge.OutputPortKey) || edge.InputPortKey != (typed?GameplayGraphEffectCallbacks.Input:"Execute") || edge.Order < 0 ||
@@ -330,7 +343,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
             RejectLegacyRelationships(payload, id);
             if(payload is GameplayEffectDefinitionData effect)bindings=ActiveCallbacks(id,effect,bindings);
             foreach (var slot in GameplayGraphFields.ActionArrays(payload))
-                slot.Value = BuildOutput(id, slot.Path, false).Select(a => (GameplaySkillActionAuthoring)new CompiledAction(a)).ToArray();
+                slot.Value = BuildOutput(id, GameplayGraphEffectCallbacks.ActionKey(slot), false).Select(a => (GameplaySkillActionAuthoring)new CompiledAction(a)).ToArray();
             Push(id, payload, bindings);
             try { var v = Validation(id); payload.Validate(v, id); Throw(v); return payload.BuildDefinition(_context); }
             finally { _scopes.Pop(); }
@@ -342,10 +355,20 @@ namespace FRFrame.Gameplay.Authoring.Graph
         {
             var before=GameplayGraphEffectCallbacks.Slots(effect).ToArray();
             var connected=new HashSet<string>(before.Where(s=>Edges(id,s.Key).Any()||bindings.Any(b=>b.PropertyPath==s.Path)).Select(s=>s.Key));
-            effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>!(e is GameplayApplyEffectOnCompletionAuthoring)||connected.Contains("Completion/"+e.AuthoringId)).ToArray();
+            effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>e switch
+            {
+                GameplayApplyEffectOnCompletionAuthoring => connected.Contains("Completion/"+e.AuthoringId),
+                GameplayEffectCompletionActionsAuthoring => Edges(id,GameplayGraphEffectCallbacks.CompletionActionPrefix+e.AuthoringId).Any(),
+                _ => true
+            }).ToArray();
             if(effect.Stacking!=null){
                 bool hadExecutors=effect.Stacking.OverflowExecutions.Length>0;
-                effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>!(e is GameplayApplyEffectOnOverflowAuthoring)||connected.Contains("Overflow/"+e.AuthoringId)).ToArray();
+                effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>e switch
+                {
+                    GameplayApplyEffectOnOverflowAuthoring => connected.Contains("Overflow/"+e.AuthoringId),
+                    GameplayEffectOverflowActionsAuthoring => Edges(id,GameplayGraphEffectCallbacks.OverflowActionPrefix+e.AuthoringId).Any(),
+                    _ => true
+                }).ToArray();
                 if(hadExecutors&&effect.Stacking.Overflow==GameplayEffectStackOverflowPolicy.ExecuteOverflow&&effect.Stacking.OverflowExecutions.Length==0)effect.Stacking.Overflow=GameplayEffectStackOverflowPolicy.Reject;
             }
             var after=GameplayGraphEffectCallbacks.Slots(effect).ToDictionary(s=>s.Key);
@@ -432,6 +455,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         // as an authoring source, and never introduces another executable rule implementation.
         private sealed class CompiledAction : GameplaySkillActionAuthoring
         {
+            public override bool SupportsEffectLifecycle => true;
             private readonly IGameplaySkillAction _action;
             internal CompiledAction(IGameplaySkillAction action) { _action = action; }
             public override void Validate(GameplayAuthoringValidationContext validation, string path) { }

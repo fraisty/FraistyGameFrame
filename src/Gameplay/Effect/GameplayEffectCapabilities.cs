@@ -82,12 +82,21 @@ namespace FRFrame.Gameplay
     public sealed class GameplayEffectOverflowContext
     {
         private readonly GameplayEffectContainer _container;
+        private readonly GameplaySourceId _source;
+        private readonly int _maxStacks;
+        private bool _dispatching = true;
         public GameplayEffectHandle Handle { get; }
         public GameplayEffectApplicationContext Application { get; }
         public int StackCount { get; }
         internal GameplayEffectOverflowContext(GameplayEffectContainer container, GameplayEffectHandle handle,
-            GameplayEffectApplicationContext application, int count)
-        { _container = container; Handle = handle; Application = application.WithStackCount(count); StackCount = count; }
+            GameplayEffectApplicationContext application, int count, GameplaySourceId source, int maxStacks)
+        { _container = container; Handle = handle; Application = application.WithStackCount(count); StackCount = count; _source = source; _maxStacks = maxStacks; }
+        internal void Close() => _dispatching = false;
+        internal void Run(GameplayEffectLifecycleActions actions)
+        {
+            if (_dispatching) actions.Run(_container, GameplayEffectLifecycleKind.Overflow, Handle, _source,
+                Application, StackCount, _maxStacks, GameplayEffectRemovalCause.Overflow);
+        }
         public GameplayEffectApplicationResult Apply(GameplayEffectDefinition next) => _container.Apply(next, Application);
         public bool RemoveCurrent() => _container.Remove(Handle, GameplayEffectRemovalCause.Overflow);
         public bool RemoveLayer(GameplayEffectLayerHandle layer) => layer.EffectHandle == Handle &&

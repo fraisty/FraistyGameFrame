@@ -28,10 +28,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             _nodeIndexes.Clear();_consumerCards.Clear();_externalSources.Clear();_externalDependencyGuids.Clear();_connectionChecker=null;
             if(!_document)return;var graph=_document.AuthoringGraph;
             var definitions=graph.LocalDefinitions.ToDictionary(d=>d.Id);var timelines=graph.Timelines.ToDictionary(t=>t.Id);
+            var graphNodes=graph.Nodes.ToDictionary(n=>n.Id);var outgoing=graph.Connections.ToLookup(e=>e.FromNodeId);
             for(int i=0;i<graph.Nodes.Count;i++){
                 var node=graph.Nodes[i];_nodeIndexes[node.Id]=i;
                 string card=node.Id==graph.PrimaryRuleNodeId&&InlinePrimaryRule(_document)?graph.AbilityNodeId:node.Id;
-                var seen=new HashSet<string>();Visit(node.Id,node.Payload.Definitions);
+                var seen=new HashSet<string>();var lifecycle=new HashSet<string>();Visit(node.Id,node.Payload.Definitions);
                 void Visit(string owner,IEnumerable<GameplayDefinitionBinding> bindings){
                     if(string.IsNullOrEmpty(owner)||!seen.Add(owner))return;
                     if(!_consumerCards.TryGetValue(owner,out var cards))_consumerCards[owner]=cards=new HashSet<string>();cards.Add(card);
@@ -39,6 +40,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         if(definitions.TryGetValue(b.LocalId,out var local))Visit(local.Id,local.Definitions);
                         if(timelines.TryGetValue(b.LocalId,out var timeline)){Visit(timeline.Id,Array.Empty<GameplayDefinitionBinding>());foreach(var e in timeline.Events)Visit(e.EntryNodeId,graph.Nodes.Find(n=>n.Id==e.EntryNodeId)?.Payload.Definitions??new List<GameplayDefinitionBinding>());}
                     }
+                    if(definitions.TryGetValue(owner,out var definition)&&definition.Payload is GameplayEffectDefinitionData)
+                        foreach(var edge in outgoing[owner])VisitStep(edge.ToNodeId,edge.InputPortKey=="Execute");
+                }
+                void VisitStep(string id,bool execute){
+                    if(!graphNodes.TryGetValue(id,out var target))return;
+                    Visit(id,target.Payload.Definitions);
+                    if(execute&&lifecycle.Add(id))foreach(var edge in outgoing[id].Where(e=>e.OutputPortKey=="Then"))VisitStep(edge.ToNodeId,true);
                 }
             }
             foreach(var source in _externalSources){string path=UnityEditor.AssetDatabase.GetAssetPath(source);if(!string.IsNullOrEmpty(path))_externalDependencyGuids.UnionWith(UnityEditor.AssetDatabase.GetDependencies(path,true).Select(UnityEditor.AssetDatabase.AssetPathToGUID).Where(guid=>!string.IsNullOrEmpty(guid)));}
@@ -68,6 +76,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     Set("ExecutionStatus",(active.Contains(id)?"正式执行":data.Payload is GameplayRuleNodePayload?"未启用 · 不参与执行":"未接入执行流程 · 不参与执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地"));
                     var editors=node.extensionContainer.Query<GameplaySkillCardEditor>().ToList();foreach(var editor in editors)editor.Refresh();
                     Set("BusinessSummary",GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,editors.Any(e=>e.HasFields)));
+                    RefreshEffectLifecycleRows(node);
                     if(data.Payload is GameplayAbilityNodePayload)Set("AbilitySummary",_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能");
                     foreach(var binding in data.Payload.Definitions){var definition=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);if(definition!=null)Set("Definition-"+definition.Id,DefinitionSummary(definition));}
                     foreach(var label in node.extensionContainer.Query<Label>(className:"animation-source").ToList()){var animation=Record((string)label.userData);if(animation==null)continue;object values=GameplaySkillNodeDisplay.BoundValues(animation,_document.AuthoringGraph);string text=IsTimelineInline(animation.Id)?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(animation.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):GameplaySkillNodeDisplay.EventLabel(animation,_document.AuthoringGraph)+" · 参数在独立动画卡";if(label.text!=text)label.text=text;}

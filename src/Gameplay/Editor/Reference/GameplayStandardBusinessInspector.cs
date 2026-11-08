@@ -65,7 +65,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("持续 / 周期（秒）","Period=0不执行周期；动态数值沿用正式求值器，非启用字段保留旧值。","DurationPolicy","Duration","DurationValue","Period","PeriodValue","PeriodicStart");
                 yield return Group("标签 / 应用与持续门禁","EffectTags用于驱散分类，GrantedTags在存续期间贡献标签。","EffectTags","GrantedTags","ApplicationRequirements","OngoingRequirements");
                 if ((value is GameplayEffectDefinitionData effect ? effect.DurationPolicy : ((GameplayEffectDefinitionAsset)value).DurationPolicy) != GameplayEffectDurationPolicy.Instant)
-                    yield return Group("效果表现","首次应用播放一次；持续表现随当前 Effect 实例清理。溢出声光在下方溢出执行中配置。","Presentation");
+                {
+                    yield return Group("状态外观","由实际 Effect 句柄创建、更新和回收；一次性表现从生命周期动作行连接。","Presentation");
+                    yield return Group("生命周期动作","只有真实提交才触发。满层是到达上限，溢出是满层后再次申请。","OnApplied","OnStackChanged","OnEnterMax","OnPeriod");
+                }
                 yield return Group("属性修改 / 结算","所有Execution均可配置，按正式数组顺序执行。","Modifiers","Executions");
                 yield return Group("叠层 / 溢出 / 自然完成","Overflow与Completion是不同的typed数组；取消/驱散不运行自然完成。","Stacking","CompletionExecutions");
             }

@@ -14,7 +14,19 @@ namespace FRFrame.Gameplay
         public float Magnitude { get; }
         /// <summary>Optional immutable child/hit envelope. Legacy events leave this null.</summary>
         public GameplayContext Context { get; }
+        /// <summary>Optional synchronous Effect evidence. This envelope is passed to the runner, never published by Tag.</summary>
+        public GameplayEffectLifecycleEvent EffectLifecycle { get; }
         public bool HasContext => Context != null;
+
+        internal GameplayEventData(GameplayEffectLifecycleEvent lifecycle)
+        {
+            EffectLifecycle = lifecycle;
+            Context = lifecycle.Application.Context;
+            InstigatorId = Context.InstigatorId;
+            TargetId = lifecycle.Application.Target.TargetId;
+            Magnitude = lifecycle.StackCount;
+            EventTag = default;
+        }
 
         /// <summary>Preserves the full source, target geometry and scalar snapshot with consistent event IDs.</summary>
         public GameplayEventData(GameplayTag eventTag, GameplayContext context, float magnitude)
@@ -38,6 +50,7 @@ namespace FRFrame.Gameplay
                 throw new ArgumentOutOfRangeException(nameof(magnitude), "Event magnitude must be finite.");
 
             Context = null;
+            EffectLifecycle = null;
             EventTag = eventTag;
             InstigatorId = instigatorId;
             TargetId = targetId;

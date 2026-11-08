@@ -45,7 +45,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if(!effectOnly&&node!=null&&values!=null&&PreviewFactories.Any(p=>p.Supports(values)))result.Add(new PreviewChoice{Node=node,Values=values,Start=time,Owner=binding.LocalId,EventId=eventId,Key=origin+":"+id+":"+binding.PropertyPath,Label=time.ToString("0.###")+"s · "+GameplaySkillFieldSchema.NodeName(node)+" · "+string.Join("/",origin.Split('/').Select(part=>part.Substring(0,Math.Min(4,part.Length))))});
                     if(!string.IsNullOrEmpty(binding.LocalId))visit(binding.LocalId,time,origin,eventId,false);
                 }
-                if(effectOnly)return;
+                if(effectOnly || local?.Payload is GameplayEffectDefinitionData)return;
                 foreach(var edge in graph.Connections.Where(e=>e.FromNodeId==id).OrderBy(e=>e.Order))visit(edge.ToNodeId,time,origin,eventId,edge.InputPortKey==GameplayGraphEffectCallbacks.Input);
             };
             visit(root,0,root,null,false);_previewChoices[root]=result;return result;

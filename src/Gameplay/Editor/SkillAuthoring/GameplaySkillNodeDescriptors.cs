@@ -177,6 +177,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 type.Name == "GameplayApplyEffectOnCompletionAuthoring" ? "自然完成施加效果" :
                 type.Name == "GameplayApplyEffectOnOverflowAuthoring" ? "溢出施加效果" :
                 type.Name == "GameplayRemoveCurrentOnOverflowAuthoring" ? "溢出移除当前效果" :
+                type == typeof(GameplayEffectOverflowActionsAuthoring) ? "溢出行为" :
+                type == typeof(GameplayEffectCompletionActionsAuthoring) ? "自然到期行为" :
                 type.Name == "GameplayEffectStackingAuthoring" ? "叠层策略" :
                 type.Name == "GameplayTagQueryAuthoring" ? "标签查询" :
                 type.Name == "GameplayAbilityChargeAuthoring" ? "充能策略" :

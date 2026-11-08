@@ -9,6 +9,7 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable, Preserve]
     public sealed class GameplaySkillBranchActionAuthoring : GameplaySkillActionAuthoring
     {
+        public override bool SupportsEffectLifecycle => true;
         [UnityEngine.SerializeReference] public GameplaySkillConditionAuthoring Condition;
         [UnityEngine.SerializeReference] public GameplaySkillActionAuthoring[] TrueActions = Array.Empty<GameplaySkillActionAuthoring>();
         [UnityEngine.SerializeReference] public GameplaySkillActionAuthoring[] FalseActions = Array.Empty<GameplaySkillActionAuthoring>();

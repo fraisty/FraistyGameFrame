@@ -207,8 +207,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var definition = _document.AuthoringGraph.LocalDefinitions.Find(d => d.Id == binding.LocalId);
                 
                 if(definition!=null&&_outputs.Values.Any(p=>((Socket)p.userData).Owner==definition.Id)){var shared=new Label("复用局部配置 · 后续端口位于首个消费者卡片");shared.style.whiteSpace=WhiteSpace.Normal;shared.style.paddingLeft=10;card.extensionContainer.Add(shared);definition=null;}
-                if (definition != null) foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
-                if(definition!=null)foreach(var port in GameplayGraphEffectCallbacks.Ports(definition.Payload))ResourcePort(card,definition,binding,port);
+                if (definition?.Payload is GameplayEffectDefinitionData effect) AddEffectLifecycle(card, definition, effect);
+                else if (definition != null) foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
                 
             var timeline = _document.AuthoringGraph.Timelines.Find(t => t.Id == binding.LocalId);
                 if (timeline != null)
@@ -319,6 +319,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             port.RemoveManipulator(port.edgeConnector);port.AddManipulator(new EdgeConnector<Edge>(new CreationConnector(this)));
             port.portName = GameplaySkillFieldSchema.PortName(key); port.userData = new Socket { Owner = owner, Port = key, Scheduled = scheduled };
             port.AddManipulator(new ContextualMenuManipulator(evt=>{
+                if(local?.Payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(key))
+                {
+                    var socket = (Socket)port.userData;
+                    var status = GameplaySkillAuthoringCommands.IsReadOnly(_document) || EditorApplication.isPlayingOrWillChangePlaymode
+                        ? DropdownMenuAction.Status.Disabled : DropdownMenuAction.Status.Normal;
+                    evt.menu.AppendAction("添加并连接…", _ => ShowMenu(port.worldBound.center, source: socket), status);
+                    evt.menu.AppendAction("连接已有行为…", _ => ShowExistingEffectActions(socket, port.worldBound.center), status);
+                    evt.menu.AppendAction("编辑生命周期配置", _ => { Selected?.Invoke(card.viewDataKey); ConfigurationOwner?.OpenDetails(); });
+                    foreach (var edge in port.connections)
+                    {
+                        string id = edge.input.node.viewDataKey;
+                        evt.menu.AppendAction("定位 → " + edge.input.node.title, _ => FocusNode(id));
+                    }
+                }
                 foreach(var edge in port.connections.ToArray()){
                     string id=(edge.userData as Socket)?.Owner;
                     if(id==null)continue;

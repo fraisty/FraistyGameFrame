@@ -28,6 +28,10 @@ namespace FRFrame.Gameplay.Authoring
         /// <summary>Only Duration natural expiry runs these, after modifiers, tags and handle have been removed.</summary>
         [SerializeReference] public GameplayEffectCompletionAuthoring[] CompletionExecutions = Array.Empty<GameplayEffectCompletionAuthoring>();
         [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnApplied = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnStackChanged = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnEnterMax = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnPeriod = Array.Empty<GameplaySkillActionAuthoring>();
 
         protected override void ValidateContent(GameplayAuthoringValidationContext v, string p)
         {
@@ -53,6 +57,12 @@ namespace FRFrame.Gameplay.Authoring
             ApplicationRequirements?.Validate(v, p + ".ApplicationRequirements");
             OngoingRequirements?.Validate(v, p + ".OngoingRequirements");
             Presentation?.Validate(v, p + ".Presentation");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnApplied, v, p + ".OnApplied");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnStackChanged, v, p + ".OnStackChanged");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnEnterMax, v, p + ".OnEnterMax");
+            GameplayEffectLifecycleActionAuthoring.Validate(OnPeriod, v, p + ".OnPeriod");
+            if (Stacking == null && (OnStackChanged.Length > 0 || OnEnterMax.Length > 0))
+                v.Error(p + ".Stacking", "层数变化和进入满层需要叠层策略。");
             if (CompletionExecutions == null) v.Error(p + ".CompletionExecutions", "Completion list is null.");
             else
             {
@@ -77,14 +87,16 @@ namespace FRFrame.Gameplay.Authoring
             if (DurationPolicy == GameplayEffectDurationPolicy.Instant)
             {
                 if (Presentation != null) v.Error(p + ".Presentation", "状态表现需要持续效果。");
+                if (OnApplied.Length + OnStackChanged.Length + OnEnterMax.Length + OnPeriod.Length > 0)
+                    v.Error(p, "生命周期动作需要持续效果。");
                 if (Period != 0 || Stacking != null || modifierCount != 0 || tagCount != 0 || executionCount == 0)
                     v.Error(p, "Instant effects require executions and reject period, stack, modifiers and granted tags.");
                 if (OngoingRequirements != null && ((OngoingRequirements.All?.Length ?? 0) > 0 ||
                     (OngoingRequirements.Any?.Length ?? 0) > 0 || (OngoingRequirements.None?.Length ?? 0) > 0))
                     v.Error(p + ".OngoingRequirements", "Instant effects cannot have ongoing requirements.");
             }
-            else if ((Period == 0 && executionCount != 0) || (Period > 0 && executionCount == 0))
-                v.Error(p, "Persistent effects require executions exactly when Period is positive.");
+            else if ((Period > 0) != (executionCount != 0 || OnPeriod.Length > 0))
+                v.Error(p, "周期大于零时需要周期结算或已连接的周期动作。");
         }
 
         public GameplayEffectDefinition Build(GameplayAuthoringBuildContext context)
@@ -101,7 +113,9 @@ namespace FRFrame.Gameplay.Authoring
                 return new GameplayEffectDefinition(DurationPolicy, Duration, Period, modifiers,
                     GameplayTagQueryAuthoring.BuildTags(GrantedTags), executions, Stacking?.Build(context),
                     ApplicationRequirements?.Build(), OngoingRequirements?.Build(), completions,
-                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build(), Presentation?.Build());
+                    GameplayTagQueryAuthoring.BuildTags(EffectTags), PeriodicStart, DurationValue?.Build(), PeriodValue?.Build(), Presentation?.Build(),
+                    GameplayEffectLifecycleActionAuthoring.Build(OnApplied, context), GameplayEffectLifecycleActionAuthoring.Build(OnStackChanged, context),
+                    GameplayEffectLifecycleActionAuthoring.Build(OnEnterMax, context), GameplayEffectLifecycleActionAuthoring.Build(OnPeriod, context));
             });
         }
     

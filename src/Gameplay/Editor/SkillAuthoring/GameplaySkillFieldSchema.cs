@@ -191,6 +191,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         public static string PortName(string path)
         {
+            if(path==GameplayGraphEffectCallbacks.Applied)return "首次成功应用";
+            if(path==GameplayGraphEffectCallbacks.StackChanged)return "层数变化";
+            if(path==GameplayGraphEffectCallbacks.EnterMax)return "进入满层";
+            if(path==GameplayGraphEffectCallbacks.Period)return "每次周期";
+            if(path==GameplayGraphEffectCallbacks.AddCompletionActions||path.StartsWith(GameplayGraphEffectCallbacks.CompletionActionPrefix,StringComparison.Ordinal))return "自然到期 · 行为";
+            if(path==GameplayGraphEffectCallbacks.AddOverflowActions||path.StartsWith(GameplayGraphEffectCallbacks.OverflowActionPrefix,StringComparison.Ordinal))return "叠层溢出 · 行为";
             if(path==GameplayGraphEffectCallbacks.Completion)return "自然完成 · 添加效果";
             if(path==GameplayGraphEffectCallbacks.Overflow)return "叠层溢出 · 添加效果";
             if(path.StartsWith("Completion/",StringComparison.Ordinal))return "自然完成 · 续接效果";
@@ -297,7 +303,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             object value = root.propertyType == SerializedPropertyType.ManagedReference ? root.managedReferenceValue : root.boxedValue;
             if (value == null) return;
             var resources = GameplayGraphFields.ResourceSlots(value).ToDictionary(s => s.Path, s => s.ValueType);
-            var arrays = new HashSet<string>(GameplayGraphFields.ActionArrays(value).Select(s => s.Path));
+            var arrays = GameplayGraphFields.ActionArrays(value).ToDictionary(s => s.Path);
             string inactiveKey="Inactive:"+doc.GetInstanceID()+":"+root.propertyPath;bool showInactive=Open.Contains(inactiveKey);
             DrawChildren(root, value, "");
             if(value is GameplayEffectDefinitionData||value is GameplayProjectileDefinitionData||value is GameplayAreaDefinitionData){
@@ -342,7 +348,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         continue;
                     }
 
-                    if (arrays.Contains(path)) { EditorGUILayout.LabelField(PortName(path), "在画布端口连接行为", EditorStyles.miniLabel); continue; }
+                    if (arrays.TryGetValue(path, out var actionSlot))
+                    {
+                        string port = GameplayGraphEffectCallbacks.ActionKey(actionSlot);
+                        if (value is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port)) DrawLifecycleActions(port);
+                        else EditorGUILayout.LabelField(PortName(path), "在画布端口连接行为", EditorStyles.miniLabel);
+                        continue;
+                    }
                     if (resources.TryGetValue(path, out var resource)) { DrawBinding(doc, serialized, ownerId, bindings, bindingPath, resource, visited,edit); continue; }
                     var fieldInfo = GameplayGraphFields.SerializedFields(owner.GetType()).FirstOrDefault(f => f.Name == it.name);
                     Type fieldType = fieldInfo?.FieldType;
@@ -379,13 +391,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     {
                         var element = p.GetArrayElementAtIndex(j); Type elementType = fieldType?.GetElementType();
                         EditorGUILayout.BeginHorizontal(); GUILayout.Label("顺序 " + (j + 1), EditorStyles.miniLabel);
-                        if (GUILayout.Button("↑", GUILayout.Width(25)) && j > 0) { p.MoveArrayElement(j, j - 1);edit.Structural=true; GUI.changed = true; }
-                        if (GUILayout.Button("↓", GUILayout.Width(25)) && j + 1 < p.arraySize) { p.MoveArrayElement(j, j + 1);edit.Structural=true; GUI.changed = true; }
+                        if (GUILayout.Button("↑", GUILayout.Width(25)) && j > 0) { p.MoveArrayElement(j, j - 1);edit.Structural=true;edit.Paths.Add(p.propertyPath); GUI.changed = true; }
+                        if (GUILayout.Button("↓", GUILayout.Width(25)) && j + 1 < p.arraySize) { p.MoveArrayElement(j, j + 1);edit.Structural=true;edit.Paths.Add(p.propertyPath); GUI.changed = true; }
                         if (GUILayout.Button("×", GUILayout.Width(25))) {
                             object item=element.propertyType==SerializedPropertyType.ManagedReference?element.managedReferenceValue:null;
-                            string callbackKey=item is GameplayApplyEffectOnCompletionAuthoring completion?"Completion/"+completion.AuthoringId:item is GameplayApplyEffectOnOverflowAuthoring overflow?"Overflow/"+overflow.AuthoringId:null;
+                            string callbackKey=item switch {
+                                GameplayApplyEffectOnCompletionAuthoring completion => "Completion/"+completion.AuthoringId,
+                                GameplayApplyEffectOnOverflowAuthoring overflow => "Overflow/"+overflow.AuthoringId,
+                                GameplayEffectCompletionActionsAuthoring completion => GameplayGraphEffectCallbacks.CompletionActionPrefix+completion.AuthoringId,
+                                GameplayEffectOverflowActionsAuthoring overflow => GameplayGraphEffectCallbacks.OverflowActionPrefix+overflow.AuthoringId,
+                                _ => null
+                            };
                             if(callbackKey!=null){EditorGUILayout.EndHorizontal();ApplyFields(serialized,doc);GameplaySkillAuthoringCommands.RemoveEffectCallback(doc,ownerId,callbackKey);GUIUtility.ExitGUI();}
-                            p.DeleteArrayElementAtIndex(j);edit.Structural=true; GUI.changed = true; EditorGUILayout.EndHorizontal(); break;
+                            p.DeleteArrayElementAtIndex(j);edit.Structural=true;edit.Paths.Add(p.propertyPath); GUI.changed = true; EditorGUILayout.EndHorizontal(); break;
                         }
                         EditorGUILayout.EndHorizontal();
                         DrawStructured(element, elementType, path + ".Array.data[" + j + "]");
@@ -410,6 +428,26 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 else if (p.propertyType == SerializedPropertyType.Generic)
                 { object current = p.boxedValue; if (current != null) { GUILayout.Label(GameplayAuthoringInspector.Label(p), EditorStyles.boldLabel); EditorGUI.indentLevel++; DrawChildren(p, current, path); EditorGUI.indentLevel--; } }
                 else Field(p);
+            }
+
+            void DrawLifecycleActions(string port)
+            {
+                var graph = doc.AuthoringGraph;
+                var steps = graph.Connections.Where(e => e.FromNodeId == ownerId && e.OutputPortKey == port).OrderBy(e => e.Order).ToArray();
+                string unavailable = GameplayGraphPortPolicy.Unavailable(graph, ownerId, port);
+                EditorGUILayout.LabelField(PortName(port), unavailable ?? (steps.Length == 0 ? "从画布行尾连接" : "按下列顺序执行"), EditorStyles.miniLabel);
+                foreach (var step in steps)
+                {
+                    var target = graph.Nodes.Single(n => n.Id == step.ToNodeId);
+                    EditorGUILayout.BeginHorizontal();
+                    if (GUILayout.Button(GameplaySkillNodeDisplay.Name(target, graph))) GameplaySkillWorkbench.Open(doc, target.Id);
+                    using (new EditorGUI.DisabledScope(step == steps[0])) if (GUILayout.Button("↑", GUILayout.Width(25))) Move(-1);
+                    using (new EditorGUI.DisabledScope(step == steps[steps.Length - 1])) if (GUILayout.Button("↓", GUILayout.Width(25))) Move(1);
+                    if (GUILayout.Button(new GUIContent("断开", "保留行为卡及其资源作为草稿。"), GUILayout.Width(46)))
+                    { ApplyFields(serialized, doc); GameplaySkillAuthoringCommands.Disconnect(doc, step.Id); GUIUtility.ExitGUI(); }
+                    EditorGUILayout.EndHorizontal();
+                    void Move(int direction) { ApplyFields(serialized, doc); GameplaySkillAuthoringCommands.ReorderEffectAction(doc, step.Id, direction); GUIUtility.ExitGUI(); }
+                }
             }
             void Pick(SerializedProperty property, Type type, bool append)
             {
@@ -485,10 +523,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if (binding?.External)
             {
-                EditorGUILayout.ObjectField("来源",binding.External,resourceType,false);
+                bool sharedEffect = binding.External is GameplayEffectDefinitionAsset;
+                using(new EditorGUI.DisabledScope(sharedEffect)) EditorGUILayout.ObjectField("来源",binding.External,resourceType,false);
                 string key="Shared:"+doc.GetInstanceID()+":"+ownerId+":"+path;
-                bool open=EditorGUILayout.Foldout(Open.Contains(key),"共享资源业务配置",true);
-                if(open){Open.Add(key);using(var shared=new SerializedObject(binding.External))GameplayAuthoringInspector.Draw(shared);}else Open.Remove(key);
+                bool open=EditorGUILayout.Foldout(Open.Contains(key),sharedEffect?"共享效果业务配置 · 只读":"共享资源业务配置",true);
+                if(open){Open.Add(key);using(new EditorGUI.DisabledScope(sharedEffect))using(var shared=new SerializedObject(binding.External))GameplayAuthoringInspector.Draw(shared);}else Open.Remove(key);
+                if(sharedEffect&&GUILayout.Button("打开共享效果源（显式编辑）"))GameplaySkillWorkbench.OpenSource(binding.External);
                 if(GUILayout.Button("定位共享资源")){Selection.activeObject=binding.External;EditorGUIUtility.PingObject(binding.External);}
             }
             if (timeline == null)

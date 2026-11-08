@@ -5,12 +5,39 @@ using UnityEngine;
 
 namespace FRFrame.Gameplay.Authoring.Graph
 {
-    /// <summary>Effect-to-Effect callbacks are typed references to the actual completion/overflow
-    /// executors, never SkillAction arrays. Stable callback IDs survive inspector array reorder.
-    /// A receiver's Effect input consumes its definition only, not its Execute/Then action chain.</summary>
+    /// <summary>Typed Effect references and ordered lifecycle action ports share an executor list.
+    /// A receiver's Effect input consumes only its definition; Execute runs its action chain.</summary>
     public static class GameplayGraphEffectCallbacks
     {
         public const string Completion="AddCompletion",Overflow="AddOverflow",Input="Effect";
+        public const string AddCompletionActions="EffectEvent/AddCompletion", AddOverflowActions="EffectEvent/AddOverflow";
+        public const string CompletionActionPrefix="EffectEvent/Completion/", OverflowActionPrefix="EffectEvent/Overflow/";
+        public const string Applied=nameof(GameplayEffectDefinitionData.OnApplied), StackChanged=nameof(GameplayEffectDefinitionData.OnStackChanged),
+            EnterMax=nameof(GameplayEffectDefinitionData.OnEnterMax), Period=nameof(GameplayEffectDefinitionData.OnPeriod);
+
+        public static bool IsActionPort(string key) => key == Applied || key == StackChanged || key == EnterMax || key == Period ||
+            key?.StartsWith("EffectEvent/", StringComparison.Ordinal) == true;
+
+        /// <summary>Array property paths are for binding; authoring keys survive executor reorder.</summary>
+        public static string ActionKey(GameplayGraphFields.Slot slot) => slot.Owner switch
+        {
+            GameplayEffectCompletionActionsAuthoring completion => CompletionActionPrefix + completion.AuthoringId,
+            GameplayEffectOverflowActionsAuthoring overflow => OverflowActionPrefix + overflow.AuthoringId,
+            _ => slot.Path
+        };
+
+        public static string AddActions(GameplayEffectDefinitionData effect, string port)
+        {
+            if (port == AddCompletionActions)
+            {
+                var item = new GameplayEffectCompletionActionsAuthoring();
+                effect.CompletionExecutions = effect.CompletionExecutions.Append(item).ToArray();
+                return CompletionActionPrefix + item.AuthoringId;
+            }
+            var overflow = new GameplayEffectOverflowActionsAuthoring();
+            effect.Stacking.OverflowExecutions = effect.Stacking.OverflowExecutions.Append(overflow).ToArray();
+            return OverflowActionPrefix + overflow.AuthoringId;
+        }
         public sealed class Slot {public string Key,Path;public bool IsCompletion;}
         public static IEnumerable<Slot> Slots(object value)
         {
@@ -33,8 +60,9 @@ namespace FRFrame.Gameplay.Authoring.Graph
         }
         public static void Remove(GameplayEffectDefinitionData effect,string key)
         {
-            if(key.StartsWith("Completion/",StringComparison.Ordinal))effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>"Completion/"+e.AuthoringId!=key).ToArray();
-            else if(effect.Stacking!=null){effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>"Overflow/"+e.AuthoringId!=key).ToArray();if(effect.Stacking.OverflowExecutions.Length==0)effect.Stacking.Overflow=GameplayEffectStackOverflowPolicy.Reject;}
+            if(key.StartsWith("Completion/",StringComparison.Ordinal)||key.StartsWith(CompletionActionPrefix,StringComparison.Ordinal))
+                effect.CompletionExecutions=effect.CompletionExecutions.Where(e=>"Completion/"+e.AuthoringId!=key&&CompletionActionPrefix+e.AuthoringId!=key).ToArray();
+            else if(effect.Stacking!=null){effect.Stacking.OverflowExecutions=effect.Stacking.OverflowExecutions.Where(e=>"Overflow/"+e.AuthoringId!=key&&OverflowActionPrefix+e.AuthoringId!=key).ToArray();if(effect.Stacking.OverflowExecutions.Length==0)effect.Stacking.Overflow=GameplayEffectStackOverflowPolicy.Reject;}
         }
         /// <summary>Lossless format upgrade: replace old callback configuration bindings with
         /// explicit typed edges. No executor, ownership flag, effect value or shared identity changes.</summary>

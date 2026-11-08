@@ -7,26 +7,45 @@ namespace FRFrame.Gameplay.Unity
     public sealed partial class GameplayUnityAnimationController
     {
         private readonly Queue<(GameplayEffectHandle Handle, GameplayEffectDefinition Definition, int Stacks)> _effectChanges = new();
-        private readonly Queue<(GameplayEffectCue Cue, Vector3 Position)> _effectCues = new();
         private readonly Dictionary<GameplayEffectHandle, EffectViewLease> _effectViews = new();
         private readonly Dictionary<GameplayEffectDefinition, EffectViewLease> _effectBadges = new();
+        private bool _statusVisible;
 
-        private void ObserveEffectState(GameplayEffectPresentationState state) =>
-            _effectChanges.Enqueue((state.Handle, state.Definition, state.StackCount));
+        private void ObserveEffectState(GameplayEffectPresentationState state)
+        {
+            if (ReferenceEquals(Actor.Presentation, this)) _effectChanges.Enqueue((state.Handle, state.Definition, state.StackCount));
+        }
 
         private void ObserveEffectRemoval(GameplayEffectRemovalObservation removal)
         {
-            if (removal.Definition.Presentation != null) _effectChanges.Enqueue((removal.Handle, removal.Definition, 0));
+            if (removal.Definition.Presentation != null && ReferenceEquals(Actor.Presentation, this))
+                _effectChanges.Enqueue((removal.Handle, removal.Definition, 0));
         }
 
-        internal void QueueEffectCue(GameplayEffectCue cue)
+        /// <summary>Releases status views before temporarily replacing the actor's model driver.
+        /// On the next advance as active driver, current statuses are restored without replaying their events.</summary>
+        public void ReleaseEffectStatusViews()
         {
-            var point = Actor.Position;
-            _effectCues.Enqueue((cue, new Vector3(point.X, point.Y, point.Z)));
+            ReleaseStatusViews();
+            _effectChanges.Clear();
+            _statusVisible = false;
         }
 
         private void AdvanceEffectPresentation(float amount)
         {
+            bool visible = Actor.IsTargetable;
+            if (_statusVisible != visible)
+            {
+                _statusVisible = visible;
+                _effectChanges.Clear();
+                if (visible)
+                {
+                    foreach (var entry in Actor.Effects.GetActiveEntriesSnapshot())
+                        if (entry.Definition.Presentation is GameplayUnityEffectPresentation presentation)
+                            CreateEffectView(entry.Handle, entry.Definition, presentation).SetStacks(entry.StackCount, pulse: false);
+                }
+                else ReleaseStatusViews();
+            }
             while (_effectChanges.TryDequeue(out var change))
             {
                 if (change.Stacks == 0)
@@ -34,23 +53,13 @@ namespace FRFrame.Gameplay.Unity
                     if (_effectViews.Remove(change.Handle, out var removed)) removed.Release();
                     continue;
                 }
-                if (change.Definition.Presentation is not GameplayUnityEffectPresentation presentation || !Actor.Effects.IsActive(change.Handle)) continue;
+                if (!visible || change.Definition.Presentation is not GameplayUnityEffectPresentation presentation ||
+                    !Actor.Effects.IsActive(change.Handle)) continue;
                 if (!_effectViews.TryGetValue(change.Handle, out var lease))
-                {
-                    lease = new EffectViewLease(change.Definition, presentation.StatusPrefab, SpatialViewPool);
-                    if (lease.View != null) ApplyViewRenderLayer(lease.View.gameObject);
-                    _effectViews.Add(change.Handle, lease);
-                    if (Actor.IsTargetable && presentation.FirstApplication != null) QueueEffectCue(presentation.FirstApplication);
-                }
+                    lease = CreateEffectView(change.Handle, change.Definition, presentation);
                 lease.SetStacks(change.Stacks);
             }
-
-            while (_effectCues.TryDequeue(out var playback))
-            {
-                var cue = playback.Cue;
-                if (cue.Vfx != null) PlayCueAt(cue.Vfx, playback.Position, null, cue.Duration);
-                if (cue.Audio != null) PlayCueAt(cue.Audio, playback.Position, null, cue.Duration);
-            }
+            PlayCommittedEffectCues();
 
             if (_effectViews.Count == 0) return;
             _effectBadges.Clear();
@@ -60,22 +69,32 @@ namespace FRFrame.Gameplay.Unity
             var point = Actor.Position;
             foreach (var lease in _effectViews.Values)
             {
-                if (lease.View == null) continue;
                 lease.View.transform.position = new Vector3(point.X, point.Y, point.Z);
-                if (lease.View.gameObject.activeSelf != Actor.IsTargetable) lease.View.gameObject.SetActive(Actor.IsTargetable);
-                if (Actor.IsTargetable) lease.View.Advance(amount, ReferenceEquals(_effectBadges[lease.Definition], lease));
+                lease.View.Advance(amount, ReferenceEquals(_effectBadges[lease.Definition], lease));
             }
+        }
+
+        private EffectViewLease CreateEffectView(GameplayEffectHandle handle, GameplayEffectDefinition definition, GameplayUnityEffectPresentation presentation)
+        {
+            var lease = new EffectViewLease(definition, presentation.StatusPrefab, SpatialViewPool);
+            ApplyViewRenderLayer(lease.View.gameObject);
+            _effectViews.Add(handle, lease);
+            return lease;
         }
 
         private void DisposeEffectPresentation()
         {
             Actor.Effects.PresentationChanged -= ObserveEffectState;
             Actor.Effects.Removed -= ObserveEffectRemoval;
+            ReleaseEffectStatusViews();
+            _committedEffectCues.Clear();
+        }
+
+        private void ReleaseStatusViews()
+        {
             foreach (var lease in _effectViews.Values) lease.Release();
             _effectViews.Clear();
             _effectBadges.Clear();
-            _effectChanges.Clear();
-            _effectCues.Clear();
         }
 
         private sealed class EffectViewLease
@@ -90,7 +109,6 @@ namespace FRFrame.Gameplay.Unity
             internal EffectViewLease(GameplayEffectDefinition definition, GameObject prefab, GameObjectPoolModule pool)
             {
                 Definition = definition;
-                if (prefab == null) return;
                 _pool = pool;
                 _name = prefab.name;
                 _key = new ResourceKey("Gameplay.DirectPrefab", prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
@@ -100,11 +118,11 @@ namespace FRFrame.Gameplay.Unity
                 View.Begin();
             }
 
-            internal void SetStacks(int count)
+            internal void SetStacks(int count, bool pulse = true)
             {
                 int cap = Definition.Stacking?.MaxStacks ?? 1;
                 bool full = cap > 1 && count == cap;
-                View?.SetStacks(count, full, full && Stacks < cap);
+                View.SetStacks(count, full, pulse && full && Stacks < cap);
                 Stacks = count;
             }
 

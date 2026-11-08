@@ -13,6 +13,7 @@ namespace FRFrame.Gameplay
     public sealed class GameplayEffectCompletionContext
     {
         private readonly GameplayEffectContainer _container;
+        private bool _dispatching = true;
         public GameplayEffectDefinition Definition { get; }
         public GameplayEffectHandle Handle { get; }
         public GameplaySourceId SourceId { get; }
@@ -31,5 +32,13 @@ namespace FRFrame.Gameplay
 
         /// <summary>Applies to the same target using the completed application's Context, Instigator and SetByCaller snapshot.</summary>
         public GameplayEffectApplicationResult Apply(GameplayEffectDefinition next) => _container.Apply(next, Application);
+
+        internal void Close() => _dispatching = false;
+        internal void Run(GameplayEffectLifecycleActions actions)
+        {
+            if (_dispatching && Application != null)
+                actions.Run(_container, GameplayEffectLifecycleKind.NaturalExpiry, Handle, SourceId,
+                    Application, Application.StackCount, Definition.Stacking?.MaxStacks ?? 1, GameplayEffectRemovalCause.NaturalExpiry);
+        }
     }
 }

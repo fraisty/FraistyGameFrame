@@ -109,6 +109,7 @@ namespace FRFrame.Gameplay.Authoring
     {
         public GameplayEffectDefinitionAsset Effect;
         public bool OwnedByAbility;
+        public override bool SupportsEffectLifecycle => !OwnedByAbility;
         public override void Validate(GameplayAuthoringValidationContext v, string p)
         {
             v.Asset(Effect, p + ".Effect");

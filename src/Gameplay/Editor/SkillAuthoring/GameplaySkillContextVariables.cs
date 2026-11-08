@@ -167,7 +167,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     bool spatial = payload is GameplayAreaDefinitionData || payload is GameplayProjectileDefinitionData ||
                         payload is GameplaySummonDefinitionData;
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload))
-                        RunOutput(id, slot.Path, spatial ? input : Empty);
+                        RunOutput(id, GameplayGraphEffectCallbacks.ActionKey(slot), spatial || payload is GameplayEffectDefinitionData ? input : Empty);
                     foreach (var slot in GameplayGraphEffectCallbacks.Slots(payload))
                         foreach (var edge in edges[(id, slot.Key)])
                             VisitDefinition(GameplayGraphEffectCallbacks.EffectBinding(nodes[edge.ToNodeId].node)?.LocalId, input);

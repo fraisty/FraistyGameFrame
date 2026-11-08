@@ -58,7 +58,7 @@ namespace FRFrame.Gameplay
         public GameplayEffectHandle Apply(GameplayEffectDefinition definition)
         {
             if (definition == null) throw new ArgumentNullException(nameof(definition));
-            if (definition.DurationPolicy == GameplayEffectDurationPolicy.Instant || definition.Period > 0 || definition.Stacking != null || definition.CompletionExecutions.Count > 0)
+            if (definition.DurationPolicy == GameplayEffectDurationPolicy.Instant || definition.Period > 0 || definition.Stacking != null || definition.CompletionExecutions.Count > 0 || definition.OnApplied != null)
                 throw new InvalidOperationException("This effect requires context-aware Apply.");
             foreach (var m in definition.Modifiers) if (m.MagnitudeValue.RequiresApplicationContext) throw new InvalidOperationException("Dynamic modifiers require context.");
             if (definition.DurationValue?.RequiresApplicationContext == true || definition.PeriodValue?.RequiresApplicationContext == true)
@@ -94,7 +94,7 @@ namespace FRFrame.Gameplay
             var entry = CreateEntry(definition, application, timing);
             var layer = entry.Layers[0].Handle;
             entry.ActivationInitialPending=deferInitial;
-            if (!deferInitial) { NotifyPresentation(entry); ExecuteInitial(entry, application); }
+            if (!deferInitial) PublishApplied(entry);
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.NewActiveEffect, entry.Handle, 1, layer);
         }
         private static Timing EvaluateTiming(GameplayEffectDefinition d, GameplayEffectApplicationContext app)
@@ -162,16 +162,20 @@ namespace FRFrame.Gameplay
                 if (s.Overflow == GameplayEffectStackOverflowPolicy.Reject) return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RejectedAtLimit, e.Handle, e.StackCount);
                 if (s.Overflow == GameplayEffectStackOverflowPolicy.ExecuteOverflow)
                 {
-                    var context = new GameplayEffectOverflowContext(this, e.Handle, app, e.StackCount);
-                    foreach (var rule in s.OverflowExecutions) rule.Execute(context);
+                    var context = new GameplayEffectOverflowContext(this, e.Handle, app, e.StackCount, e.SourceId, s.MaxStacks);
+                    try { foreach (var rule in s.OverflowExecutions) rule.Execute(context); }
+                    finally { context.Close(); }
                     bool active = _entries.ContainsKey(e.Handle);
                     return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.OverflowExecuted, active ? e.Handle : default, active ? e.StackCount : 0);
                 }
                 CommitReapplication(e, app, timing); ExecuteInitial(e, app);
                 return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RefreshedAtLimit, e.Handle, e.StackCount);
             }
+            int previous = e.StackCount;
             var layer = CreateLayer(e, app, timing); e.Layers.Add(layer);
-            CommitReapplication(e, app, timing); int count = e.StackCount; NotifyPresentation(e); ExecuteInitial(e, app);
+            CommitReapplication(e, app, timing); int count = e.StackCount;
+            PublishStackChange(e, app, previous);
+            if (IsActive(e.Handle)) ExecuteInitial(e, app);
             return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.StackIncreased, e.Handle, count, layer.Handle);
         }
         private static void CommitReapplication(Entry e, GameplayEffectApplicationContext app, Timing timing)
@@ -190,8 +194,27 @@ namespace FRFrame.Gameplay
         {
             if(!_entries.TryGetValue(handle,out var entry)||!entry.ActivationInitialPending)return;
             entry.ActivationInitialPending=false; // Exactly once, including exceptions and reentry.
+            PublishApplied(entry);
+        }
+        private void PublishApplied(Entry entry)
+        {
             NotifyPresentation(entry);
-            ExecuteInitial(entry,entry.Application);
+            var application = entry.Application;
+            entry.Definition.OnApplied?.Run(this, GameplayEffectLifecycleKind.Applied, entry.Handle, entry.SourceId,
+                application, 0, entry.Definition.Stacking?.MaxStacks ?? 1);
+            if (entry.Definition.Stacking?.MaxStacks == 1)
+                entry.Definition.OnEnterMax?.Run(this, GameplayEffectLifecycleKind.EnterMax, entry.Handle, entry.SourceId, application, 0, 1);
+            if (IsActive(entry.Handle)) ExecuteInitial(entry, application);
+        }
+        private void PublishStackChange(Entry entry, GameplayEffectApplicationContext application, int previous)
+        {
+            NotifyPresentation(entry);
+            int max = entry.Definition.Stacking.MaxStacks;
+            entry.Definition.OnStackChanged?.Run(this, GameplayEffectLifecycleKind.StackChanged, entry.Handle, entry.SourceId,
+                application, previous, max);
+            if (previous < max && application.StackCount == max)
+                entry.Definition.OnEnterMax?.Run(this, GameplayEffectLifecycleKind.EnterMax, entry.Handle, entry.SourceId,
+                    application, previous, max);
         }
         private void NotifyPresentation(Entry entry)
         {
@@ -225,7 +248,8 @@ namespace FRFrame.Gameplay
                 if (cause == GameplayEffectRemovalCause.NaturalExpiry && e.Definition.CompletionExecutions.Count > 0)
                 {
                     var context = new GameplayEffectCompletionContext(this, e.Definition, handle, e.SourceId, e.Application);
-                    foreach (var rule in e.Definition.CompletionExecutions) rule.Execute(context);
+                    try { foreach (var rule in e.Definition.CompletionExecutions) rule.Execute(context); }
+                    finally { context.Close(); }
                 }
             }
             finally { Removed?.Invoke(observation); }
@@ -242,7 +266,11 @@ namespace FRFrame.Gameplay
             RemoveSurvivingLayer(e, layer); return true;
         }
         private void RemoveSurvivingLayer(Entry entry, Layer layer)
-        { CleanupLayer(layer); entry.Layers.Remove(layer); SelectSurvivingApplication(entry); NotifyPresentation(entry); }
+        {
+            int previous = entry.StackCount;
+            CleanupLayer(layer); entry.Layers.Remove(layer); SelectSurvivingApplication(entry);
+            PublishStackChange(entry, entry.Application, previous);
+        }
         private static void CleanupLayer(Layer layer)
         {
             var groups = new Dictionary<GameplayAttribute, List<GameplayModifierHandle>>();
@@ -293,7 +321,12 @@ namespace FRFrame.Gameplay
             {
                 e.NextPeriodAt += e.Period;
                 var application = e.Application.WithStackCount(e.StackCount);
-                try { foreach (var rule in e.Definition.Executions) rule.Execute(application); }
+                try
+                {
+                    foreach (var rule in e.Definition.Executions) rule.Execute(application);
+                    e.Definition.OnPeriod?.Run(this, GameplayEffectLifecycleKind.Period, e.Handle, e.SourceId,
+                        application, application.StackCount, e.Definition.Stacking?.MaxStacks ?? 1);
+                }
                 catch { if (expiryDue) RemoveEntry(e.Handle, GameplayEffectRemovalCause.Explicit); throw; }
             }
             if (!_entries.ContainsKey(e.Handle)) return;
@@ -333,7 +366,8 @@ namespace FRFrame.Gameplay
                 throw new ArgumentException("Explicit cooldown duration requires a simple tag-only Effect.");
             if(application!=null&&!ReferenceEquals(application.Target.Attributes,_target))throw new ArgumentException("Cooldown application must target this container.");
             var entry = CreateEntry(definition, application, new Timing(duration, 0));
-            NotifyPresentation(entry);
+            if (application != null) PublishApplied(entry);
+            else NotifyPresentation(entry);
             return entry.Handle;
         }
         internal bool TryGetAppliedDuration(GameplayEffectHandle handle,out float duration)

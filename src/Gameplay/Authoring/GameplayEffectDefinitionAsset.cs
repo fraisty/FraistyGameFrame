@@ -47,10 +47,14 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayEffectCompletionAuthoring[] CompletionExecutions = Array.Empty<GameplayEffectCompletionAuthoring>();
 
         [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnApplied = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnStackChanged = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnEnterMax = Array.Empty<GameplaySkillActionAuthoring>();
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnPeriod = Array.Empty<GameplaySkillActionAuthoring>();
 
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        private GameplayEffectDefinitionData CaptureValues() => new GameplayEffectDefinitionData { DurationPolicy = DurationPolicy, Duration = Duration, Period = Period, EffectTags = EffectTags, PeriodicStart = PeriodicStart, DurationValue = DurationValue, PeriodValue = PeriodValue, Modifiers = Modifiers, GrantedTags = GrantedTags, Stacking = Stacking, ApplicationRequirements = ApplicationRequirements, OngoingRequirements = OngoingRequirements, Executions = Executions, CompletionExecutions = CompletionExecutions, Presentation = Presentation };
+        private GameplayEffectDefinitionData CaptureValues() => new GameplayEffectDefinitionData { DurationPolicy = DurationPolicy, Duration = Duration, Period = Period, EffectTags = EffectTags, PeriodicStart = PeriodicStart, DurationValue = DurationValue, PeriodValue = PeriodValue, Modifiers = Modifiers, GrantedTags = GrantedTags, Stacking = Stacking, ApplicationRequirements = ApplicationRequirements, OngoingRequirements = OngoingRequirements, Executions = Executions, CompletionExecutions = CompletionExecutions, Presentation = Presentation, OnApplied = OnApplied, OnStackChanged = OnStackChanged, OnEnterMax = OnEnterMax, OnPeriod = OnPeriod };
         public GameplayEffectDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => CaptureValues().Build(context));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 

@@ -8,6 +8,7 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable, Preserve]
     public sealed class GameplayDispelEffectsActionAuthoring : GameplaySkillActionAuthoring
     {
+        public override bool SupportsEffectLifecycle => true;
         public GameplayTagQueryAuthoring EffectTags = new GameplayTagQueryAuthoring();
         public override void Validate(GameplayAuthoringValidationContext validation, string path)
         {

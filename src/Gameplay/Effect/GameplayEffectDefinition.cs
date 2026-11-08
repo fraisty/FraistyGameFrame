@@ -33,6 +33,10 @@ namespace FRFrame.Gameplay
         public IReadOnlyList<IGameplayEffectCompletionExecution> CompletionExecutions { get; }
         /// <summary>Optional backend-owned presentation data. The rule container never plays it.</summary>
         public IGameplayEffectPresentationDefinition Presentation { get; }
+        internal GameplayEffectLifecycleActions OnApplied { get; }
+        internal GameplayEffectLifecycleActions OnStackChanged { get; }
+        internal GameplayEffectLifecycleActions OnEnterMax { get; }
+        internal GameplayEffectLifecycleActions OnPeriod { get; }
 
         /// <summary>
         /// 此定义在应用期间提供的 exact 标签。集合只读，来源由每个 Effect 实例独立分配。
@@ -97,7 +101,9 @@ namespace FRFrame.Gameplay
             IEnumerable<GameplayTag> effectTags = null,
             GameplayEffectPeriodicStartPolicy periodicStart = GameplayEffectPeriodicStartPolicy.AfterFirstPeriod,
             IGameplayFloatValue durationValue = null, IGameplayFloatValue periodValue = null,
-            IGameplayEffectPresentationDefinition presentation = null)
+            IGameplayEffectPresentationDefinition presentation = null, GameplayEffectLifecycleActions onApplied = null,
+            GameplayEffectLifecycleActions onStackChanged = null, GameplayEffectLifecycleActions onEnterMax = null,
+            GameplayEffectLifecycleActions onPeriod = null)
         {
             if (durationPolicy != GameplayEffectDurationPolicy.Duration &&
                 durationPolicy != GameplayEffectDurationPolicy.Infinite &&
@@ -153,15 +159,17 @@ namespace FRFrame.Gameplay
                 throw new ArgumentException("Executions must not contain null.", nameof(executions));
             if (durationPolicy == GameplayEffectDurationPolicy.Instant)
             {
-                if (presentation != null) throw new ArgumentException("Effect status presentation requires a persistent effect.");
+                if (presentation != null || onApplied != null || onStackChanged != null || onEnterMax != null || onPeriod != null)
+                    throw new ArgumentException("Effect lifecycle actions and status presentation require a persistent effect.");
                 if (ongoingRequirements != null && !ongoingRequirements.IsEmpty)
                     throw new ArgumentException("Instant effects cannot have ongoing requirements.", nameof(ongoingRequirements));
                 if (period != 0f || stacking != null || modifierCopy.Count != 0 || tagCopy.Count != 0 || executionCopy.Count == 0)
                     throw new ArgumentException("Instant effects require executions and reject persistent modifiers or tags.");
             }
-            else if ((period == 0f && executionCopy.Count != 0) ||
-                     (period > 0f && executionCopy.Count == 0))
-                throw new ArgumentException("Persistent effects require executions exactly when Period is positive.", nameof(executions));
+            else if ((period > 0f) != (executionCopy.Count != 0 || onPeriod != null))
+                throw new ArgumentException("Persistent effects require executions or actions exactly when Period is positive.", nameof(executions));
+            if (stacking == null && (onStackChanged != null || onEnterMax != null))
+                throw new ArgumentException("Stack lifecycle actions require a stacking policy.");
 
             DurationPolicy = durationPolicy;
             Duration = durationPolicy == GameplayEffectDurationPolicy.Duration ? duration : 0f;
@@ -170,6 +178,7 @@ namespace FRFrame.Gameplay
             PeriodValue = periodValue;
             PeriodicStart = periodicStart;
             Presentation = presentation;
+            OnApplied = onApplied; OnStackChanged = onStackChanged; OnEnterMax = onEnterMax; OnPeriod = onPeriod;
             EffectTags = classification.AsReadOnly();
             Stacking = stacking;
             ApplicationRequirements = applicationRequirements ?? GameplayTagQuery.Empty;
