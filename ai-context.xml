@@ -717,6 +717,7 @@ Gameplay/
       GameplayCooldownAction.cs
       GameplayDispelEffectsAction.cs
       GameplayOwnedLeases.cs
+      GameplayPresentationCallbacks.cs
       GameplayPresentationDriver.cs
       GameplaySkillDocument.cs
       GameplaySkillLearning.cs
@@ -60601,8 +60602,8 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
             if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnBroken")
                 return input.With(true, true, "护盾耗尽后提供破盾者与地点");
-            if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnExpired")
-                return input.With(true, input.Point, "自然到期后提供原护盾目标");
+            if (payload is GameplayGrantTimedShieldActionAuthoring && (port == "OnExpired" || port == "OnAbsorbed"))
+                return input.With(true, port == "OnAbsorbed" || input.Point, "提供原护盾目标");
             if(payload is GameplayAreaDefinitionData){
                 if(port=="OnEnd")return input;
                 return input.With(port=="OnEnter"||port=="OnStay"||port=="OnTick",true,"区域退出不保证 Actor");
@@ -61713,6 +61714,8 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayFloatValueAuthoring Amount=new GameplayConstantFloatValueAuthoring{Value=100};
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=5};
         public bool OwnedByAbility;
+        [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnAbsorbed = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnBroken = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnExpired = Array.Empty<GameplaySkillActionAuthoring>();
         public override void Validate(GameplayAuthoringValidationContext validation,string path)
@@ -61721,10 +61724,13 @@ namespace FRFrame.Gameplay.Authoring
             if(Duration==null)validation.Error(path+".Duration","Shield duration required.");else Duration.Validate(validation,path+".Duration");
             GameplaySpatialAuthoringUtility.Validate(OnBroken, validation, path + ".OnBroken");
             GameplaySpatialAuthoringUtility.Validate(OnExpired, validation, path + ".OnExpired");
+            GameplaySpatialAuthoringUtility.Validate(OnAbsorbed, validation, path + ".OnAbsorbed");
+            Presentation?.Validate(validation, path + ".Presentation");
         }
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplayGrantTimedShieldAction(
             Amount.Build(), Duration.Build(), OwnedByAbility, GameplaySpatialAuthoringUtility.Build(OnBroken, context),
-            GameplaySpatialAuthoringUtility.Build(OnExpired, context));
+            GameplaySpatialAuthoringUtility.Build(OnExpired, context), Presentation?.Build(),
+            GameplaySpatialAuthoringUtility.Build(OnAbsorbed, context));
     }
 }
 </file>
@@ -61863,6 +61869,7 @@ namespace FRFrame.Gameplay.Authoring
         [Tooltip("世界坐标单元中心；按 CellSize 对所在格进行匹配，不依赖 Physics。")]
         public Vector3[] Cells = Array.Empty<Vector3>();
         public float CellSize = 1;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnBegin = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] EachTarget = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] Completed = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] NoTargets = Array.Empty<GameplaySkillActionAuthoring>();
@@ -61889,7 +61896,7 @@ namespace FRFrame.Gameplay.Authoring
                 if (Cells == null || Cells.Length == 0) v.Error(p + ".Cells", "Configure grid cells.");
                 else for (int i = 0; i < Cells.Length; i++) { v.Finite(Cells[i].x, p + ".Cells.X"); v.Finite(Cells[i].y, p + ".Cells.Y"); v.Finite(Cells[i].z, p + ".Cells.Z"); }
             }
-            Actions(v, p + ".EachTarget", EachTarget); Actions(v, p + ".Completed", Completed); Actions(v, p + ".NoTargets", NoTargets);
+            Actions(v, p + ".OnBegin", OnBegin); Actions(v, p + ".EachTarget", EachTarget); Actions(v, p + ".Completed", Completed); Actions(v, p + ".NoTargets", NoTargets);
         }
         private static void Value(GameplayAuthoringValidationContext v, string p, GameplayFloatValueAuthoring value)
         {
@@ -61903,7 +61910,7 @@ namespace FRFrame.Gameplay.Authoring
         }
         public override void ValidateReferences(GameplayAuthoringValidationContext v, string p)
         {
-            foreach (var list in new[] { EachTarget, Completed, NoTargets })
+            foreach (var list in new[] { OnBegin, EachTarget, Completed, NoTargets })
                 if (list != null) for (int i = 0; i < list.Length; i++) list[i]?.ValidateReferences(v, p + $".Callbacks[{i}]");
         }
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)
@@ -61914,7 +61921,7 @@ namespace FRFrame.Gameplay.Authoring
                 Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier);
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context));
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;
@@ -64684,6 +64691,9 @@ namespace FRFrame.Gameplay.Editor
             Labels["FadeStartRatio"]="开始淡出的进度（0～1）";Labels["FixedPoint"]="固定位置";Labels["Follow"]="跟随位置";Labels["FollowSource"]="持续跟随来源";
             Labels["Presentation"]="状态外观";Labels["StatusPrefab"]="持续状态预制体";
             Labels["OnApplied"]="首次成功应用";Labels["OnStackChanged"]="层数变化";Labels["OnEnterMax"]="进入满层";Labels["OnPeriod"]="每次周期";
+            Labels["OnAbsorbed"]="吸收 · 护盾仍存续";Labels["Outcome"]="战斗结果条件";
+            Labels["TargetRequirements"]="目标标签条件";Labels["Intensity"]="表现强度";
+            Labels["FitCircleToRadius"]="适配实际圆形半径";Labels["FadeSeconds"]="淡入淡出秒数";
             Labels["ImmuneText"]="免疫文字";Labels["Layer"]="Animator层";Labels["Material"]="材质";Labels["MinimumSeparation"]="最小间距";
             Labels["MirrorFacing"]="随朝向镜像";Labels["MissColor"]="未命中颜色";Labels["MissText"]="未命中文字";Labels["ModelPrefab"]="Cubism模型预制体";
             Labels["NumberFormat"]="数字格式";Labels["OwnerSkillId"]="拥有者技能编号（0使用当前）";Labels["Pitch"]="音调";Labels["Point"]="地点来源或坐标";
@@ -66711,7 +66721,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf");
                 yield return Group("逐次重选","圆形查询从上一目标的位置选最近未访问目标，目标上限为总跳数。逐目标分支可读取 Context.Data.Standard.Search.Multiplier。",
                     "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier");
-                yield return Group("正式续接","每个目标只有一个 Target；搜索完成收到完整结果，无目标分支收到空列表。","EachTarget","Completed","NoTargets");
+                yield return Group("正式续接","查询前保留原输入；每个目标提供单个 Actor；搜索完成收到完整结果。","OnBegin","EachTarget","Completed","NoTargets");
             }
             else if(value is GameplayDamageExecutionAuthoring)
             {
@@ -66758,7 +66768,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("位移 / 控制 / 到达","写回实际位置与朝向；等/高优先级替换，低优先级忽略。控制门禁为可选标签查询。","Mode","Distance","Speed","Priority","UseControlGate","Blocked","CancelOnAbilityEnd","FollowSource","MinimumSeparation","Duration","OnArrive","OnCancelled");
             else if(value is GameplayRotateToPointActionAuthoring)yield return Group("转向实际目标点","修改实际 Actor Facing；场景绑定映射到真实朝向。","RotateOwner");
             else if(value is GameplayChangeStateActionAuthoring)yield return Group("现有行为状态","使用Host显式注册的状态别名；转移约束由原Core/Fsm决定。","State");
-            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。耗尽输出破盾者，自然到期输出原目标；取消与驱散只清理。","Amount","Duration","OwnedByAbility","OnBroken","OnExpired");
+            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。部分吸收和自然到期输出原目标；耗尽输出破盾者。","Amount","Duration","OwnedByAbility","Presentation","OnAbsorbed","OnBroken","OnExpired");
             else if(value is GameplayCaptureCombatRollActionAuthoring)yield return Group("本次命中随机输入","概率0..1；使用World注入的随机源。保留已有输入时不重新抽样，可放进逐目标回调。","CriticalChance","MissChance","PreserveExisting");
             else if(value is GameplayCaptureValueActionAuthoring)yield return Group("捕获数值快照","在此动作/目标边界求值一次，写入Key。后续Context/Caller读取捕获值；属性节点仍读实时值。","Key","Value");
             else if(value is GameplaySkillDocumentAsset)
@@ -70402,7 +70412,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Enemies","敌方"},{"Allies","友方"},{"Any","任意"},{"All","全部"},{"Self","自身"},{"None","无"},
             {"Physical","物理伤害"},{"Magical","魔法伤害"},{"Magic","魔法伤害"},{"True","真实伤害"},
             {"Owner","施法者"},{"Target","当前目标"},{"Context","调用上下文"},{"OwnerFacing","施法者朝向"},{"TargetDirection","目标方向"},
-            {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},
+            {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},{"CallbackSegment","本跳起点 → 命中地点"},
+            {"TargetToOwner","命中地点 → 施法者"},{"ConfirmedHit","同次伤害确认命中"},{"HealthDamage","同次伤害实扣生命"},
             {"Vfx","特效"},{"Audio","音效"},{"Body","身体"},{"Active","主动"},{"Passive","被动"},
             {"Instant","瞬时"},{"Duration","限时持续"},{"Infinite","无限持续"},
             {"Straight","直线"},{"Homing","追踪"},{"Arc","弧线"},{"Parabolic","抛物线"},{"Bezier","贝塞尔曲线"},
@@ -71898,12 +71909,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(path.StartsWith("Overflow/",StringComparison.Ordinal))return "叠层溢出 · 续接效果";
             if (path == "Then") return "后续执行";
             var key = path.Split('.').Last();
-            return key == "Actions" ? "执行" : key == "EachTarget" ? "每个目标" : key == "Completed" ? "搜索完成" :
+            return key == "Actions" ? "执行" : key == "OnBegin" ? "查询前" : key == "EachTarget" ? "每个目标" : key == "Completed" ? "搜索完成" :
                 key == "NoTargets" ? "无目标" : key == "TrueActions" ? "满足条件" : key == "FalseActions" ? "不满足" :
                 key == "OnHit" ? "命中" : key == "OnArrive" ? "到达" : key == "OnRange" ? "射程结束" :
                 key == "OnEnter" ? "进入" : key == "OnExit" ? "离开" : key == "OnTick" ? "周期" : key=="OnStay"?"持续停留（每步）":
                 key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
-                key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" :
+                key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" : key == "OnAbsorbed" ? "吸收 · 护盾仍存续" :
                 ObjectNames.NicifyVariableName(path);
         }
 
@@ -73977,7 +73988,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(doc.SkillId==7009)route+=" 本例Mode=Passive，Subject=OwnerTarget，监听真实受击Hit；Owner当前Health<500才治疗当前目标50。试装面板发布者→敌人的测试事件不会冒充Owner受击；可让敌人安装7004面向Owner攻击验证。";
                 if(doc.SkillId==7010)route+=" 本例共享SpatialActorProfile与独立7004技能；AutoCast开启、存续4秒、OnEnd结束施放。召唤技能以新单位自己的属性和身份执行。";
                 bool u7=AssetDatabase.GetAssetPath(doc).Contains("/FRFrameSkillLab/U7Examples/");
-                if(u7){host="FRFrameGameplaySkillLab / 共用练习场";route+=" 进入共用练习场，或用 Scene / 调试 → 安装当前正式技能。剧毒爆发从零步骤与其余五例操作见 U7 Task。";}
+                if(u7){
+                    host="FRFrameGameplaySkillLab / 共用练习场";
+                    route+=" 进入共用练习场，或用 Scene / 调试 → 安装当前正式技能。";
+                    route+=doc.SkillId==4201?" 剧毒爆发从零步骤见 U7 Task 第 10 节。":
+                        " 连锁闪电从零创作、其余案例复制修改和正式表现资源定位见 U7-HR-P3 第 6 节。目录外副本需勾选「共用练习场试装」。";
+                }
                 var ability=graph.Nodes.Find(n=>n.Id==graph.AbilityNodeId)?.Payload as GameplayAbilityNodePayload;var settings=ability?.Settings as GameplayAbilityDefinitionData;
                 string tags=(settings?.Cost!=null?"消耗 ":"")+(settings?.Charge!=null?"充能 ":"")+(ability?.Definitions.Any(b=>b.PropertyPath=="CooldownEffect")==true?"冷却 ":"")+(graph.Nodes.Any(n=>n.Payload.Definitions.Any(b=>b.External))?"共享SO ":"");
                 return new SkillExample{Source=doc,Category=category,Host=host,Tags=tags,Mechanisms=mechanismIndex,Keywords=string.Join(" ",descriptions.Select(d=>d.Keywords)),Complexity=graph.Nodes.Count>15?3:graph.Nodes.Count>7?2:1,Status=u7?"U7 标准范例 · Lab 可运行":privateHost?"特定样例Host；非通用能力":AssetDatabase.GetAssetPath(doc).Contains("/AuthoringExamples/H1/")?(doc.SkillId==7003?"已由 GUI 复制改造并在 Lab 验证":doc.SkillId==7002||doc.SkillId>=7004&&doc.SkillId<=7010?"已由 GUI 从零重建并在 Lab 运行验证":"已由 GUI 创作；运行验收待完成"):"既有正式Runtime内容；GUI复刻待验证",Lesson=route};
@@ -78900,6 +78916,9 @@ namespace FRFrame.Gameplay.Unity.Editor
                 yield return new GameplayBusinessInspectorGroup(null,audio?"播放位置":"位置 / 缩放 / 朝向",null,"Origin","Binding","Offset","Scale","Follow","MirrorFacing");
                 if(audio)
                     yield return new GameplayBusinessInspectorGroup(null,"音频播放",null,"Volume","Pitch","AudioLoop");
+                yield return new GameplayBusinessInspectorGroup(null,"表现触发条件",
+                    "命中和实扣生命只检查同一次伤害结算。表现强度缩放特效，或乘以音量；两点特效只缩放宽度。",
+                    "Outcome","TargetRequirements","Intensity");
                 yield return new GameplayBusinessInspectorGroup(null,audio?"停止与清理":"回收与清理",
                     audio?"到时停止音频。时间编排可随施放清理；Effect 已提交声光按自身时限播放。":"一次性粒子可播完回收，循环特效请设回收时限。随技能结束清理仅用于施放编排。",
                     "RecycleWhenParticlesFinish","Duration","OwnedByAbility");
@@ -78909,7 +78928,12 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(values is GameplayUnityEffectPresentationAuthoring effect)return effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图";
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
-            if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
+            if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin switch {
+                GameplayPresentationCueAsset.PositionSource.CallbackSegment => "本跳起点 → 命中地点",
+                GameplayPresentationCueAsset.PositionSource.TargetToOwner => "命中地点 → 施法者",
+                GameplayPresentationCueAsset.PositionSource.ContextPoint => "固定上下文地点",
+                _ => (cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随")
+            })+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
             return null;
         }
         public string NodeTypeName(object values)=>values is GameplayPresentationCueData cue
@@ -78957,7 +78981,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 case "Clip": case "Volume": case "Pitch": case "AudioLoop":
                     return kind==GameplayPresentationCueAsset.CueKind.Audio;
                 case "Binding": case "Follow":
-                    return origin!=GameplayPresentationCueAsset.PositionSource.ContextPoint;
+                    return origin==GameplayPresentationCueAsset.PositionSource.Owner||origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget;
                 case "Duration":
                     return kind!=GameplayPresentationCueAsset.CueKind.Vfx||!autoRecycle;
                 default:
@@ -79291,13 +79315,23 @@ namespace FRFrame.Gameplay.Unity
         /// <summary>VFX only. Recycle once all non-looping particle systems finish.</summary>
         public bool RecycleWhenParticlesFinish;
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=1};
+        [SerializeReference] public GameplayFloatValueAuthoring Intensity;
+        public GameplayPresentationCueAsset.OutcomeRequirement Outcome;
+        public GameplayTagQueryAuthoring TargetRequirements;
         private bool UsesParticleCompletion=>Kind==GameplayPresentationCueAsset.CueKind.Vfx&&RecycleWhenParticlesFinish;
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>
             new GameplayPresentationCueDefinition(Kind,Prefab,Clip,Origin,Offset,Follow,Volume,Pitch,AudioLoop,
-                UsesParticleCompletion?null:Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing,UsesParticleCompletion));
+                UsesParticleCompletion?null:Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing,UsesParticleCompletion,
+                Intensity?.Build(),Outcome,TargetRequirements?.Build()));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation,string path)
         {
             if(!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind),Kind)||!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.PositionSource),Origin))validation.Error(path,"Invalid cue policy.");
+            validation.Enum(Outcome, path+".Outcome");
+            Intensity?.Validate(validation,path+".Intensity");
+            TargetRequirements?.Validate(validation,path+".TargetRequirements");
+            if ((Origin == GameplayPresentationCueAsset.PositionSource.CallbackSegment || Origin == GameplayPresentationCueAsset.PositionSource.TargetToOwner) &&
+                (Kind != GameplayPresentationCueAsset.CueKind.Vfx || Follow))
+                validation.Error(path+".Origin","两点位置需要不跟随的 VFX。");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Vfx&&Prefab==null)validation.Error(path+".Prefab","VFX prefab is required.");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Audio&&Clip==null)validation.Error(path+".Clip","Audio clip is required.");
             if(UsesParticleCompletion){
@@ -79558,9 +79592,16 @@ namespace FRFrame.Gameplay.Unity
     public sealed class GameplayUnityAreaData:GameplayAreaDefinitionData
     {
         public GameObject Prefab;
-        protected override IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>Prefab==null?null:new GameplayUnitySpatialViewFactory(Prefab,Plane);
+        [Tooltip("圆形区域使用直径为 1 的预制体，以实际求值后的规则半径缩放。")]
+        public bool FitCircleToRadius;
+        [Min(0)] public float FadeSeconds;
+        protected override IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>Prefab==null?null:new GameplayUnitySpatialViewFactory(Prefab,Plane,FitCircleToRadius,FadeSeconds);
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
-        {base.ValidateContent(v,p);if(Prefab==null)v.Error(p+".Prefab","Scene area requires an actual prefab; use Logical Area for no view.");}
+        {
+            base.ValidateContent(v,p);if(Prefab==null)v.Error(p+".Prefab","Scene area requires an actual prefab; use Logical Area for no view.");
+            if(FitCircleToRadius && Shape!=GameplayAreaAuthoringShape.Circle)v.Error(p+".FitCircleToRadius","适配半径只支持圆形区域。");
+            if(!float.IsFinite(FadeSeconds)||FadeSeconds<0)v.Error(p+".FadeSeconds","淡入淡出时间必须为非负秒数。");
+        }
     
     }
 }
@@ -80133,18 +80174,42 @@ namespace FRFrame.Gameplay.Unity
             internal Action(GameplayPresentationCueDefinition definition)=>_definition=definition;
             public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
             {
+                if (!(host is GameplayStandardActor actor)) return GameplaySkillActionResult.Rejected;
+                if (!MeetsPresentationConditions(actor,context)) return GameplaySkillActionResult.Succeeded;
                 if (triggerEvent.EffectLifecycle is { } lifecycle)
                 {
                     if (!lifecycle.IsExecuting) return GameplaySkillActionResult.Rejected;
-                    if (host is GameplayStandardActor target &&
-                        (!(target.Presentation is GameplayUnityAnimationController presenter) || !presenter.TryQueueEffectCue(_definition, context, lifecycle)))
-                        target.RecordSkillTrace(new GameplaySkillTraceRecord(target.Id, context, default,
+                    if (!(actor.Presentation is GameplayUnityAnimationController presenter) || !presenter.TryQueueEffectCue(_definition, context, lifecycle))
+                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id, context, default,
                             GameplaySkillTraceStage.ActionRejected, "EffectCue", detail: "目标缺少可用 Unity Cue 播放器，或 Cue 位置无法解析。"));
                     // Optional playback never prevents the next committed gameplay step.
                     return GameplaySkillActionResult.Succeeded;
                 }
-                return host is GameplayStandardActor actor && actor.Presentation is GameplayUnityAnimationController controller &&
-                    controller.TryPlayCue(_definition,context) ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+                var controller = actor.Presentation as GameplayUnityAnimationController;
+                if (!_definition.OwnedByAbility && actor.TryReadPresentationCallback(context, out var segment))
+                {
+                    if (controller == null || !controller.TryPlayCallbackCue(_definition,context,segment))
+                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id,context,default,
+                            GameplaySkillTraceStage.ActionRejected,"CallbackCue",detail:"缺少可用 Unity Cue 播放器，或回调位置无法解析。"));
+                    return GameplaySkillActionResult.Succeeded;
+                }
+                if (controller != null && controller.TryPlayCue(_definition,context))
+                    return GameplaySkillActionResult.Succeeded;
+                return GameplaySkillActionResult.Rejected;
+            }
+
+            private bool MeetsPresentationConditions(GameplayStandardActor actor, GameplayContext context)
+            {
+                if (_definition.Outcome == GameplayPresentationCueAsset.OutcomeRequirement.Any && _definition.TargetRequirements.IsEmpty)
+                    return true;
+                if (!actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target)) return false;
+                if (!_definition.TargetRequirements.IsEmpty &&
+                    (!target.IsTargetable || !_definition.TargetRequirements.Matches(target.Tags))) return false;
+                if (_definition.Outcome == GameplayPresentationCueAsset.OutcomeRequirement.Any) return true;
+                if (!(target.LastCombatOutcome is { } outcome) || outcome.Kind != GameplayCombatOutcomeKind.Damage ||
+                    (!ReferenceEquals(outcome.ExecutionContext,context) && !ReferenceEquals(outcome.Context,context))) return false;
+                return _definition.Outcome == GameplayPresentationCueAsset.OutcomeRequirement.HealthDamage
+                    ? outcome.Applied > 0 : !outcome.Damage.IsImmune && !outcome.Damage.IsMiss;
             }
         }
     }
@@ -80192,13 +80257,17 @@ namespace FRFrame.Gameplay.Unity
         public bool RecycleWhenParticlesFinish;
 
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=1};
+        [SerializeReference] public GameplayFloatValueAuthoring Intensity;
+        public OutcomeRequirement Outcome;
+        public GameplayTagQueryAuthoring TargetRequirements;
 
         public enum CueKind { Vfx, Audio }
 
-        public enum PositionSource { Owner, PrimaryTarget, ContextPoint }
+        public enum PositionSource { Owner, PrimaryTarget, ContextPoint, CallbackSegment, TargetToOwner }
+        public enum OutcomeRequirement { Any, ConfirmedHit, HealthDamage }
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        private GameplayPresentationCueData CaptureValues() => new GameplayPresentationCueData { Kind = Kind, Prefab = Prefab, Clip = Clip, Origin = Origin, Offset = Offset, Binding = Binding, Scale = Scale, MirrorFacing = MirrorFacing, Follow = Follow, OwnedByAbility = OwnedByAbility, Volume = Volume, Pitch = Pitch, AudioLoop = AudioLoop, Duration = Duration, RecycleWhenParticlesFinish = RecycleWhenParticlesFinish };
+        private GameplayPresentationCueData CaptureValues() => new GameplayPresentationCueData { Kind = Kind, Prefab = Prefab, Clip = Clip, Origin = Origin, Offset = Offset, Binding = Binding, Scale = Scale, MirrorFacing = MirrorFacing, Follow = Follow, OwnedByAbility = OwnedByAbility, Volume = Volume, Pitch = Pitch, AudioLoop = AudioLoop, Duration = Duration, RecycleWhenParticlesFinish = RecycleWhenParticlesFinish, Intensity = Intensity, Outcome = Outcome, TargetRequirements = TargetRequirements };
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => CaptureValues().Build(context));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 
@@ -80221,13 +80290,19 @@ namespace FRFrame.Gameplay.Unity
         public bool RecycleWhenParticlesFinish {get;}
         /// <summary>Timer value for timed cues. Particle completion does not evaluate a timer.</summary>
         public IGameplayFloatValue Duration {get;}
+        public IGameplayFloatValue Intensity { get; }
+        public GameplayPresentationCueAsset.OutcomeRequirement Outcome { get; }
+        public GameplayTagQuery TargetRequirements { get; }
         public GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind kind,GameObject prefab,AudioClip clip,
-            GameplayPresentationCueAsset.PositionSource origin,Vector3 offset,bool follow,float volume,float pitch,bool audioLoop,IGameplayFloatValue duration,bool ownedByAbility=true,string binding=null,Vector3? scale=null,bool mirrorFacing=false,bool recycleWhenParticlesFinish=false)
+            GameplayPresentationCueAsset.PositionSource origin,Vector3 offset,bool follow,float volume,float pitch,bool audioLoop,IGameplayFloatValue duration,bool ownedByAbility=true,string binding=null,Vector3? scale=null,bool mirrorFacing=false,bool recycleWhenParticlesFinish=false,
+            IGameplayFloatValue intensity=null, GameplayPresentationCueAsset.OutcomeRequirement outcome=default,
+            GameplayTagQuery targetRequirements=null)
         {
             Kind=kind;Prefab=prefab;Clip=clip;Origin=origin;Offset=offset;Follow=follow;Volume=volume;Pitch=pitch;AudioLoop=audioLoop;
             RecycleWhenParticlesFinish=kind==GameplayPresentationCueAsset.CueKind.Vfx&&recycleWhenParticlesFinish;
             Duration=RecycleWhenParticlesFinish?null:duration??throw new ArgumentNullException(nameof(duration));
             OwnedByAbility=ownedByAbility;Binding=binding;Scale=scale??Vector3.one;MirrorFacing=mirrorFacing;
+            Intensity=intensity;Outcome=outcome;TargetRequirements=targetRequirements??GameplayTagQuery.Empty;
         }
     }
 }
@@ -80711,7 +80786,7 @@ namespace FRFrame.Gameplay.Unity
     {
         private readonly List<CueLease> _cues=new List<CueLease>();
         private readonly Queue<(GameplayPresentationCueDefinition Definition, Vector3 Point, Transform Parent,
-            bool Mirror, GameplayEffectApplicationContext Application)> _committedEffectCues = new();
+            Vector3? End, bool Mirror, GameplayEffectApplicationContext Application)> _committedEffectCues = new();
         private GameObjectPoolModule _ownedPool;
         private AudioManager _ownedAudio;
         /// <summary>Optional existing application services. When absent, standalone Labs instantiate
@@ -80723,6 +80798,23 @@ namespace FRFrame.Gameplay.Unity
         public int ActiveCueCount=>_cues.Count;
         internal GameObjectPoolModule SpatialViewPool=>CuePool??(_ownedPool??(_ownedPool=new GameObjectPoolModule()));
 
+        /// <summary>Primes the same direct-reference pool used by authored cues and spatial views.</summary>
+        public void WarmPresentationPrefab(GameObject prefab)
+        {
+            var pool=SpatialViewPool;
+            var key=new ResourceKey("Gameplay.DirectPrefab",prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
+            var view=pool.GetOrCreate(key,prefab.name,prefab);
+            pool.Release(key,prefab.name,view);
+        }
+
+        /// <summary>Initializes the direct audio service before the first authored cue needs it.</summary>
+        public void WarmPresentationAudio()
+        {
+            if(CueAudio!=null||_ownedAudio!=null)return;
+            _ownedAudio=new AudioManager();
+            _ownedAudio.InitializeDirectPlayback();
+        }
+
         private void ApplyViewRenderLayer(GameObject view)
         {
             if (ViewRenderLayer is not int layer) return;
@@ -80731,9 +80823,24 @@ namespace FRFrame.Gameplay.Unity
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
-            float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, PresentationValueContext(context));
-            if (!TryResolveCuePose(definition, context, Actor, out var point, out var parent)) return false;
-            return PlayCueAt(definition, point, parent, duration, Subject.transform.localScale.x < 0, grant);
+            Actor.TryReadPresentationCallback(context, out var segment);
+            return PlayResolvedCue(definition, context, segment, grant);
+        }
+
+        internal bool TryPlayCallbackCue(GameplayPresentationCueDefinition definition, GameplayContext context, GameplayPoint? segment)
+        {
+            if (_disposed || Actor.IsDisposed || Subject == null) return false;
+            return PlayResolvedCue(definition, context, segment, default);
+        }
+
+        private bool PlayResolvedCue(GameplayPresentationCueDefinition definition, GameplayContext context,
+            GameplayPoint? segment, GameplayAbilityHandle grant)
+        {
+            if (!TryResolveCuePose(definition, context, Actor, segment, out var point, out var parent, out var end)) return false;
+            var application = definition.RecycleWhenParticlesFinish && definition.Intensity == null ? null : PresentationValueContext(context);
+            float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, application);
+            return PlayCueAt(definition, point, parent, end, duration, Subject.transform.localScale.x < 0,
+                CueIntensity(definition, application), grant);
         }
 
         internal bool TryQueueEffectCue(GameplayPresentationCueDefinition definition, GameplayContext context, GameplayEffectLifecycleEvent lifecycle)
@@ -80741,10 +80848,10 @@ namespace FRFrame.Gameplay.Unity
             if (_disposed || Subject == null || Actor.IsDisposed || !lifecycle.IsExecuting ||
                 !ReferenceEquals(lifecycle.Application.Target, Actor) || context.TargetData.PrimaryTargetId != Actor.Id) return false;
             Actor.World.TryGetActor(lifecycle.Application.Context.InstigatorId, out var instigator);
-            if (!TryResolveCuePose(definition, context, instigator, out var point, out var parent)) return false;
+            if (!TryResolveCuePose(definition, context, instigator, null, out var point, out var parent, out var end)) return false;
             var subject = (instigator?.Presentation as GameplayUnityAnimationController)?.Subject;
             bool mirror = (subject != null ? subject : Subject).transform.localScale.x < 0;
-            _committedEffectCues.Enqueue((definition, point, parent, mirror, lifecycle.Application));
+            _committedEffectCues.Enqueue((definition, point, parent, end, mirror, lifecycle.Application));
             return true;
         }
 
@@ -80755,7 +80862,8 @@ namespace FRFrame.Gameplay.Unity
                 try
                 {
                     float duration = cue.Definition.RecycleWhenParticlesFinish ? 0 : CueDuration(cue.Definition, cue.Application);
-                    PlayCueAt(cue.Definition, cue.Point, cue.Parent, duration, cue.Mirror);
+                    PlayCueAt(cue.Definition, cue.Point, cue.Parent, cue.End, duration, cue.Mirror,
+                        CueIntensity(cue.Definition, cue.Application));
                 }
                 catch (Exception error) { Debug.LogException(error, Subject); }
             }
@@ -80768,10 +80876,30 @@ namespace FRFrame.Gameplay.Unity
             return duration;
         }
 
+        private static float CueIntensity(GameplayPresentationCueDefinition definition, GameplayEffectApplicationContext application) =>
+            definition.Intensity == null ? 1 : Mathf.Max(0, GameplayValueEvaluator.Evaluate(definition.Intensity, application));
+
         private bool TryResolveCuePose(GameplayPresentationCueDefinition definition, GameplayContext context,
-            GameplayStandardActor owner, out Vector3 point, out Transform parent)
+            GameplayStandardActor owner, GameplayPoint? segment, out Vector3 point, out Transform parent, out Vector3? end)
         {
-            point=default;parent=null;
+            point=default;parent=null;end=null;
+            if (definition.Origin == GameplayPresentationCueAsset.PositionSource.CallbackSegment ||
+                definition.Origin == GameplayPresentationCueAsset.PositionSource.TargetToOwner)
+            {
+                if (!context.TargetData.HasPoint) return false;
+                var hit = context.TargetData.Point;
+                if (definition.Origin == GameplayPresentationCueAsset.PositionSource.CallbackSegment)
+                {
+                    if (!segment.HasValue) return false;
+                    point = ToVector(segment.Value); end = ToVector(hit);
+                }
+                else
+                {
+                    if (owner == null) return false;
+                    point = ToVector(hit); end = ToVector(owner.Position);
+                }
+                return (end.Value - point).sqrMagnitude > .000001f;
+            }
             if(definition.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint)
             {if(!context.TargetData.HasPoint)return false;var p=context.TargetData.Point;point=new Vector3(p.X,p.Y,p.Z);}
             else
@@ -80785,9 +80913,10 @@ namespace FRFrame.Gameplay.Unity
             }
             return true;
         }
+        private static Vector3 ToVector(GameplayPoint point) => new Vector3(point.X, point.Y, point.Z);
 
-        private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent,
-            float duration, bool mirror, GameplayAbilityHandle grant=default)
+        private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent, Vector3? end,
+            float duration, bool mirror, float intensity, GameplayAbilityHandle grant=default)
         {
             var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
@@ -80800,18 +80929,26 @@ namespace FRFrame.Gameplay.Unity
                     var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
-                    var offset=definition.Offset;var scale=definition.Scale;
-                    if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
-                    view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=Quaternion.identity;
+                    var offset=definition.Offset;var scale=definition.Scale*intensity;
+                    var rotation=Quaternion.identity;
+                    if (end.HasValue)
+                    {
+                        var direction=end.Value-point;
+                        point+=direction*.5f;
+                        scale.x=definition.Scale.x*direction.magnitude;
+                        rotation=Quaternion.FromToRotation(Vector3.right,direction);
+                    }
+                    else if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
+                    view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=rotation;
                     cue.Particles=view.GetComponentsInChildren<ParticleSystem>();
                     foreach(var particles in cue.Particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);particles.Pause(false);}
                 }
                 else
                 {
                     if(definition.Clip==null)throw new InvalidOperationException("Audio clip is missing.");
-                    var audio=CueAudio;
-                    if(audio==null){if(_ownedAudio==null){_ownedAudio=new AudioManager();_ownedAudio.InitializeDirectPlayback();}audio=_ownedAudio;}
-                    cue.Audio=audio.Play(definition.Clip,new AudioPlayOptions{Loop=definition.AudioLoop,Volume=definition.Volume,Pitch=definition.Pitch,Position=point+definition.Offset,FollowTarget=definition.Follow?parent:null});
+                    WarmPresentationAudio();
+                    var audio=CueAudio??_ownedAudio;
+                    cue.Audio=audio.Play(definition.Clip,new AudioPlayOptions{Loop=definition.AudioLoop,Volume=Mathf.Clamp01(definition.Volume*intensity),Pitch=definition.Pitch,Position=point+definition.Offset,FollowTarget=definition.Follow?parent:null});
                     if(!cue.Audio.IsValid){cue.Dispose();return false;}
                 }
                 _cues.Add(cue);
@@ -81260,9 +81397,11 @@ namespace FRFrame.Gameplay.Unity
     public sealed class GameplayUnityAreaAsset:GameplayAreaDefinitionAsset
     {
         public GameObject Prefab;
+        public bool FitCircleToRadius;
+        [Min(0)] public float FadeSeconds;
 
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        protected override GameplayAreaDefinitionData CaptureValues() => new GameplayUnityAreaData { Prefab = Prefab, Shape = Shape, Plane = Plane, Origin = Origin, OriginOffset = OriginOffset, Radius = Radius, Angle = Angle, Length = Length, Width = Width, Height = Height, Duration = Duration, TickInterval = TickInterval, TickOnEnter = TickOnEnter, FollowOwner = FollowOwner, Faction = Faction, Tags = Tags, LayerMask = LayerMask, Cells = Cells, CellSize = CellSize, Aura = Aura, OnEnter = OnEnter, OnStay = OnStay, OnTick = OnTick, OnExit = OnExit, OnEnd = OnEnd, ArmingDelay = ArmingDelay, TriggerLimit = TriggerLimit };
+        protected override GameplayAreaDefinitionData CaptureValues() => new GameplayUnityAreaData { Prefab = Prefab, FitCircleToRadius = FitCircleToRadius, FadeSeconds = FadeSeconds, Shape = Shape, Plane = Plane, Origin = Origin, OriginOffset = OriginOffset, Radius = Radius, Angle = Angle, Length = Length, Width = Width, Height = Height, Duration = Duration, TickInterval = TickInterval, TickOnEnter = TickOnEnter, FollowOwner = FollowOwner, Faction = Faction, Tags = Tags, LayerMask = LayerMask, Cells = Cells, CellSize = CellSize, Aura = Aura, OnEnter = OnEnter, OnStay = OnStay, OnTick = OnTick, OnExit = OnExit, OnEnd = OnEnd, ArmingDelay = ArmingDelay, TriggerLimit = TriggerLimit };
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 
     }
@@ -81423,34 +81562,63 @@ namespace FRFrame.Gameplay.Unity
     {
         private readonly GameObject _prefab;
         private readonly GameplaySpatialPlane _plane;
-        internal GameplayUnitySpatialViewFactory(GameObject prefab,GameplaySpatialPlane plane){_prefab=prefab;_plane=plane;}
+        private readonly bool _fitCircle;
+        private readonly float _fadeSeconds;
+        internal GameplayUnitySpatialViewFactory(GameObject prefab,GameplaySpatialPlane plane,bool fitCircle=false,float fadeSeconds=0)
+        {_prefab=prefab;_plane=plane;_fitCircle=fitCircle;_fadeSeconds=fadeSeconds;}
         public IGameplaySpatialView Create(GameplayStandardActor actor,GameplayContext context)
         {
             if(!(actor.Presentation is GameplayUnityAnimationController presentation))throw new InvalidOperationException("Unity spatial view requires the actual actor presentation binding.");
             var pool=presentation.SpatialViewPool;var key=new ResourceKey("Gameplay.DirectPrefab",_prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
             var view=pool.GetOrCreate(key,_prefab.name,_prefab);
             view.transform.SetParent(null,false);
-            foreach(var child in view.GetComponentsInChildren<Transform>())child.gameObject.layer=presentation.Subject.layer;
+            view.transform.localScale=_prefab.transform.localScale;
+            int layer=presentation.ViewRenderLayer??presentation.Subject.layer;
+            foreach(var child in view.GetComponentsInChildren<Transform>(true))child.gameObject.layer=layer;
             foreach(var particles in view.GetComponentsInChildren<ParticleSystem>()){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);}
-            return new View(view,pool,key,_prefab.name,_plane);
+            return new View(view,pool,key,_prefab.name,_plane,_fitCircle,_fadeSeconds);
         }
-        private sealed class View:IGameplaySpatialView
+        private sealed class View:IGameplaySpatialView,IGameplayAreaGeometryView
         {
             private GameObject _view;
             private readonly GameObjectPoolModule _pool;
             private readonly ResourceKey _key;
             private readonly string _location;
             private readonly GameplaySpatialPlane _plane;
-            internal View(GameObject view,GameObjectPoolModule pool,ResourceKey key,string location,GameplaySpatialPlane plane){_view=view;_pool=pool;_key=key;_location=location;_plane=plane;}
+            private readonly bool _fitCircle;
+            private readonly float _fadeSeconds;
+            private readonly TrailRenderer[] _trails;
+            private readonly (SpriteRenderer Sprite, Color Color)[] _fadeSprites;
+            private bool _positioned;
+            internal View(GameObject view,GameObjectPoolModule pool,ResourceKey key,string location,GameplaySpatialPlane plane,bool fitCircle,float fadeSeconds)
+            {
+                _view=view;_pool=pool;_key=key;_location=location;_plane=plane;_fitCircle=fitCircle;_fadeSeconds=fadeSeconds;
+                _trails=view.GetComponentsInChildren<TrailRenderer>(true);
+                if (fadeSeconds>0)
+                    _fadeSprites=Array.ConvertAll(view.GetComponentsInChildren<SpriteRenderer>(true),sprite=>(sprite,sprite.color));
+            }
+            public void SetGeometry(GameplaySearchGeometry geometry)
+            {
+                if (_fitCircle) _view.transform.localScale *= 2 * geometry.Radius;
+            }
+            public void SyncLifetime(float age,float duration)
+            {
+                if (_fadeSprites==null) return;
+                float alpha=Mathf.Clamp01(Mathf.Min(age,duration-age)/_fadeSeconds);
+                foreach(var item in _fadeSprites){var color=item.Color;color.a*=alpha;item.Sprite.color=color;}
+            }
             public void Sync(GameplayPoint point,GameplayDirection direction)
             {
                 if(_view==null)return;_view.transform.position=new Vector3(point.X,point.Y,point.Z);
                 _view.transform.rotation=_plane==GameplaySpatialPlane.XY?Quaternion.Euler(0,0,Mathf.Atan2(direction.Y,direction.X)*Mathf.Rad2Deg):
                     Quaternion.LookRotation(new Vector3(direction.X,direction.Y,direction.Z),Mathf.Abs(direction.Y)>.99f?Vector3.forward:Vector3.up);
+                if(!_positioned){foreach(var trail in _trails)trail.Clear();_positioned=true;}
             }
             public void Dispose()
             {
                 if(_view==null)return;
+                foreach(var trail in _trails)trail.Clear();
+                if(_fadeSprites!=null)foreach(var item in _fadeSprites)item.Sprite.color=item.Color;
                 foreach(var particles in _view.GetComponentsInChildren<ParticleSystem>())particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);
                 _pool.Release(_key,_location,_view);_view=null;
             }
@@ -82906,11 +83074,11 @@ namespace FRFrame.Gameplay.Standard
         /// commit only after that write succeeds; resource stores must use the synchronous Core contract.</summary>
         internal Func<Action> PrepareConsumption(float amount,float before, GameplayContext hit)
         {
-            Reconcile(before);var updates=new List<(GameplayShieldContribution entry,float remaining)>();
+            Reconcile(before);var updates=new List<(GameplayShieldContribution entry,float remaining,float absorbed)>();
             foreach (var entry in _entries)
             {
                 float take = Math.Min(amount, entry.Remaining);
-                if (take > 0) updates.Add((entry, entry.Remaining - take));
+                if (take > 0) updates.Add((entry, entry.Remaining - take, take));
                 amount -= take;
                 if (amount <= 0) break;
             }
@@ -82922,7 +83090,14 @@ namespace FRFrame.Gameplay.Standard
                 foreach (var update in updates)
                 {
                     var entry = update.entry;
-                    if (entry.IsDisposed || update.remaining > 0 || (entry.Broken == null && entry.Expired == null)) continue;
+                    if (entry.IsDisposed) continue;
+                    if (update.remaining > 0)
+                    {
+                        var absorbed = entry.Absorbed;
+                        if (absorbed != null) callbacks += () => absorbed(update.absorbed);
+                        continue;
+                    }
+                    if (entry.Broken == null && entry.Expired == null && entry.Absorbed == null) continue;
                     var broken = entry.Broken;
                     Remove(entry, true);
                     if (broken != null) callbacks += () => broken(hit);
@@ -82944,7 +83119,7 @@ namespace FRFrame.Gameplay.Standard
         internal void RemoveCallbackShieldsOnDeath()
         {
             foreach (var entry in _entries.ToArray())
-                if (entry.Broken != null || entry.Expired != null) Remove(entry, true);
+                if (entry.Broken != null || entry.Expired != null || entry.Absorbed != null) Remove(entry, true);
         }
         internal void Remove(GameplayShieldContribution entry,bool removeEffect)
         {
@@ -82978,9 +83153,10 @@ namespace FRFrame.Gameplay.Standard
         internal Action ReleaseBinding;
         internal Action<GameplayContext> Broken;
         internal Action Expired;
+        internal Action<float> Absorbed;
         internal GameplayShieldContribution(GameplayShieldContributions owner,GameplayContext context,GameplayEffectLease lease,float amount)
         {_owner=owner;Context=context;Lease=lease;Remaining=amount;}
-        internal void MarkRemoved(){IsDisposed=true;Remaining=0;Broken=null;Expired=null;ReleaseBinding?.Invoke();ReleaseBinding=null;}
+        internal void MarkRemoved(){IsDisposed=true;Remaining=0;Broken=null;Expired=null;Absorbed=null;ReleaseBinding?.Invoke();ReleaseBinding=null;}
         public void Dispose()=>_owner.Remove(this,true);
     }
     /// <summary>Grants a separate timed shield using an actual Effect clock; no time lives in this action.</summary>
@@ -82989,16 +83165,19 @@ namespace FRFrame.Gameplay.Standard
         private readonly IGameplayFloatValue _amount;
         private readonly GameplayEffectDefinition _lifetime;
         private readonly bool _ownedByAbility;
-        private readonly IReadOnlyList<IGameplaySkillAction> _onBroken, _onExpired;
+        private readonly IReadOnlyList<IGameplaySkillAction> _onBroken, _onExpired, _onAbsorbed;
         public GameplayGrantTimedShieldAction(IGameplayFloatValue amount,IGameplayFloatValue duration,bool ownedByAbility=false,
-            IEnumerable<IGameplaySkillAction> onBroken = null, IEnumerable<IGameplaySkillAction> onExpired = null)
+            IEnumerable<IGameplaySkillAction> onBroken = null, IEnumerable<IGameplaySkillAction> onExpired = null,
+            IGameplayEffectPresentationDefinition presentation = null, IEnumerable<IGameplaySkillAction> onAbsorbed = null)
         {
             _amount=amount??throw new ArgumentNullException(nameof(amount));
             _lifetime=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration,1,0,Array.Empty<GameplayEffectAttributeModifierDefinition>(),Array.Empty<GameplayTag>(),Array.Empty<IGameplayEffectExecution>(),null,
-                effectTags:new[]{new GameplayTag("Effect.Standard.Shield")},durationValue:duration??throw new ArgumentNullException(nameof(duration)));
+                effectTags:new[]{new GameplayTag("Effect.Standard.Shield")},durationValue:duration??throw new ArgumentNullException(nameof(duration)),
+                presentation:presentation);
             _ownedByAbility=ownedByAbility;
             _onBroken = GameplaySpatialMath.Actions(onBroken);
             _onExpired = GameplaySpatialMath.Actions(onExpired);
+            _onAbsorbed = GameplaySpatialMath.Actions(onAbsorbed);
         }
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
         {
@@ -83014,19 +83193,26 @@ namespace FRFrame.Gameplay.Standard
             try
             {
                 contribution=target.Shields.Add(context,lease,amount);
+                if (_onAbsorbed.Count > 0) contribution.Absorbed = absorbed =>
+                {
+                    if (!actor.IsTargetable || !target.IsTargetable) return;
+                    var impact = context.WithTarget(new GameplayTargetData(target.Id, target.Position));
+                    actor.RunPresentationCallback(_onAbsorbed, impact,
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Absorbed"), impact, absorbed));
+                };
                 if (_onBroken.Count > 0) contribution.Broken = hit =>
                 {
                     if (!actor.IsTargetable || !target.IsTargetable ||
                         !actor.World.TryGetActor(hit.InstigatorId, out var breaker) || !breaker.IsTargetable) return;
                     var retaliate = context.WithTarget(new GameplayTargetData(breaker.Id, breaker.Position));
-                    GameplaySkillActionRunner.Execute(_onBroken, retaliate,
-                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Broken"), retaliate, 1), actor);
+                    actor.RunPresentationCallback(_onBroken, retaliate,
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Broken"), retaliate, 1));
                 };
                 if (_onExpired.Count > 0) contribution.Expired = () =>
                 {
                     if (!actor.IsTargetable || !target.IsTargetable) return;
-                    GameplaySkillActionRunner.Execute(_onExpired, context,
-                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Expired"), context, 1), actor);
+                    actor.RunPresentationCallback(_onExpired, context,
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Expired"), context, 1));
                 };
                 if(_ownedByAbility&&!actor.Abilities.TryOwnLifetime(grant,contribution)){contribution.Dispose();return GameplaySkillActionResult.Rejected;}
                 if(_ownedByAbility)contribution.ReleaseBinding=()=>actor.Abilities.ReleaseOwnedLifetime(grant,contribution);
@@ -83152,6 +83338,14 @@ namespace FRFrame.Gameplay.Standard
             }
             return new GameplaySearchGeometry(_definition.Shape,_definition.Plane,Position,Direction,_radius,_angle,_length,_width,_height,cells:cells,cellSize:_definition.CellSize);
         }
+        protected override void ConfigureView(IGameplaySpatialView view)
+        {
+            if (view is IGameplayAreaGeometryView geometryView)
+            {
+                geometryView.SetGeometry(Geometry());
+                geometryView.SyncLifetime(0,_duration);
+            }
+        }
         protected override void OnStart(){if(IsArmed)UpdateMembership();}
         internal override void Advance(float delta)
         {
@@ -83167,6 +83361,7 @@ namespace FRFrame.Gameplay.Standard
             long due=(long)boundaries;
             float activeDelta=(float)(Math.Max(0,next-_arming)-Math.Max(0,_age-_arming));
             _age=next;
+            if (View is IGameplayAreaGeometryView geometryView) geometryView.SyncLifetime((float)_age,_duration);
             if(_definition.FollowOwner){var origin=Owner.Position;var offset=_definition.OriginOffset;Position=new GameplayPoint(origin.X+offset.X,origin.Y+offset.Y,origin.Z+offset.Z);Direction=Owner.Facing;Notify();}
             if(!IsArmed)return;
             UpdateMembership();
@@ -83782,7 +83977,7 @@ namespace FRFrame.Gameplay.Standard
         public static readonly GameplayTag SearchMultiplierKey = new GameplayTag("Data.Standard.Search.Multiplier");
         private readonly IReadOnlyList<GameplayPoint> _cells;
         private readonly float _cellSize;
-        private readonly IReadOnlyList<IGameplaySkillAction> _each, _completed, _empty;
+        private readonly IReadOnlyList<IGameplaySkillAction> _each, _completed, _empty, _onBegin;
         public GameplaySearchTargetAction(GameplaySearchShape shape, GameplaySpatialPlane plane, GameplaySearchOrigin origin,
             IGameplayFloatValue radius, IGameplayFloatValue angle, IGameplayFloatValue length, IGameplayFloatValue width, IGameplayFloatValue height,
             GameplayFactionFilter faction, GameplayTagQuery tags, int layerMask, int maxTargets, GameplayTargetOrder order, bool includeSelf,
@@ -83790,7 +83985,8 @@ namespace FRFrame.Gameplay.Standard
             IEnumerable<GameplayPoint> cells = null, float cellSize = 1,
             GameplaySearchDirection direction = GameplaySearchDirection.OwnerFacing,
             IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default,
-            bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1)
+            bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1,
+            IEnumerable<IGameplaySkillAction> onBegin = null)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane) ||
                 !Enum.IsDefined(typeof(GameplaySearchOrigin), origin)) throw new ArgumentOutOfRangeException(nameof(shape));
@@ -83809,6 +84005,7 @@ namespace FRFrame.Gameplay.Standard
             _repeatFromResult = repeatFromResult;
             _repeatMultiplier = repeatMultiplier;
             _each = Copy(each); _completed = Copy(completed); _empty = Copy(empty);
+            _onBegin = Copy(onBegin);
             _cells = new List<GameplayPoint>(cells ?? Array.Empty<GameplayPoint>()).AsReadOnly(); _cellSize = cellSize;
         }
         private static IReadOnlyList<IGameplaySkillAction> Copy(IEnumerable<IGameplaySkillAction> source)
@@ -83822,6 +84019,11 @@ namespace FRFrame.Gameplay.Standard
         {
             if (!(host is GameplayStandardActor actor) || actor.IsDisposed) throw new InvalidOperationException("Search requires the official standard actor/world host.");
             if (!TryCreateRequest(context, actor, out var request)) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+            if (_onBegin.Count > 0)
+            {
+                var begin = actor.RunPresentationCallback(_onBegin, context, triggerEvent, canContinue);
+                if (begin.Result == GameplaySkillActionResult.Rejected) return begin;
+            }
             GameplayTargetData targets;
             if (_repeatFromResult)
             {
@@ -83839,7 +84041,7 @@ namespace FRFrame.Gameplay.Standard
                     visited.Add(id);
                     var single = context.WithTarget(new GameplayTargetData(id, point, null, new[] { id }))
                         .WithValues(context.Values.WithValue(SearchMultiplierKey, multiplier));
-                    var result = GameplaySkillActionRunner.Execute(_each, single, triggerEvent, host, canContinue);
+                    var result = actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, request.Geometry.Origin);
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                     multiplier *= _repeatMultiplier;
                     if (step + 1 < _maxTargets && !actor.IsDisposed)
@@ -83855,7 +84057,7 @@ namespace FRFrame.Gameplay.Standard
                 {
                     if (!actor.World.TryGetActor(id, out var target)) continue;
                     var single = context.WithTarget(new GameplayTargetData(id, target.Position, null, new[] { id }));
-                    var result = GameplaySkillActionRunner.Execute(_each, single, triggerEvent, host, canContinue);
+                    var result = actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, request.Geometry.Origin);
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                 }
             }
@@ -83865,7 +84067,7 @@ namespace FRFrame.Gameplay.Standard
                 var result = GameplaySkillActionRunner.Execute(_empty, resultContext, triggerEvent, host, canContinue);
                 if (result.Result == GameplaySkillActionResult.Rejected) return result;
             }
-            return GameplaySkillActionRunner.Execute(_completed, resultContext, triggerEvent, host, canContinue);
+            return actor.RunPresentationCallback(_completed, resultContext, triggerEvent, canContinue);
         }
         /// <summary>Side-effect-free canonical request used by both runtime query and Editor preview.
         /// Only dimensions used by the selected shape evaluate their AST; inactive fields are retained
@@ -84044,6 +84246,12 @@ namespace FRFrame.Gameplay.Standard
     /// <summary>Optional presentation only; receives rule positions and never owns a rule clock.</summary>
     public interface IGameplaySpatialView:IDisposable { void Sync(GameplayPoint position,GameplayDirection direction); }
     public interface IGameplaySpatialViewFactory { IGameplaySpatialView Create(GameplayStandardActor actor,GameplayContext context); }
+    /// <summary>Optional view contract for the actual, already evaluated region geometry.</summary>
+    public interface IGameplayAreaGeometryView
+    {
+        void SetGeometry(GameplaySearchGeometry geometry);
+        void SyncLifetime(float age, float duration);
+    }
     /// <summary>One cast-owned transient spatial operation. Definition is immutable; this instance
     /// stores motion/membership only. Effect/Ability/Sequence ownership remains in the existing containers.</summary>
     public abstract class GameplaySpatialOperation:IGameplayAbilityTerminationAwareLifetime
@@ -84063,6 +84271,7 @@ namespace FRFrame.Gameplay.Standard
         private readonly GameplayAbilityHandle _grant;
         private readonly IGameplaySpatialViewFactory _factory;
         private IGameplaySpatialView _view;
+        protected IGameplaySpatialView View => _view;
         protected GameplaySpatialOperation(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,IGameplaySpatialViewFactory factory,bool ownedByAbility=true)
         {
             Owner=owner;Context=context.WithSource(owner.World.Sources.Allocate());_grant=grant;_factory=factory;
@@ -84073,8 +84282,10 @@ namespace FRFrame.Gameplay.Standard
         {
             if(_factory!=null)_view=_factory.Create(Owner,Context)??throw new InvalidOperationException("Spatial backend returned no actual view.");
             if(IsDisposed){_view?.Dispose();_view=null;return;}
+            if(_view!=null)ConfigureView(_view);
             Notify();OnStart();
         }
+        protected virtual void ConfigureView(IGameplaySpatialView view) { }
         protected virtual void OnStart() { }
         internal abstract void Advance(float delta);
         protected void Notify(){if(IsDisposed)return;_view?.Sync(Position,Direction);Changed?.Invoke(this);}
@@ -84083,7 +84294,7 @@ namespace FRFrame.Gameplay.Standard
         {
             if(Owner.IsDisposed||Owner.World.IsDisposed||(!ending&&IsDisposed))return;
             var data=new GameplayEventData(new GameplayTag(signal),context,magnitude);
-            GameplaySkillActionRunner.Execute(actions,context,data,Owner,()=>!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed));
+            Owner.RunPresentationCallback(actions,context,data,()=>!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed));
             if(!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed))Owner.Events.Publish(data);
         }
         public void Finish(GameplaySpatialEndReason reason)
@@ -84602,6 +84813,40 @@ namespace FRFrame.Gameplay.Standard
             if (!(host is GameplayStandardActor actor) || !GameplayStandardActivation.TryFindGrant(actor, context, out var grant))
                 return GameplaySkillActionResult.Rejected;
             return (Cancel ? actor.Abilities.Cancel(grant) : actor.Abilities.End(grant)) ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+        }
+    }
+}
+</file>
+
+<file path="Gameplay/Standard/Runtime/GameplayPresentationCallbacks.cs">
+using System;
+using System.Collections.Generic;
+
+namespace FRFrame.Gameplay.Standard
+{
+    public sealed partial class GameplayStandardActor
+    {
+        private GameplayContext _presentationCallback;
+        private GameplayPoint? _presentationSegmentStart;
+
+        /// <summary>Reads a committed Standard callback only while its exact context is executing.
+        /// Search callbacks can also carry their actual query origin for a two-point view.</summary>
+        public bool TryReadPresentationCallback(GameplayContext context, out GameplayPoint? segmentStart)
+        {
+            bool current = _presentationCallback != null && ReferenceEquals(_presentationCallback, context);
+            segmentStart = current ? _presentationSegmentStart : null;
+            return current;
+        }
+
+        internal GameplaySkillActionExecution RunPresentationCallback(IReadOnlyList<IGameplaySkillAction> actions,
+            GameplayContext context, GameplayEventData trigger, Func<bool> canContinue = null, GameplayPoint? segmentStart = null)
+        {
+            var previous = _presentationCallback;
+            var previousStart = _presentationSegmentStart;
+            _presentationCallback = context;
+            _presentationSegmentStart = segmentStart;
+            try { return GameplaySkillActionRunner.Execute(actions, context, trigger, this, canContinue); }
+            finally { _presentationCallback = previous; _presentationSegmentStart = previousStart; }
         }
     }
 }
@@ -85129,7 +85374,7 @@ namespace FRFrame.Gameplay.Standard
 
     /// <summary>Per-actor mutable state and default Skill/Ability/Effect/Sequence host. Static Definitions
     /// are shared, subscriptions/handles are owned here, and removal cleans them without definition scans.</summary>
-    public sealed class GameplayStandardActor : IGameplayAbilityHost, IGameplaySkillHost, IGameplaySkillEffectHost,
+    public sealed partial class GameplayStandardActor : IGameplayAbilityHost, IGameplaySkillHost, IGameplaySkillEffectHost,
         IGameplaySequenceHost, IGameplayResourceTarget, IGameplaySpatialActor, IGameplaySkillTraceSink, IGameplaySkillTraceSourceProvider, IDisposable
     {
         private readonly List<GameplaySkillRuntime> _skills = new List<GameplaySkillRuntime>();

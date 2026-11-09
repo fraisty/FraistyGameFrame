@@ -104,6 +104,9 @@ namespace FRFrame.Gameplay.Unity.Editor
                 yield return new GameplayBusinessInspectorGroup(null,audio?"播放位置":"位置 / 缩放 / 朝向",null,"Origin","Binding","Offset","Scale","Follow","MirrorFacing");
                 if(audio)
                     yield return new GameplayBusinessInspectorGroup(null,"音频播放",null,"Volume","Pitch","AudioLoop");
+                yield return new GameplayBusinessInspectorGroup(null,"表现触发条件",
+                    "命中和实扣生命只检查同一次伤害结算。表现强度缩放特效，或乘以音量；两点特效只缩放宽度。",
+                    "Outcome","TargetRequirements","Intensity");
                 yield return new GameplayBusinessInspectorGroup(null,audio?"停止与清理":"回收与清理",
                     audio?"到时停止音频。时间编排可随施放清理；Effect 已提交声光按自身时限播放。":"一次性粒子可播完回收，循环特效请设回收时限。随技能结束清理仅用于施放编排。",
                     "RecycleWhenParticlesFinish","Duration","OwnedByAbility");
@@ -113,7 +116,12 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(values is GameplayUnityEffectPresentationAuthoring effect)return effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图";
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
-            if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint?"固定上下文地点":(cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随"))+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
+            if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin switch {
+                GameplayPresentationCueAsset.PositionSource.CallbackSegment => "本跳起点 → 命中地点",
+                GameplayPresentationCueAsset.PositionSource.TargetToOwner => "命中地点 → 施法者",
+                GameplayPresentationCueAsset.PositionSource.ContextPoint => "固定上下文地点",
+                _ => (cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随")
+            })+"\n"+(IsFieldVisible(cue,"Duration")?"时限 "+GameplaySkillFieldSchema.FloatSummary(cue.Duration)+"s":"播完回收");
             return null;
         }
         public string NodeTypeName(object values)=>values is GameplayPresentationCueData cue
@@ -161,7 +169,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 case "Clip": case "Volume": case "Pitch": case "AudioLoop":
                     return kind==GameplayPresentationCueAsset.CueKind.Audio;
                 case "Binding": case "Follow":
-                    return origin!=GameplayPresentationCueAsset.PositionSource.ContextPoint;
+                    return origin==GameplayPresentationCueAsset.PositionSource.Owner||origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget;
                 case "Duration":
                     return kind!=GameplayPresentationCueAsset.CueKind.Vfx||!autoRecycle;
                 default:

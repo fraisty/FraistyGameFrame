@@ -205,12 +205,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(path.StartsWith("Overflow/",StringComparison.Ordinal))return "叠层溢出 · 续接效果";
             if (path == "Then") return "后续执行";
             var key = path.Split('.').Last();
-            return key == "Actions" ? "执行" : key == "EachTarget" ? "每个目标" : key == "Completed" ? "搜索完成" :
+            return key == "Actions" ? "执行" : key == "OnBegin" ? "查询前" : key == "EachTarget" ? "每个目标" : key == "Completed" ? "搜索完成" :
                 key == "NoTargets" ? "无目标" : key == "TrueActions" ? "满足条件" : key == "FalseActions" ? "不满足" :
                 key == "OnHit" ? "命中" : key == "OnArrive" ? "到达" : key == "OnRange" ? "射程结束" :
                 key == "OnEnter" ? "进入" : key == "OnExit" ? "离开" : key == "OnTick" ? "周期" : key=="OnStay"?"持续停留（每步）":
                 key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
-                key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" :
+                key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" : key == "OnAbsorbed" ? "吸收 · 护盾仍存续" :
                 ObjectNames.NicifyVariableName(path);
         }
 

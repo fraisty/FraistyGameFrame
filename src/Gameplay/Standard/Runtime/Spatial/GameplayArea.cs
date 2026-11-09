@@ -109,6 +109,14 @@ namespace FRFrame.Gameplay.Standard
             }
             return new GameplaySearchGeometry(_definition.Shape,_definition.Plane,Position,Direction,_radius,_angle,_length,_width,_height,cells:cells,cellSize:_definition.CellSize);
         }
+        protected override void ConfigureView(IGameplaySpatialView view)
+        {
+            if (view is IGameplayAreaGeometryView geometryView)
+            {
+                geometryView.SetGeometry(Geometry());
+                geometryView.SyncLifetime(0,_duration);
+            }
+        }
         protected override void OnStart(){if(IsArmed)UpdateMembership();}
         internal override void Advance(float delta)
         {
@@ -124,6 +132,7 @@ namespace FRFrame.Gameplay.Standard
             long due=(long)boundaries;
             float activeDelta=(float)(Math.Max(0,next-_arming)-Math.Max(0,_age-_arming));
             _age=next;
+            if (View is IGameplayAreaGeometryView geometryView) geometryView.SyncLifetime((float)_age,_duration);
             if(_definition.FollowOwner){var origin=Owner.Position;var offset=_definition.OriginOffset;Position=new GameplayPoint(origin.X+offset.X,origin.Y+offset.Y,origin.Z+offset.Z);Direction=Owner.Facing;Notify();}
             if(!IsArmed)return;
             UpdateMembership();

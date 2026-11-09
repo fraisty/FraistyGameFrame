@@ -28,13 +28,23 @@ namespace FRFrame.Gameplay.Unity
         /// <summary>VFX only. Recycle once all non-looping particle systems finish.</summary>
         public bool RecycleWhenParticlesFinish;
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=1};
+        [SerializeReference] public GameplayFloatValueAuthoring Intensity;
+        public GameplayPresentationCueAsset.OutcomeRequirement Outcome;
+        public GameplayTagQueryAuthoring TargetRequirements;
         private bool UsesParticleCompletion=>Kind==GameplayPresentationCueAsset.CueKind.Vfx&&RecycleWhenParticlesFinish;
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>
             new GameplayPresentationCueDefinition(Kind,Prefab,Clip,Origin,Offset,Follow,Volume,Pitch,AudioLoop,
-                UsesParticleCompletion?null:Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing,UsesParticleCompletion));
+                UsesParticleCompletion?null:Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing,UsesParticleCompletion,
+                Intensity?.Build(),Outcome,TargetRequirements?.Build()));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation,string path)
         {
             if(!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind),Kind)||!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.PositionSource),Origin))validation.Error(path,"Invalid cue policy.");
+            validation.Enum(Outcome, path+".Outcome");
+            Intensity?.Validate(validation,path+".Intensity");
+            TargetRequirements?.Validate(validation,path+".TargetRequirements");
+            if ((Origin == GameplayPresentationCueAsset.PositionSource.CallbackSegment || Origin == GameplayPresentationCueAsset.PositionSource.TargetToOwner) &&
+                (Kind != GameplayPresentationCueAsset.CueKind.Vfx || Follow))
+                validation.Error(path+".Origin","两点位置需要不跟随的 VFX。");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Vfx&&Prefab==null)validation.Error(path+".Prefab","VFX prefab is required.");
             if(Kind==global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind.Audio&&Clip==null)validation.Error(path+".Clip","Audio clip is required.");
             if(UsesParticleCompletion){

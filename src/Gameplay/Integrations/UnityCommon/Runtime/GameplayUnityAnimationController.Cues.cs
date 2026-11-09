@@ -10,7 +10,7 @@ namespace FRFrame.Gameplay.Unity
     {
         private readonly List<CueLease> _cues=new List<CueLease>();
         private readonly Queue<(GameplayPresentationCueDefinition Definition, Vector3 Point, Transform Parent,
-            bool Mirror, GameplayEffectApplicationContext Application)> _committedEffectCues = new();
+            Vector3? End, bool Mirror, GameplayEffectApplicationContext Application)> _committedEffectCues = new();
         private GameObjectPoolModule _ownedPool;
         private AudioManager _ownedAudio;
         /// <summary>Optional existing application services. When absent, standalone Labs instantiate
@@ -22,6 +22,23 @@ namespace FRFrame.Gameplay.Unity
         public int ActiveCueCount=>_cues.Count;
         internal GameObjectPoolModule SpatialViewPool=>CuePool??(_ownedPool??(_ownedPool=new GameObjectPoolModule()));
 
+        /// <summary>Primes the same direct-reference pool used by authored cues and spatial views.</summary>
+        public void WarmPresentationPrefab(GameObject prefab)
+        {
+            var pool=SpatialViewPool;
+            var key=new ResourceKey("Gameplay.DirectPrefab",prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));
+            var view=pool.GetOrCreate(key,prefab.name,prefab);
+            pool.Release(key,prefab.name,view);
+        }
+
+        /// <summary>Initializes the direct audio service before the first authored cue needs it.</summary>
+        public void WarmPresentationAudio()
+        {
+            if(CueAudio!=null||_ownedAudio!=null)return;
+            _ownedAudio=new AudioManager();
+            _ownedAudio.InitializeDirectPlayback();
+        }
+
         private void ApplyViewRenderLayer(GameObject view)
         {
             if (ViewRenderLayer is not int layer) return;
@@ -30,9 +47,24 @@ namespace FRFrame.Gameplay.Unity
         public bool TryPlayCue(GameplayPresentationCueDefinition definition,GameplayContext context)
         {
             if(_disposed||Actor.IsDisposed||Subject==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return false;
-            float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, PresentationValueContext(context));
-            if (!TryResolveCuePose(definition, context, Actor, out var point, out var parent)) return false;
-            return PlayCueAt(definition, point, parent, duration, Subject.transform.localScale.x < 0, grant);
+            Actor.TryReadPresentationCallback(context, out var segment);
+            return PlayResolvedCue(definition, context, segment, grant);
+        }
+
+        internal bool TryPlayCallbackCue(GameplayPresentationCueDefinition definition, GameplayContext context, GameplayPoint? segment)
+        {
+            if (_disposed || Actor.IsDisposed || Subject == null) return false;
+            return PlayResolvedCue(definition, context, segment, default);
+        }
+
+        private bool PlayResolvedCue(GameplayPresentationCueDefinition definition, GameplayContext context,
+            GameplayPoint? segment, GameplayAbilityHandle grant)
+        {
+            if (!TryResolveCuePose(definition, context, Actor, segment, out var point, out var parent, out var end)) return false;
+            var application = definition.RecycleWhenParticlesFinish && definition.Intensity == null ? null : PresentationValueContext(context);
+            float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, application);
+            return PlayCueAt(definition, point, parent, end, duration, Subject.transform.localScale.x < 0,
+                CueIntensity(definition, application), grant);
         }
 
         internal bool TryQueueEffectCue(GameplayPresentationCueDefinition definition, GameplayContext context, GameplayEffectLifecycleEvent lifecycle)
@@ -40,10 +72,10 @@ namespace FRFrame.Gameplay.Unity
             if (_disposed || Subject == null || Actor.IsDisposed || !lifecycle.IsExecuting ||
                 !ReferenceEquals(lifecycle.Application.Target, Actor) || context.TargetData.PrimaryTargetId != Actor.Id) return false;
             Actor.World.TryGetActor(lifecycle.Application.Context.InstigatorId, out var instigator);
-            if (!TryResolveCuePose(definition, context, instigator, out var point, out var parent)) return false;
+            if (!TryResolveCuePose(definition, context, instigator, null, out var point, out var parent, out var end)) return false;
             var subject = (instigator?.Presentation as GameplayUnityAnimationController)?.Subject;
             bool mirror = (subject != null ? subject : Subject).transform.localScale.x < 0;
-            _committedEffectCues.Enqueue((definition, point, parent, mirror, lifecycle.Application));
+            _committedEffectCues.Enqueue((definition, point, parent, end, mirror, lifecycle.Application));
             return true;
         }
 
@@ -54,7 +86,8 @@ namespace FRFrame.Gameplay.Unity
                 try
                 {
                     float duration = cue.Definition.RecycleWhenParticlesFinish ? 0 : CueDuration(cue.Definition, cue.Application);
-                    PlayCueAt(cue.Definition, cue.Point, cue.Parent, duration, cue.Mirror);
+                    PlayCueAt(cue.Definition, cue.Point, cue.Parent, cue.End, duration, cue.Mirror,
+                        CueIntensity(cue.Definition, cue.Application));
                 }
                 catch (Exception error) { Debug.LogException(error, Subject); }
             }
@@ -67,10 +100,30 @@ namespace FRFrame.Gameplay.Unity
             return duration;
         }
 
+        private static float CueIntensity(GameplayPresentationCueDefinition definition, GameplayEffectApplicationContext application) =>
+            definition.Intensity == null ? 1 : Mathf.Max(0, GameplayValueEvaluator.Evaluate(definition.Intensity, application));
+
         private bool TryResolveCuePose(GameplayPresentationCueDefinition definition, GameplayContext context,
-            GameplayStandardActor owner, out Vector3 point, out Transform parent)
+            GameplayStandardActor owner, GameplayPoint? segment, out Vector3 point, out Transform parent, out Vector3? end)
         {
-            point=default;parent=null;
+            point=default;parent=null;end=null;
+            if (definition.Origin == GameplayPresentationCueAsset.PositionSource.CallbackSegment ||
+                definition.Origin == GameplayPresentationCueAsset.PositionSource.TargetToOwner)
+            {
+                if (!context.TargetData.HasPoint) return false;
+                var hit = context.TargetData.Point;
+                if (definition.Origin == GameplayPresentationCueAsset.PositionSource.CallbackSegment)
+                {
+                    if (!segment.HasValue) return false;
+                    point = ToVector(segment.Value); end = ToVector(hit);
+                }
+                else
+                {
+                    if (owner == null) return false;
+                    point = ToVector(hit); end = ToVector(owner.Position);
+                }
+                return (end.Value - point).sqrMagnitude > .000001f;
+            }
             if(definition.Origin==GameplayPresentationCueAsset.PositionSource.ContextPoint)
             {if(!context.TargetData.HasPoint)return false;var p=context.TargetData.Point;point=new Vector3(p.X,p.Y,p.Z);}
             else
@@ -84,9 +137,10 @@ namespace FRFrame.Gameplay.Unity
             }
             return true;
         }
+        private static Vector3 ToVector(GameplayPoint point) => new Vector3(point.X, point.Y, point.Z);
 
-        private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent,
-            float duration, bool mirror, GameplayAbilityHandle grant=default)
+        private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent, Vector3? end,
+            float duration, bool mirror, float intensity, GameplayAbilityHandle grant=default)
         {
             var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
@@ -99,18 +153,26 @@ namespace FRFrame.Gameplay.Unity
                     var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
-                    var offset=definition.Offset;var scale=definition.Scale;
-                    if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
-                    view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=Quaternion.identity;
+                    var offset=definition.Offset;var scale=definition.Scale*intensity;
+                    var rotation=Quaternion.identity;
+                    if (end.HasValue)
+                    {
+                        var direction=end.Value-point;
+                        point+=direction*.5f;
+                        scale.x=definition.Scale.x*direction.magnitude;
+                        rotation=Quaternion.FromToRotation(Vector3.right,direction);
+                    }
+                    else if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
+                    view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=rotation;
                     cue.Particles=view.GetComponentsInChildren<ParticleSystem>();
                     foreach(var particles in cue.Particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);particles.Pause(false);}
                 }
                 else
                 {
                     if(definition.Clip==null)throw new InvalidOperationException("Audio clip is missing.");
-                    var audio=CueAudio;
-                    if(audio==null){if(_ownedAudio==null){_ownedAudio=new AudioManager();_ownedAudio.InitializeDirectPlayback();}audio=_ownedAudio;}
-                    cue.Audio=audio.Play(definition.Clip,new AudioPlayOptions{Loop=definition.AudioLoop,Volume=definition.Volume,Pitch=definition.Pitch,Position=point+definition.Offset,FollowTarget=definition.Follow?parent:null});
+                    WarmPresentationAudio();
+                    var audio=CueAudio??_ownedAudio;
+                    cue.Audio=audio.Play(definition.Clip,new AudioPlayOptions{Loop=definition.AudioLoop,Volume=Mathf.Clamp01(definition.Volume*intensity),Pitch=definition.Pitch,Position=point+definition.Offset,FollowTarget=definition.Follow?parent:null});
                     if(!cue.Audio.IsValid){cue.Dispose();return false;}
                 }
                 _cues.Add(cue);

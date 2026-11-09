@@ -33,7 +33,7 @@ namespace FRFrame.Gameplay.Standard
         public static readonly GameplayTag SearchMultiplierKey = new GameplayTag("Data.Standard.Search.Multiplier");
         private readonly IReadOnlyList<GameplayPoint> _cells;
         private readonly float _cellSize;
-        private readonly IReadOnlyList<IGameplaySkillAction> _each, _completed, _empty;
+        private readonly IReadOnlyList<IGameplaySkillAction> _each, _completed, _empty, _onBegin;
         public GameplaySearchTargetAction(GameplaySearchShape shape, GameplaySpatialPlane plane, GameplaySearchOrigin origin,
             IGameplayFloatValue radius, IGameplayFloatValue angle, IGameplayFloatValue length, IGameplayFloatValue width, IGameplayFloatValue height,
             GameplayFactionFilter faction, GameplayTagQuery tags, int layerMask, int maxTargets, GameplayTargetOrder order, bool includeSelf,
@@ -41,7 +41,8 @@ namespace FRFrame.Gameplay.Standard
             IEnumerable<GameplayPoint> cells = null, float cellSize = 1,
             GameplaySearchDirection direction = GameplaySearchDirection.OwnerFacing,
             IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default,
-            bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1)
+            bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1,
+            IEnumerable<IGameplaySkillAction> onBegin = null)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane) ||
                 !Enum.IsDefined(typeof(GameplaySearchOrigin), origin)) throw new ArgumentOutOfRangeException(nameof(shape));
@@ -60,6 +61,7 @@ namespace FRFrame.Gameplay.Standard
             _repeatFromResult = repeatFromResult;
             _repeatMultiplier = repeatMultiplier;
             _each = Copy(each); _completed = Copy(completed); _empty = Copy(empty);
+            _onBegin = Copy(onBegin);
             _cells = new List<GameplayPoint>(cells ?? Array.Empty<GameplayPoint>()).AsReadOnly(); _cellSize = cellSize;
         }
         private static IReadOnlyList<IGameplaySkillAction> Copy(IEnumerable<IGameplaySkillAction> source)
@@ -73,6 +75,11 @@ namespace FRFrame.Gameplay.Standard
         {
             if (!(host is GameplayStandardActor actor) || actor.IsDisposed) throw new InvalidOperationException("Search requires the official standard actor/world host.");
             if (!TryCreateRequest(context, actor, out var request)) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+            if (_onBegin.Count > 0)
+            {
+                var begin = actor.RunPresentationCallback(_onBegin, context, triggerEvent, canContinue);
+                if (begin.Result == GameplaySkillActionResult.Rejected) return begin;
+            }
             GameplayTargetData targets;
             if (_repeatFromResult)
             {
@@ -90,7 +97,7 @@ namespace FRFrame.Gameplay.Standard
                     visited.Add(id);
                     var single = context.WithTarget(new GameplayTargetData(id, point, null, new[] { id }))
                         .WithValues(context.Values.WithValue(SearchMultiplierKey, multiplier));
-                    var result = GameplaySkillActionRunner.Execute(_each, single, triggerEvent, host, canContinue);
+                    var result = actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, request.Geometry.Origin);
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                     multiplier *= _repeatMultiplier;
                     if (step + 1 < _maxTargets && !actor.IsDisposed)
@@ -106,7 +113,7 @@ namespace FRFrame.Gameplay.Standard
                 {
                     if (!actor.World.TryGetActor(id, out var target)) continue;
                     var single = context.WithTarget(new GameplayTargetData(id, target.Position, null, new[] { id }));
-                    var result = GameplaySkillActionRunner.Execute(_each, single, triggerEvent, host, canContinue);
+                    var result = actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, request.Geometry.Origin);
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                 }
             }
@@ -116,7 +123,7 @@ namespace FRFrame.Gameplay.Standard
                 var result = GameplaySkillActionRunner.Execute(_empty, resultContext, triggerEvent, host, canContinue);
                 if (result.Result == GameplaySkillActionResult.Rejected) return result;
             }
-            return GameplaySkillActionRunner.Execute(_completed, resultContext, triggerEvent, host, canContinue);
+            return actor.RunPresentationCallback(_completed, resultContext, triggerEvent, canContinue);
         }
         /// <summary>Side-effect-free canonical request used by both runtime query and Editor preview.
         /// Only dimensions used by the selected shape evaluate their AST; inactive fields are retained

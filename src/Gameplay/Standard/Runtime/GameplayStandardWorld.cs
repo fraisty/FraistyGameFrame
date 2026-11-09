@@ -182,7 +182,7 @@ namespace FRFrame.Gameplay.Standard
 
     /// <summary>Per-actor mutable state and default Skill/Ability/Effect/Sequence host. Static Definitions
     /// are shared, subscriptions/handles are owned here, and removal cleans them without definition scans.</summary>
-    public sealed class GameplayStandardActor : IGameplayAbilityHost, IGameplaySkillHost, IGameplaySkillEffectHost,
+    public sealed partial class GameplayStandardActor : IGameplayAbilityHost, IGameplaySkillHost, IGameplaySkillEffectHost,
         IGameplaySequenceHost, IGameplayResourceTarget, IGameplaySpatialActor, IGameplaySkillTraceSink, IGameplaySkillTraceSourceProvider, IDisposable
     {
         private readonly List<GameplaySkillRuntime> _skills = new List<GameplaySkillRuntime>();

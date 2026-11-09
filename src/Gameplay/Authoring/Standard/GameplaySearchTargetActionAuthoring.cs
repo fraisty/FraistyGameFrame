@@ -42,6 +42,7 @@ namespace FRFrame.Gameplay.Authoring
         [Tooltip("世界坐标单元中心；按 CellSize 对所在格进行匹配，不依赖 Physics。")]
         public Vector3[] Cells = Array.Empty<Vector3>();
         public float CellSize = 1;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnBegin = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] EachTarget = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] Completed = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] NoTargets = Array.Empty<GameplaySkillActionAuthoring>();
@@ -68,7 +69,7 @@ namespace FRFrame.Gameplay.Authoring
                 if (Cells == null || Cells.Length == 0) v.Error(p + ".Cells", "Configure grid cells.");
                 else for (int i = 0; i < Cells.Length; i++) { v.Finite(Cells[i].x, p + ".Cells.X"); v.Finite(Cells[i].y, p + ".Cells.Y"); v.Finite(Cells[i].z, p + ".Cells.Z"); }
             }
-            Actions(v, p + ".EachTarget", EachTarget); Actions(v, p + ".Completed", Completed); Actions(v, p + ".NoTargets", NoTargets);
+            Actions(v, p + ".OnBegin", OnBegin); Actions(v, p + ".EachTarget", EachTarget); Actions(v, p + ".Completed", Completed); Actions(v, p + ".NoTargets", NoTargets);
         }
         private static void Value(GameplayAuthoringValidationContext v, string p, GameplayFloatValueAuthoring value)
         {
@@ -82,7 +83,7 @@ namespace FRFrame.Gameplay.Authoring
         }
         public override void ValidateReferences(GameplayAuthoringValidationContext v, string p)
         {
-            foreach (var list in new[] { EachTarget, Completed, NoTargets })
+            foreach (var list in new[] { OnBegin, EachTarget, Completed, NoTargets })
                 if (list != null) for (int i = 0; i < list.Length; i++) list[i]?.ValidateReferences(v, p + $".Callbacks[{i}]");
         }
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)
@@ -93,7 +94,7 @@ namespace FRFrame.Gameplay.Authoring
                 Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier);
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context));
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;

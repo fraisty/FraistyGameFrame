@@ -184,6 +184,9 @@ namespace FRFrame.Gameplay.Editor
             Labels["FadeStartRatio"]="开始淡出的进度（0～1）";Labels["FixedPoint"]="固定位置";Labels["Follow"]="跟随位置";Labels["FollowSource"]="持续跟随来源";
             Labels["Presentation"]="状态外观";Labels["StatusPrefab"]="持续状态预制体";
             Labels["OnApplied"]="首次成功应用";Labels["OnStackChanged"]="层数变化";Labels["OnEnterMax"]="进入满层";Labels["OnPeriod"]="每次周期";
+            Labels["OnAbsorbed"]="吸收 · 护盾仍存续";Labels["Outcome"]="战斗结果条件";
+            Labels["TargetRequirements"]="目标标签条件";Labels["Intensity"]="表现强度";
+            Labels["FitCircleToRadius"]="适配实际圆形半径";Labels["FadeSeconds"]="淡入淡出秒数";
             Labels["ImmuneText"]="免疫文字";Labels["Layer"]="Animator层";Labels["Material"]="材质";Labels["MinimumSeparation"]="最小间距";
             Labels["MirrorFacing"]="随朝向镜像";Labels["MissColor"]="未命中颜色";Labels["MissText"]="未命中文字";Labels["ModelPrefab"]="Cubism模型预制体";
             Labels["NumberFormat"]="数字格式";Labels["OwnerSkillId"]="拥有者技能编号（0使用当前）";Labels["Pitch"]="音调";Labels["Point"]="地点来源或坐标";

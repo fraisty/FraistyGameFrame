@@ -65,7 +65,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(doc.SkillId==7009)route+=" 本例Mode=Passive，Subject=OwnerTarget，监听真实受击Hit；Owner当前Health<500才治疗当前目标50。试装面板发布者→敌人的测试事件不会冒充Owner受击；可让敌人安装7004面向Owner攻击验证。";
                 if(doc.SkillId==7010)route+=" 本例共享SpatialActorProfile与独立7004技能；AutoCast开启、存续4秒、OnEnd结束施放。召唤技能以新单位自己的属性和身份执行。";
                 bool u7=AssetDatabase.GetAssetPath(doc).Contains("/FRFrameSkillLab/U7Examples/");
-                if(u7){host="FRFrameGameplaySkillLab / 共用练习场";route+=" 进入共用练习场，或用 Scene / 调试 → 安装当前正式技能。剧毒爆发从零步骤与其余五例操作见 U7 Task。";}
+                if(u7){
+                    host="FRFrameGameplaySkillLab / 共用练习场";
+                    route+=" 进入共用练习场，或用 Scene / 调试 → 安装当前正式技能。";
+                    route+=doc.SkillId==4201?" 剧毒爆发从零步骤见 U7 Task 第 10 节。":
+                        " 连锁闪电从零创作、其余案例复制修改和正式表现资源定位见 U7-HR-P3 第 6 节。目录外副本需勾选「共用练习场试装」。";
+                }
                 var ability=graph.Nodes.Find(n=>n.Id==graph.AbilityNodeId)?.Payload as GameplayAbilityNodePayload;var settings=ability?.Settings as GameplayAbilityDefinitionData;
                 string tags=(settings?.Cost!=null?"消耗 ":"")+(settings?.Charge!=null?"充能 ":"")+(ability?.Definitions.Any(b=>b.PropertyPath=="CooldownEffect")==true?"冷却 ":"")+(graph.Nodes.Any(n=>n.Payload.Definitions.Any(b=>b.External))?"共享SO ":"");
                 return new SkillExample{Source=doc,Category=category,Host=host,Tags=tags,Mechanisms=mechanismIndex,Keywords=string.Join(" ",descriptions.Select(d=>d.Keywords)),Complexity=graph.Nodes.Count>15?3:graph.Nodes.Count>7?2:1,Status=u7?"U7 标准范例 · Lab 可运行":privateHost?"特定样例Host；非通用能力":AssetDatabase.GetAssetPath(doc).Contains("/AuthoringExamples/H1/")?(doc.SkillId==7003?"已由 GUI 复制改造并在 Lab 验证":doc.SkillId==7002||doc.SkillId>=7004&&doc.SkillId<=7010?"已由 GUI 从零重建并在 Lab 运行验证":"已由 GUI 创作；运行验收待完成"):"既有正式Runtime内容；GUI复刻待验证",Lesson=route};

@@ -19,18 +19,42 @@ namespace FRFrame.Gameplay.Unity
             internal Action(GameplayPresentationCueDefinition definition)=>_definition=definition;
             public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
             {
+                if (!(host is GameplayStandardActor actor)) return GameplaySkillActionResult.Rejected;
+                if (!MeetsPresentationConditions(actor,context)) return GameplaySkillActionResult.Succeeded;
                 if (triggerEvent.EffectLifecycle is { } lifecycle)
                 {
                     if (!lifecycle.IsExecuting) return GameplaySkillActionResult.Rejected;
-                    if (host is GameplayStandardActor target &&
-                        (!(target.Presentation is GameplayUnityAnimationController presenter) || !presenter.TryQueueEffectCue(_definition, context, lifecycle)))
-                        target.RecordSkillTrace(new GameplaySkillTraceRecord(target.Id, context, default,
+                    if (!(actor.Presentation is GameplayUnityAnimationController presenter) || !presenter.TryQueueEffectCue(_definition, context, lifecycle))
+                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id, context, default,
                             GameplaySkillTraceStage.ActionRejected, "EffectCue", detail: "目标缺少可用 Unity Cue 播放器，或 Cue 位置无法解析。"));
                     // Optional playback never prevents the next committed gameplay step.
                     return GameplaySkillActionResult.Succeeded;
                 }
-                return host is GameplayStandardActor actor && actor.Presentation is GameplayUnityAnimationController controller &&
-                    controller.TryPlayCue(_definition,context) ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+                var controller = actor.Presentation as GameplayUnityAnimationController;
+                if (!_definition.OwnedByAbility && actor.TryReadPresentationCallback(context, out var segment))
+                {
+                    if (controller == null || !controller.TryPlayCallbackCue(_definition,context,segment))
+                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id,context,default,
+                            GameplaySkillTraceStage.ActionRejected,"CallbackCue",detail:"缺少可用 Unity Cue 播放器，或回调位置无法解析。"));
+                    return GameplaySkillActionResult.Succeeded;
+                }
+                if (controller != null && controller.TryPlayCue(_definition,context))
+                    return GameplaySkillActionResult.Succeeded;
+                return GameplaySkillActionResult.Rejected;
+            }
+
+            private bool MeetsPresentationConditions(GameplayStandardActor actor, GameplayContext context)
+            {
+                if (_definition.Outcome == GameplayPresentationCueAsset.OutcomeRequirement.Any && _definition.TargetRequirements.IsEmpty)
+                    return true;
+                if (!actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target)) return false;
+                if (!_definition.TargetRequirements.IsEmpty &&
+                    (!target.IsTargetable || !_definition.TargetRequirements.Matches(target.Tags))) return false;
+                if (_definition.Outcome == GameplayPresentationCueAsset.OutcomeRequirement.Any) return true;
+                if (!(target.LastCombatOutcome is { } outcome) || outcome.Kind != GameplayCombatOutcomeKind.Damage ||
+                    (!ReferenceEquals(outcome.ExecutionContext,context) && !ReferenceEquals(outcome.Context,context))) return false;
+                return _definition.Outcome == GameplayPresentationCueAsset.OutcomeRequirement.HealthDamage
+                    ? outcome.Applied > 0 : !outcome.Damage.IsImmune && !outcome.Damage.IsMiss;
             }
         }
     }

@@ -14,6 +14,12 @@ namespace FRFrame.Gameplay.Standard
     /// <summary>Optional presentation only; receives rule positions and never owns a rule clock.</summary>
     public interface IGameplaySpatialView:IDisposable { void Sync(GameplayPoint position,GameplayDirection direction); }
     public interface IGameplaySpatialViewFactory { IGameplaySpatialView Create(GameplayStandardActor actor,GameplayContext context); }
+    /// <summary>Optional view contract for the actual, already evaluated region geometry.</summary>
+    public interface IGameplayAreaGeometryView
+    {
+        void SetGeometry(GameplaySearchGeometry geometry);
+        void SyncLifetime(float age, float duration);
+    }
     /// <summary>One cast-owned transient spatial operation. Definition is immutable; this instance
     /// stores motion/membership only. Effect/Ability/Sequence ownership remains in the existing containers.</summary>
     public abstract class GameplaySpatialOperation:IGameplayAbilityTerminationAwareLifetime
@@ -33,6 +39,7 @@ namespace FRFrame.Gameplay.Standard
         private readonly GameplayAbilityHandle _grant;
         private readonly IGameplaySpatialViewFactory _factory;
         private IGameplaySpatialView _view;
+        protected IGameplaySpatialView View => _view;
         protected GameplaySpatialOperation(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,IGameplaySpatialViewFactory factory,bool ownedByAbility=true)
         {
             Owner=owner;Context=context.WithSource(owner.World.Sources.Allocate());_grant=grant;_factory=factory;
@@ -43,8 +50,10 @@ namespace FRFrame.Gameplay.Standard
         {
             if(_factory!=null)_view=_factory.Create(Owner,Context)??throw new InvalidOperationException("Spatial backend returned no actual view.");
             if(IsDisposed){_view?.Dispose();_view=null;return;}
+            if(_view!=null)ConfigureView(_view);
             Notify();OnStart();
         }
+        protected virtual void ConfigureView(IGameplaySpatialView view) { }
         protected virtual void OnStart() { }
         internal abstract void Advance(float delta);
         protected void Notify(){if(IsDisposed)return;_view?.Sync(Position,Direction);Changed?.Invoke(this);}
@@ -53,7 +62,7 @@ namespace FRFrame.Gameplay.Standard
         {
             if(Owner.IsDisposed||Owner.World.IsDisposed||(!ending&&IsDisposed))return;
             var data=new GameplayEventData(new GameplayTag(signal),context,magnitude);
-            GameplaySkillActionRunner.Execute(actions,context,data,Owner,()=>!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed));
+            Owner.RunPresentationCallback(actions,context,data,()=>!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed));
             if(!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed))Owner.Events.Publish(data);
         }
         public void Finish(GameplaySpatialEndReason reason)

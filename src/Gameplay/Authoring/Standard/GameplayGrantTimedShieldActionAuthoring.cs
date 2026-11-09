@@ -12,6 +12,8 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayFloatValueAuthoring Amount=new GameplayConstantFloatValueAuthoring{Value=100};
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=5};
         public bool OwnedByAbility;
+        [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnAbsorbed = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnBroken = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnExpired = Array.Empty<GameplaySkillActionAuthoring>();
         public override void Validate(GameplayAuthoringValidationContext validation,string path)
@@ -20,9 +22,12 @@ namespace FRFrame.Gameplay.Authoring
             if(Duration==null)validation.Error(path+".Duration","Shield duration required.");else Duration.Validate(validation,path+".Duration");
             GameplaySpatialAuthoringUtility.Validate(OnBroken, validation, path + ".OnBroken");
             GameplaySpatialAuthoringUtility.Validate(OnExpired, validation, path + ".OnExpired");
+            GameplaySpatialAuthoringUtility.Validate(OnAbsorbed, validation, path + ".OnAbsorbed");
+            Presentation?.Validate(validation, path + ".Presentation");
         }
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplayGrantTimedShieldAction(
             Amount.Build(), Duration.Build(), OwnedByAbility, GameplaySpatialAuthoringUtility.Build(OnBroken, context),
-            GameplaySpatialAuthoringUtility.Build(OnExpired, context));
+            GameplaySpatialAuthoringUtility.Build(OnExpired, context), Presentation?.Build(),
+            GameplaySpatialAuthoringUtility.Build(OnAbsorbed, context));
     }
 }
