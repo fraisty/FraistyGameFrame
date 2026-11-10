@@ -62,7 +62,6 @@ namespace FRFrame.Gameplay.Standard
                         if (absorbed != null) callbacks += () => absorbed(update.absorbed);
                         continue;
                     }
-                    if (entry.Broken == null && entry.Expired == null && entry.Absorbed == null) continue;
                     var broken = entry.Broken;
                     Remove(entry, true);
                     if (broken != null) callbacks += () => broken(hit);
@@ -81,10 +80,10 @@ namespace FRFrame.Gameplay.Standard
                 expired?.Invoke();
             }
         }
-        internal void RemoveCallbackShieldsOnDeath()
+        internal void RemoveOnDeath()
         {
             foreach (var entry in _entries.ToArray())
-                if (entry.Broken != null || entry.Expired != null || entry.Absorbed != null) Remove(entry, true);
+                Remove(entry, true);
         }
         internal void Remove(GameplayShieldContribution entry,bool removeEffect)
         {

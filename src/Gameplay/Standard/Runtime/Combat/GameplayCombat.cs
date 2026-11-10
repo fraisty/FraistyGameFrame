@@ -141,7 +141,7 @@ namespace FRFrame.Gameplay.Standard
             }
             target.Resources.SetBalancesAtomic(balances);
             var shieldBreakCallbacks = commitShieldOwnership?.Invoke();
-            if (applied > 0 && balances[map.Health] == 0) target.Shields.RemoveCallbackShieldsOnDeath();
+            if (applied > 0 && balances[map.Health] == 0) target.Shields.RemoveOnDeath();
             target.ReportCombat(new GameplayCombatOutcome(application.Context, GameplayCombatOutcomeKind.Damage, result,
                 applied, Math.Max(0, result.FinalDamage - applied), health, balances[map.Health],DamageType));
             if (_healInstigator != null && applied > 0 &&

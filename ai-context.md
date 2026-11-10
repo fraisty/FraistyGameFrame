@@ -83466,7 +83466,7 @@ namespace FRFrame.Gameplay.Standard
             }
             target.Resources.SetBalancesAtomic(balances);
             var shieldBreakCallbacks = commitShieldOwnership?.Invoke();
-            if (applied > 0 && balances[map.Health] == 0) target.Shields.RemoveCallbackShieldsOnDeath();
+            if (applied > 0 && balances[map.Health] == 0) target.Shields.RemoveOnDeath();
             target.ReportCombat(new GameplayCombatOutcome(application.Context, GameplayCombatOutcomeKind.Damage, result,
                 applied, Math.Max(0, result.FinalDamage - applied), health, balances[map.Health],DamageType));
             if (_healInstigator != null && applied > 0 &&
@@ -83657,7 +83657,6 @@ namespace FRFrame.Gameplay.Standard
                         if (absorbed != null) callbacks += () => absorbed(update.absorbed);
                         continue;
                     }
-                    if (entry.Broken == null && entry.Expired == null && entry.Absorbed == null) continue;
                     var broken = entry.Broken;
                     Remove(entry, true);
                     if (broken != null) callbacks += () => broken(hit);
@@ -83676,10 +83675,10 @@ namespace FRFrame.Gameplay.Standard
                 expired?.Invoke();
             }
         }
-        internal void RemoveCallbackShieldsOnDeath()
+        internal void RemoveOnDeath()
         {
             foreach (var entry in _entries.ToArray())
-                if (entry.Broken != null || entry.Expired != null || entry.Absorbed != null) Remove(entry, true);
+                Remove(entry, true);
         }
         internal void Remove(GameplayShieldContribution entry,bool removeEffect)
         {
@@ -92314,6 +92313,46 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(broken.Count, Is.EqualTo(1));
         }
 
+        [Test]
+        public void PresentationOnlyShieldReleasesItsExactLeaseWhenSpent()
+        {
+            using var world = new GameplayStandardWorld();
+            var target = world.CreateActor(default);
+            var secondSource = world.CreateActor(default);
+            Configure(target);
+            target.Attributes.SetBaseValue(Shield, 0);
+            var targetData = new GameplayTargetData(target.Id);
+            var first = new GameplayContext(target.Id, targetData);
+            var second = new GameplayContext(secondSource.Id, targetData);
+            int expired = 0;
+            new GameplayGrantTimedShieldAction(Number(80), Number(5), presentation: new ShieldPresentation())
+                .Execute(first, default, target);
+            new GameplayGrantTimedShieldAction(Number(40), Number(2),
+                onExpired: new[] { new ObserveAction(_ => expired++) }).Execute(second, default, secondSource);
+            var entries = target.Shields.Snapshot();
+            var removals = new List<GameplayEffectRemovalObservation>();
+            target.Effects.Removed += removals.Add;
+            var stage = new[] { new GameplayDamageStage(GameplayDamageStageKind.Shield) };
+            var hit = new GameplayEffectApplicationContext(second, target, GameplaySetByCallerValues.Empty);
+
+            new GameplayDamageExecution(Number(20), stage).Execute(hit);
+            Assert.That(entries[0].Remaining, Is.EqualTo(60));
+            Assert.That(target.Effects.IsActive(entries[0].EffectHandle), Is.True);
+            new GameplayDamageExecution(Number(60), stage).Execute(hit);
+
+            Assert.That(target.Effects.IsActive(entries[0].EffectHandle), Is.False);
+            Assert.That(removals, Has.Count.EqualTo(1));
+            Assert.That(removals[0].Cause, Is.EqualTo(GameplayEffectRemovalCause.OwnerCleanup));
+            Assert.That(target.Shields.Snapshot(), Is.EqualTo(new[] { entries[1] }));
+            Assert.That(target.Effects.IsActive(entries[1].EffectHandle), Is.True);
+            Assert.That(target.Attributes.GetCurrentValue(Shield), Is.EqualTo(40));
+            Assert.That(expired, Is.Zero);
+            world.Advance(2);
+            Assert.That(expired, Is.EqualTo(1));
+            Assert.That(target.Shields.Snapshot(), Is.Empty);
+        }
+
+        private sealed class ShieldPresentation : IGameplayEffectPresentationDefinition { }
         private static IGameplayFloatValue Number(float value) => new GameplayConstantFloatValue(value);
         private sealed class ObserveAction : IGameplaySkillAction
         {
