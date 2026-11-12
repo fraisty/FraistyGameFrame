@@ -60603,7 +60603,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
             if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnBroken")
                 return input.With(true, true, "护盾耗尽后提供破盾者与地点");
-            if (payload is GameplayGrantTimedShieldActionAuthoring && (port == "OnExpired" || port == "OnAbsorbed"))
+            if (payload is GameplayGrantTimedShieldActionAuthoring && (port == "OnExpired" || port == "OnAbsorbed" || port == "OnRemoved"))
                 return input.With(true, port == "OnAbsorbed" || input.Point, "提供原护盾目标");
             if(payload is GameplayAreaDefinitionData){
                 if(port=="OnEnd")return input;
@@ -61719,19 +61719,24 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplaySkillActionAuthoring[] OnAbsorbed = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnBroken = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnExpired = Array.Empty<GameplaySkillActionAuthoring>();
+        /// <summary>Runs with the original target after break or expiry actions, or on direct removal.
+        /// An ability-owned shield skips it if the owning activation has already ended.</summary>
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnRemoved = Array.Empty<GameplaySkillActionAuthoring>();
         public override void Validate(GameplayAuthoringValidationContext validation,string path)
         {
             if(Amount==null)validation.Error(path+".Amount","Shield amount required.");else Amount.Validate(validation,path+".Amount");
             if(Duration==null)validation.Error(path+".Duration","Shield duration required.");else Duration.Validate(validation,path+".Duration");
             GameplaySpatialAuthoringUtility.Validate(OnBroken, validation, path + ".OnBroken");
             GameplaySpatialAuthoringUtility.Validate(OnExpired, validation, path + ".OnExpired");
+            GameplaySpatialAuthoringUtility.Validate(OnRemoved, validation, path + ".OnRemoved");
             GameplaySpatialAuthoringUtility.Validate(OnAbsorbed, validation, path + ".OnAbsorbed");
             Presentation?.Validate(validation, path + ".Presentation");
         }
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplayGrantTimedShieldAction(
             Amount.Build(), Duration.Build(), OwnedByAbility, GameplaySpatialAuthoringUtility.Build(OnBroken, context),
             GameplaySpatialAuthoringUtility.Build(OnExpired, context), Presentation?.Build(),
-            GameplaySpatialAuthoringUtility.Build(OnAbsorbed, context));
+            GameplaySpatialAuthoringUtility.Build(OnAbsorbed, context),
+            GameplaySpatialAuthoringUtility.Build(OnRemoved, context));
     }
 }
 </file>
@@ -64700,7 +64705,7 @@ namespace FRFrame.Gameplay.Editor
             Labels["FadeStartRatio"]="开始淡出的进度（0～1）";Labels["FixedPoint"]="固定位置";Labels["Follow"]="跟随位置";Labels["FollowSource"]="持续跟随来源";
             Labels["Presentation"]="状态外观";Labels["StatusPrefab"]="持续状态预制体";
             Labels["OnApplied"]="首次成功应用";Labels["OnStackChanged"]="层数变化";Labels["OnEnterMax"]="进入满层";Labels["OnPeriod"]="每次周期";
-            Labels["OnAbsorbed"]="吸收 · 护盾仍存续";Labels["Outcome"]="战斗结果条件";
+            Labels["OnAbsorbed"]="吸收 · 护盾仍存续";Labels["OnRemoved"]="移除 · 原目标";Labels["Outcome"]="战斗结果条件";
             Labels["TargetRequirements"]="目标标签条件";Labels["Intensity"]="表现强度";
             Labels["FitCircleToRadius"]="适配实际圆形半径";Labels["FadeSeconds"]="淡入淡出秒数";
             Labels["ImmuneText"]="免疫文字";Labels["Layer"]="Animator层";Labels["Material"]="材质";Labels["MinimumSeparation"]="最小间距";
@@ -66777,7 +66782,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("位移 / 控制 / 到达","写回实际位置与朝向；等/高优先级替换，低优先级忽略。控制门禁为可选标签查询。","Mode","Distance","Speed","Priority","UseControlGate","Blocked","CancelOnAbilityEnd","FollowSource","MinimumSeparation","Duration","OnArrive","OnCancelled");
             else if(value is GameplayRotateToPointActionAuthoring)yield return Group("转向实际目标点","修改实际 Actor Facing；场景绑定映射到真实朝向。","RotateOwner");
             else if(value is GameplayChangeStateActionAuthoring)yield return Group("现有行为状态","使用Host显式注册的状态别名；转移约束由原Core/Fsm决定。","State");
-            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。部分吸收和自然到期输出原目标；耗尽输出破盾者。","Amount","Duration","OwnedByAbility","Presentation","OnAbsorbed","OnBroken","OnExpired");
+            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。耗尽输出破盾者；移除在破盾或到期动作之后执行，并使用原目标。","Amount","Duration","OwnedByAbility","Presentation","OnAbsorbed","OnBroken","OnExpired","OnRemoved");
             else if(value is GameplayCaptureCombatRollActionAuthoring)yield return Group("本次命中随机输入","概率0..1；使用World注入的随机源。保留已有输入时不重新抽样，可放进逐目标回调。","CriticalChance","MissChance","PreserveExisting");
             else if(value is GameplayCaptureValueActionAuthoring)yield return Group("捕获数值快照","在此动作/目标边界求值一次，写入Key。后续Context/Caller读取捕获值；属性节点仍读实时值。","Key","Value");
             else if(value is GameplaySkillDocumentAsset)
@@ -70516,7 +70521,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Enemies","敌方"},{"Allies","友方"},{"Any","任意"},{"All","全部"},{"Self","自身"},{"None","无"},
             {"Physical","物理伤害"},{"Magical","魔法伤害"},{"Magic","魔法伤害"},{"True","真实伤害"},
             {"Owner","施法者"},{"Target","当前目标"},{"Context","调用上下文"},{"OwnerFacing","施法者朝向"},{"TargetDirection","目标方向"},
-            {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},{"CallbackSegment","本跳起点 → 命中地点"},
+            {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},{"CallbackSegment","回调起点 → 命中地点"},
             {"TargetToOwner","命中地点 → 施法者"},{"ConfirmedHit","同次伤害确认命中"},{"HealthDamage","同次伤害实扣生命"},
             {"Vfx","特效"},{"Audio","音效"},{"Body","身体"},{"Active","主动"},{"Passive","被动"},
             {"Instant","瞬时"},{"Duration","限时持续"},{"Infinite","无限持续"},
@@ -72021,6 +72026,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 key == "OnEnter" ? "进入" : key == "OnExit" ? "离开" : key == "OnTick" ? "周期" : key=="OnStay"?"持续停留（每步）":
                 key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
                 key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" : key == "OnAbsorbed" ? "吸收 · 护盾仍存续" :
+                key == "OnRemoved" ? "移除 · 原目标" :
                 ObjectNames.NicifyVariableName(path);
         }
 
@@ -79076,7 +79082,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
             if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin switch {
-                GameplayPresentationCueAsset.PositionSource.CallbackSegment => "本跳起点 → 命中地点",
+                GameplayPresentationCueAsset.PositionSource.CallbackSegment => "回调起点 → 命中地点",
                 GameplayPresentationCueAsset.PositionSource.TargetToOwner => "命中地点 → 施法者",
                 GameplayPresentationCueAsset.PositionSource.ContextPoint => "固定上下文地点",
                 _ => (cue.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"主目标")+" · "+(string.IsNullOrEmpty(cue.Binding)?"根节点":cue.Binding)+(cue.Follow?" · 跟随":" · 不跟随")
@@ -83610,8 +83616,9 @@ namespace FRFrame.Gameplay.Standard
                         continue;
                     }
                     var broken = entry.Broken;
-                    Remove(entry, true);
+                    var removed = Remove(entry, true);
                     if (broken != null) callbacks += () => broken(hit);
+                    callbacks += removed;
                 }
                 return callbacks;
             };
@@ -83623,18 +83630,21 @@ namespace FRFrame.Gameplay.Standard
                 if (entry.Lease.IsActive) continue;
                 var expired = observation.Handle == entry.EffectHandle && observation.Cause == GameplayEffectRemovalCause.NaturalExpiry
                     ? entry.Expired : null;
-                Remove(entry, false);
+                var removed = Remove(entry, false);
                 expired?.Invoke();
+                removed?.Invoke();
             }
         }
         internal void RemoveOnDeath()
         {
             foreach (var entry in _entries.ToArray())
-                Remove(entry, true);
+                Remove(entry, true)?.Invoke();
         }
-        internal void Remove(GameplayShieldContribution entry,bool removeEffect)
+        // Return the completion so combat can dispatch it after the committed break/expiry branch.
+        internal Action Remove(GameplayShieldContribution entry,bool removeEffect)
         {
-            if(entry.IsDisposed)return;
+            if(entry.IsDisposed)return null;
+            var removed = entry.Removed;
             if (entry.Remaining > 0)
             {
                 float before = Balance();
@@ -83644,11 +83654,12 @@ namespace FRFrame.Gameplay.Standard
             }
             _entries.Remove(entry);entry.MarkRemoved();
             if(removeEffect)entry.Lease.Dispose();
+            return removed;
         }
         public void Dispose()
         {
             if(_disposed)return;_disposed=true;_target.Effects.Removed-=OnRemoved;
-            foreach(var entry in _entries.ToArray())Remove(entry,true);
+            foreach(var entry in _entries.ToArray())Remove(entry,true)?.Invoke();
         }
     }
     /// <summary>Exact remaining consumable capacity. Context preserves root/level; lease supplies the
@@ -83665,10 +83676,11 @@ namespace FRFrame.Gameplay.Standard
         internal Action<GameplayContext> Broken;
         internal Action Expired;
         internal Action<float> Absorbed;
+        internal Action Removed;
         internal GameplayShieldContribution(GameplayShieldContributions owner,GameplayContext context,GameplayEffectLease lease,float amount)
         {_owner=owner;Context=context;Lease=lease;Remaining=amount;}
-        internal void MarkRemoved(){IsDisposed=true;Remaining=0;Broken=null;Expired=null;Absorbed=null;ReleaseBinding?.Invoke();ReleaseBinding=null;}
-        public void Dispose()=>_owner.Remove(this,true);
+        internal void MarkRemoved(){IsDisposed=true;Remaining=0;Broken=null;Expired=null;Absorbed=null;Removed=null;ReleaseBinding?.Invoke();ReleaseBinding=null;}
+        public void Dispose()=>_owner.Remove(this,true)?.Invoke();
     }
     /// <summary>Grants a separate timed shield using an actual Effect clock; no time lives in this action.</summary>
     public sealed class GameplayGrantTimedShieldAction : IGameplaySkillAction
@@ -83676,10 +83688,11 @@ namespace FRFrame.Gameplay.Standard
         private readonly IGameplayFloatValue _amount;
         private readonly GameplayEffectDefinition _lifetime;
         private readonly bool _ownedByAbility;
-        private readonly IReadOnlyList<IGameplaySkillAction> _onBroken, _onExpired, _onAbsorbed;
+        private readonly IReadOnlyList<IGameplaySkillAction> _onBroken, _onExpired, _onAbsorbed, _onRemoved;
         public GameplayGrantTimedShieldAction(IGameplayFloatValue amount,IGameplayFloatValue duration,bool ownedByAbility=false,
             IEnumerable<IGameplaySkillAction> onBroken = null, IEnumerable<IGameplaySkillAction> onExpired = null,
-            IGameplayEffectPresentationDefinition presentation = null, IEnumerable<IGameplaySkillAction> onAbsorbed = null)
+            IGameplayEffectPresentationDefinition presentation = null, IEnumerable<IGameplaySkillAction> onAbsorbed = null,
+            IEnumerable<IGameplaySkillAction> onRemoved = null)
         {
             _amount=amount??throw new ArgumentNullException(nameof(amount));
             _lifetime=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration,1,0,Array.Empty<GameplayEffectAttributeModifierDefinition>(),Array.Empty<GameplayTag>(),Array.Empty<IGameplayEffectExecution>(),null,
@@ -83689,6 +83702,7 @@ namespace FRFrame.Gameplay.Standard
             _onBroken = GameplaySpatialMath.Actions(onBroken);
             _onExpired = GameplaySpatialMath.Actions(onExpired);
             _onAbsorbed = GameplaySpatialMath.Actions(onAbsorbed);
+            _onRemoved = GameplaySpatialMath.Actions(onRemoved);
         }
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
         {
@@ -83717,7 +83731,8 @@ namespace FRFrame.Gameplay.Standard
                         !actor.World.TryGetActor(hit.InstigatorId, out var breaker) || !breaker.IsTargetable) return;
                     var retaliate = context.WithTarget(new GameplayTargetData(breaker.Id, breaker.Position));
                     actor.RunPresentationCallback(_onBroken, retaliate,
-                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Broken"), retaliate, 1));
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Broken"), retaliate, 1),
+                        segmentStart: target.Position);
                 };
                 if (_onExpired.Count > 0) contribution.Expired = () =>
                 {
@@ -83727,6 +83742,12 @@ namespace FRFrame.Gameplay.Standard
                 };
                 if(_ownedByAbility&&!actor.Abilities.TryOwnLifetime(grant,contribution)){contribution.Dispose();return GameplaySkillActionResult.Rejected;}
                 if(_ownedByAbility)contribution.ReleaseBinding=()=>actor.Abilities.ReleaseOwnedLifetime(grant,contribution);
+                if (_onRemoved.Count > 0) contribution.Removed = () =>
+                {
+                    if (actor.IsDisposed || (_ownedByAbility && !GameplayStandardActivation.TryFindGrant(actor, context, out _))) return;
+                    actor.RunPresentationCallback(_onRemoved, context,
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Removed"), context, 1));
+                };
             }
             catch{if(contribution!=null)contribution.Dispose();else lease.Dispose();throw;}
             target.Resources.TryGetBalance(target.CombatAttributes.Shield,out float after);
@@ -91826,6 +91847,7 @@ namespace FRFrame.Tests.Gameplay
 
 <file path="Tests/Gameplay/EditMode/GameplayShieldContributionTests.cs">
 using System;
+using System.Collections.Generic;
 using FRFrame.Gameplay;
 using FRFrame.Gameplay.Standard;
 using NUnit.Framework;
@@ -91870,6 +91892,64 @@ namespace FRFrame.Tests.Gameplay
                 new GameplayGrantTimedShieldAction(N(50),N(10),true).Execute(cast,default,caster);
                 caster.Abilities.Cancel(grant);Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(20));
                 Assert.That(target.Shields.Snapshot().Count,Is.Zero);
+            }
+        }
+
+        /// <summary>Terminal actions see the consumed shield gone and the original cast still active.
+        /// Completion can end that cast before its configured expiry and leaves the next cast usable.</summary>
+        [Test]
+        public void ShieldRemovalCompletesOriginalCastAfterRetaliation()
+        {
+            using var world = new GameplayStandardWorld();
+            var caster = world.CreateActor(default);
+            var attacker = world.CreateActor(default);
+            var hp = new GameplayAttributeId("Health");
+            var max = new GameplayAttributeId("MaxHealth");
+            var shield = new GameplayAttributeId("Shield");
+            caster.Attributes.Register(hp,100);
+            caster.Attributes.Register(max,100);
+            caster.Attributes.Register(shield,0);
+            caster.CombatAttributes = new GameplayCombatAttributeMap(hp,max,shield,default);
+            var grant = caster.Abilities.Grant(new GameplayAbilityDefinition(Array.Empty<GameplayTag>(),
+                Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>()));
+            var calls = new List<string>();
+            var action = new GameplayGrantTimedShieldAction(N(20),N(5),true,
+                onBroken: new[]{new Observe((context, _) =>
+                {
+                    Assert.That(context.TargetData.PrimaryTargetId, Is.EqualTo(attacker.Id));
+                    Assert.That(caster.Shields.Snapshot(), Is.Empty);
+                    Assert.That(caster.Abilities.IsActive(grant), Is.True);
+                    calls.Add("broken");
+                })},
+                onRemoved: new IGameplaySkillAction[]{new Observe((context, _) =>
+                {
+                    Assert.That(context.TargetData.PrimaryTargetId, Is.EqualTo(caster.Id));
+                    calls.Add("removed");
+                }),new GameplayEndAbilityAction()});
+
+            Assert.That(caster.Abilities.TryActivate(grant), Is.True);
+            Assert.That(caster.Abilities.TryCreateExecutionContext(grant,new GameplayTargetData(caster.Id),out var cast), Is.True);
+            Assert.That(action.Execute(cast,default,caster), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+            var hit = new GameplayContext(attacker.Id,new GameplayTargetData(caster.Id));
+            var application = new GameplayEffectApplicationContext(hit,caster,GameplaySetByCallerValues.Empty,attacker.Attributes,attacker.Id);
+            new GameplayDamageExecution(N(20),new[]{new GameplayDamageStage(GameplayDamageStageKind.Shield)}).Execute(application);
+            Assert.That(calls, Is.EqualTo(new[]{"broken","removed"}));
+            Assert.That(caster.Abilities.TryActivate(grant), Is.True);
+            Assert.That(caster.Abilities.TryCreateExecutionContext(grant,new GameplayTargetData(caster.Id),out cast), Is.True);
+            Assert.That(action.Execute(cast,default,caster), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+            caster.Abilities.Cancel(grant);
+            Assert.That(calls, Is.EqualTo(new[]{"broken","removed"}));
+            Assert.That(caster.Attributes.GetCurrentValue(shield), Is.Zero);
+        }
+
+        private sealed class Observe : IGameplaySkillAction
+        {
+            private readonly Action<GameplayContext, IGameplaySkillHost> _observe;
+            internal Observe(Action<GameplayContext, IGameplaySkillHost> observe) => _observe = observe;
+            public GameplaySkillActionResult Execute(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host)
+            {
+                _observe(context, host);
+                return GameplaySkillActionResult.Succeeded;
             }
         }
         private static IGameplayFloatValue N(float value)=>new GameplayConstantFloatValue(value);

@@ -211,6 +211,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 key == "OnEnter" ? "进入" : key == "OnExit" ? "离开" : key == "OnTick" ? "周期" : key=="OnStay"?"持续停留（每步）":
                 key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
                 key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" : key == "OnAbsorbed" ? "吸收 · 护盾仍存续" :
+                key == "OnRemoved" ? "移除 · 原目标" :
                 ObjectNames.NicifyVariableName(path);
         }
 

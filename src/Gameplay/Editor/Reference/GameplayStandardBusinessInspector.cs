@@ -143,7 +143,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("位移 / 控制 / 到达","写回实际位置与朝向；等/高优先级替换，低优先级忽略。控制门禁为可选标签查询。","Mode","Distance","Speed","Priority","UseControlGate","Blocked","CancelOnAbilityEnd","FollowSource","MinimumSeparation","Duration","OnArrive","OnCancelled");
             else if(value is GameplayRotateToPointActionAuthoring)yield return Group("转向实际目标点","修改实际 Actor Facing；场景绑定映射到真实朝向。","RotateOwner");
             else if(value is GameplayChangeStateActionAuthoring)yield return Group("现有行为状态","使用Host显式注册的状态别名；转移约束由原Core/Fsm决定。","State");
-            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。部分吸收和自然到期输出原目标；耗尽输出破盾者。","Amount","Duration","OwnedByAbility","Presentation","OnAbsorbed","OnBroken","OnExpired");
+            else if(value is GameplayGrantTimedShieldActionAuthoring)yield return Group("可消耗时限护盾","FIFO先消耗贡献盾。耗尽输出破盾者；移除在破盾或到期动作之后执行，并使用原目标。","Amount","Duration","OwnedByAbility","Presentation","OnAbsorbed","OnBroken","OnExpired","OnRemoved");
             else if(value is GameplayCaptureCombatRollActionAuthoring)yield return Group("本次命中随机输入","概率0..1；使用World注入的随机源。保留已有输入时不重新抽样，可放进逐目标回调。","CriticalChance","MissChance","PreserveExisting");
             else if(value is GameplayCaptureValueActionAuthoring)yield return Group("捕获数值快照","在此动作/目标边界求值一次，写入Key。后续Context/Caller读取捕获值；属性节点仍读实时值。","Key","Value");
             else if(value is GameplaySkillDocumentAsset)

@@ -16,18 +16,23 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplaySkillActionAuthoring[] OnAbsorbed = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnBroken = Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnExpired = Array.Empty<GameplaySkillActionAuthoring>();
+        /// <summary>Runs with the original target after break or expiry actions, or on direct removal.
+        /// An ability-owned shield skips it if the owning activation has already ended.</summary>
+        [SerializeReference] public GameplaySkillActionAuthoring[] OnRemoved = Array.Empty<GameplaySkillActionAuthoring>();
         public override void Validate(GameplayAuthoringValidationContext validation,string path)
         {
             if(Amount==null)validation.Error(path+".Amount","Shield amount required.");else Amount.Validate(validation,path+".Amount");
             if(Duration==null)validation.Error(path+".Duration","Shield duration required.");else Duration.Validate(validation,path+".Duration");
             GameplaySpatialAuthoringUtility.Validate(OnBroken, validation, path + ".OnBroken");
             GameplaySpatialAuthoringUtility.Validate(OnExpired, validation, path + ".OnExpired");
+            GameplaySpatialAuthoringUtility.Validate(OnRemoved, validation, path + ".OnRemoved");
             GameplaySpatialAuthoringUtility.Validate(OnAbsorbed, validation, path + ".OnAbsorbed");
             Presentation?.Validate(validation, path + ".Presentation");
         }
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplayGrantTimedShieldAction(
             Amount.Build(), Duration.Build(), OwnedByAbility, GameplaySpatialAuthoringUtility.Build(OnBroken, context),
             GameplaySpatialAuthoringUtility.Build(OnExpired, context), Presentation?.Build(),
-            GameplaySpatialAuthoringUtility.Build(OnAbsorbed, context));
+            GameplaySpatialAuthoringUtility.Build(OnAbsorbed, context),
+            GameplaySpatialAuthoringUtility.Build(OnRemoved, context));
     }
 }

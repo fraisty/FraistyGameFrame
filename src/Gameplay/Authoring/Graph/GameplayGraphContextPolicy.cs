@@ -50,7 +50,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
             if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnBroken")
                 return input.With(true, true, "护盾耗尽后提供破盾者与地点");
-            if (payload is GameplayGrantTimedShieldActionAuthoring && (port == "OnExpired" || port == "OnAbsorbed"))
+            if (payload is GameplayGrantTimedShieldActionAuthoring && (port == "OnExpired" || port == "OnAbsorbed" || port == "OnRemoved"))
                 return input.With(true, port == "OnAbsorbed" || input.Point, "提供原护盾目标");
             if(payload is GameplayAreaDefinitionData){
                 if(port=="OnEnd")return input;

@@ -185,7 +185,7 @@ namespace FRFrame.Gameplay.Editor
             Labels["FadeStartRatio"]="开始淡出的进度（0～1）";Labels["FixedPoint"]="固定位置";Labels["Follow"]="跟随位置";Labels["FollowSource"]="持续跟随来源";
             Labels["Presentation"]="状态外观";Labels["StatusPrefab"]="持续状态预制体";
             Labels["OnApplied"]="首次成功应用";Labels["OnStackChanged"]="层数变化";Labels["OnEnterMax"]="进入满层";Labels["OnPeriod"]="每次周期";
-            Labels["OnAbsorbed"]="吸收 · 护盾仍存续";Labels["Outcome"]="战斗结果条件";
+            Labels["OnAbsorbed"]="吸收 · 护盾仍存续";Labels["OnRemoved"]="移除 · 原目标";Labels["Outcome"]="战斗结果条件";
             Labels["TargetRequirements"]="目标标签条件";Labels["Intensity"]="表现强度";
             Labels["FitCircleToRadius"]="适配实际圆形半径";Labels["FadeSeconds"]="淡入淡出秒数";
             Labels["ImmuneText"]="免疫文字";Labels["Layer"]="Animator层";Labels["Material"]="材质";Labels["MinimumSeparation"]="最小间距";

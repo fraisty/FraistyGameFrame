@@ -63,8 +63,9 @@ namespace FRFrame.Gameplay.Standard
                         continue;
                     }
                     var broken = entry.Broken;
-                    Remove(entry, true);
+                    var removed = Remove(entry, true);
                     if (broken != null) callbacks += () => broken(hit);
+                    callbacks += removed;
                 }
                 return callbacks;
             };
@@ -76,18 +77,21 @@ namespace FRFrame.Gameplay.Standard
                 if (entry.Lease.IsActive) continue;
                 var expired = observation.Handle == entry.EffectHandle && observation.Cause == GameplayEffectRemovalCause.NaturalExpiry
                     ? entry.Expired : null;
-                Remove(entry, false);
+                var removed = Remove(entry, false);
                 expired?.Invoke();
+                removed?.Invoke();
             }
         }
         internal void RemoveOnDeath()
         {
             foreach (var entry in _entries.ToArray())
-                Remove(entry, true);
+                Remove(entry, true)?.Invoke();
         }
-        internal void Remove(GameplayShieldContribution entry,bool removeEffect)
+        // Return the completion so combat can dispatch it after the committed break/expiry branch.
+        internal Action Remove(GameplayShieldContribution entry,bool removeEffect)
         {
-            if(entry.IsDisposed)return;
+            if(entry.IsDisposed)return null;
+            var removed = entry.Removed;
             if (entry.Remaining > 0)
             {
                 float before = Balance();
@@ -97,11 +101,12 @@ namespace FRFrame.Gameplay.Standard
             }
             _entries.Remove(entry);entry.MarkRemoved();
             if(removeEffect)entry.Lease.Dispose();
+            return removed;
         }
         public void Dispose()
         {
             if(_disposed)return;_disposed=true;_target.Effects.Removed-=OnRemoved;
-            foreach(var entry in _entries.ToArray())Remove(entry,true);
+            foreach(var entry in _entries.ToArray())Remove(entry,true)?.Invoke();
         }
     }
     /// <summary>Exact remaining consumable capacity. Context preserves root/level; lease supplies the
@@ -118,10 +123,11 @@ namespace FRFrame.Gameplay.Standard
         internal Action<GameplayContext> Broken;
         internal Action Expired;
         internal Action<float> Absorbed;
+        internal Action Removed;
         internal GameplayShieldContribution(GameplayShieldContributions owner,GameplayContext context,GameplayEffectLease lease,float amount)
         {_owner=owner;Context=context;Lease=lease;Remaining=amount;}
-        internal void MarkRemoved(){IsDisposed=true;Remaining=0;Broken=null;Expired=null;Absorbed=null;ReleaseBinding?.Invoke();ReleaseBinding=null;}
-        public void Dispose()=>_owner.Remove(this,true);
+        internal void MarkRemoved(){IsDisposed=true;Remaining=0;Broken=null;Expired=null;Absorbed=null;Removed=null;ReleaseBinding?.Invoke();ReleaseBinding=null;}
+        public void Dispose()=>_owner.Remove(this,true)?.Invoke();
     }
     /// <summary>Grants a separate timed shield using an actual Effect clock; no time lives in this action.</summary>
     public sealed class GameplayGrantTimedShieldAction : IGameplaySkillAction
@@ -129,10 +135,11 @@ namespace FRFrame.Gameplay.Standard
         private readonly IGameplayFloatValue _amount;
         private readonly GameplayEffectDefinition _lifetime;
         private readonly bool _ownedByAbility;
-        private readonly IReadOnlyList<IGameplaySkillAction> _onBroken, _onExpired, _onAbsorbed;
+        private readonly IReadOnlyList<IGameplaySkillAction> _onBroken, _onExpired, _onAbsorbed, _onRemoved;
         public GameplayGrantTimedShieldAction(IGameplayFloatValue amount,IGameplayFloatValue duration,bool ownedByAbility=false,
             IEnumerable<IGameplaySkillAction> onBroken = null, IEnumerable<IGameplaySkillAction> onExpired = null,
-            IGameplayEffectPresentationDefinition presentation = null, IEnumerable<IGameplaySkillAction> onAbsorbed = null)
+            IGameplayEffectPresentationDefinition presentation = null, IEnumerable<IGameplaySkillAction> onAbsorbed = null,
+            IEnumerable<IGameplaySkillAction> onRemoved = null)
         {
             _amount=amount??throw new ArgumentNullException(nameof(amount));
             _lifetime=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration,1,0,Array.Empty<GameplayEffectAttributeModifierDefinition>(),Array.Empty<GameplayTag>(),Array.Empty<IGameplayEffectExecution>(),null,
@@ -142,6 +149,7 @@ namespace FRFrame.Gameplay.Standard
             _onBroken = GameplaySpatialMath.Actions(onBroken);
             _onExpired = GameplaySpatialMath.Actions(onExpired);
             _onAbsorbed = GameplaySpatialMath.Actions(onAbsorbed);
+            _onRemoved = GameplaySpatialMath.Actions(onRemoved);
         }
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
         {
@@ -170,7 +178,8 @@ namespace FRFrame.Gameplay.Standard
                         !actor.World.TryGetActor(hit.InstigatorId, out var breaker) || !breaker.IsTargetable) return;
                     var retaliate = context.WithTarget(new GameplayTargetData(breaker.Id, breaker.Position));
                     actor.RunPresentationCallback(_onBroken, retaliate,
-                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Broken"), retaliate, 1));
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Broken"), retaliate, 1),
+                        segmentStart: target.Position);
                 };
                 if (_onExpired.Count > 0) contribution.Expired = () =>
                 {
@@ -180,6 +189,12 @@ namespace FRFrame.Gameplay.Standard
                 };
                 if(_ownedByAbility&&!actor.Abilities.TryOwnLifetime(grant,contribution)){contribution.Dispose();return GameplaySkillActionResult.Rejected;}
                 if(_ownedByAbility)contribution.ReleaseBinding=()=>actor.Abilities.ReleaseOwnedLifetime(grant,contribution);
+                if (_onRemoved.Count > 0) contribution.Removed = () =>
+                {
+                    if (actor.IsDisposed || (_ownedByAbility && !GameplayStandardActivation.TryFindGrant(actor, context, out _))) return;
+                    actor.RunPresentationCallback(_onRemoved, context,
+                        new GameplayEventData(new GameplayTag("Event.Standard.Shield.Removed"), context, 1));
+                };
             }
             catch{if(contribution!=null)contribution.Dispose();else lease.Dispose();throw;}
             target.Resources.TryGetBalance(target.CombatAttributes.Shield,out float after);

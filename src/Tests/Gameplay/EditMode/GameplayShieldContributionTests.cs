@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FRFrame.Gameplay;
 using FRFrame.Gameplay.Standard;
 using NUnit.Framework;
@@ -43,6 +44,64 @@ namespace FRFrame.Tests.Gameplay
                 new GameplayGrantTimedShieldAction(N(50),N(10),true).Execute(cast,default,caster);
                 caster.Abilities.Cancel(grant);Assert.That(target.Attributes.GetCurrentValue(shield),Is.EqualTo(20));
                 Assert.That(target.Shields.Snapshot().Count,Is.Zero);
+            }
+        }
+
+        /// <summary>Terminal actions see the consumed shield gone and the original cast still active.
+        /// Completion can end that cast before its configured expiry and leaves the next cast usable.</summary>
+        [Test]
+        public void ShieldRemovalCompletesOriginalCastAfterRetaliation()
+        {
+            using var world = new GameplayStandardWorld();
+            var caster = world.CreateActor(default);
+            var attacker = world.CreateActor(default);
+            var hp = new GameplayAttributeId("Health");
+            var max = new GameplayAttributeId("MaxHealth");
+            var shield = new GameplayAttributeId("Shield");
+            caster.Attributes.Register(hp,100);
+            caster.Attributes.Register(max,100);
+            caster.Attributes.Register(shield,0);
+            caster.CombatAttributes = new GameplayCombatAttributeMap(hp,max,shield,default);
+            var grant = caster.Abilities.Grant(new GameplayAbilityDefinition(Array.Empty<GameplayTag>(),
+                Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>()));
+            var calls = new List<string>();
+            var action = new GameplayGrantTimedShieldAction(N(20),N(5),true,
+                onBroken: new[]{new Observe((context, _) =>
+                {
+                    Assert.That(context.TargetData.PrimaryTargetId, Is.EqualTo(attacker.Id));
+                    Assert.That(caster.Shields.Snapshot(), Is.Empty);
+                    Assert.That(caster.Abilities.IsActive(grant), Is.True);
+                    calls.Add("broken");
+                })},
+                onRemoved: new IGameplaySkillAction[]{new Observe((context, _) =>
+                {
+                    Assert.That(context.TargetData.PrimaryTargetId, Is.EqualTo(caster.Id));
+                    calls.Add("removed");
+                }),new GameplayEndAbilityAction()});
+
+            Assert.That(caster.Abilities.TryActivate(grant), Is.True);
+            Assert.That(caster.Abilities.TryCreateExecutionContext(grant,new GameplayTargetData(caster.Id),out var cast), Is.True);
+            Assert.That(action.Execute(cast,default,caster), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+            var hit = new GameplayContext(attacker.Id,new GameplayTargetData(caster.Id));
+            var application = new GameplayEffectApplicationContext(hit,caster,GameplaySetByCallerValues.Empty,attacker.Attributes,attacker.Id);
+            new GameplayDamageExecution(N(20),new[]{new GameplayDamageStage(GameplayDamageStageKind.Shield)}).Execute(application);
+            Assert.That(calls, Is.EqualTo(new[]{"broken","removed"}));
+            Assert.That(caster.Abilities.TryActivate(grant), Is.True);
+            Assert.That(caster.Abilities.TryCreateExecutionContext(grant,new GameplayTargetData(caster.Id),out cast), Is.True);
+            Assert.That(action.Execute(cast,default,caster), Is.EqualTo(GameplaySkillActionResult.Succeeded));
+            caster.Abilities.Cancel(grant);
+            Assert.That(calls, Is.EqualTo(new[]{"broken","removed"}));
+            Assert.That(caster.Attributes.GetCurrentValue(shield), Is.Zero);
+        }
+
+        private sealed class Observe : IGameplaySkillAction
+        {
+            private readonly Action<GameplayContext, IGameplaySkillHost> _observe;
+            internal Observe(Action<GameplayContext, IGameplaySkillHost> observe) => _observe = observe;
+            public GameplaySkillActionResult Execute(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host)
+            {
+                _observe(context, host);
+                return GameplaySkillActionResult.Succeeded;
             }
         }
         private static IGameplayFloatValue N(float value)=>new GameplayConstantFloatValue(value);
