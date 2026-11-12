@@ -10,7 +10,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 {
     public sealed partial class GameplaySkillWorkbench
     {
-        private sealed class PreviewChoice {internal GameplayAuthoringNode Node;internal object Values;internal float Start;internal string Key,Label,Owner,EventId;}
+        private sealed class PreviewChoice {internal GameplayAuthoringNode Node;internal object Values;internal float Start;internal string Key,Label,Owner,EventId;internal GameplayDefinitionAsset Shared;}
         // Seconds are absolute within Root's timeline. ChoiceKey includes the occurrence path,
         // so reusing one animation action never aliases two scheduled previews.
         private sealed class PreviewSeekRequest {internal string ChoiceKey;internal float Seconds;}
@@ -18,6 +18,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private readonly Dictionary<string,PreviewState> _previews=new Dictionary<string,PreviewState>();
         private PreviewState State(string root){if(!_previews.TryGetValue(root,out var state)){var cursor=Canvas.PreviewCursor(root);_previews[root]=state=new PreviewState{Seconds=cursor??0,HasClock=cursor.HasValue};}return state;}
         private void DisposePreview(){_previewChoices.Clear();_rangeKey=null;_previewPlaying=false;foreach(var state in _previews.Values){state.Session?.Dispose();state.Session=null;state.Key=null;}}
+        private string _detailsPreviewRoot;
+        private void DisposeDetailsPreview()
+        {
+            string root = _detailsPreviewRoot;
+            _detailsPreviewRoot = null;
+            if (root == null || root == _inlinePreviewNode || !_previews.TryGetValue(root, out var state)) return;
+            state.Session?.Dispose();state.Session=null;state.Key=null;
+            if (_previewClockOwner == root) _previewPlaying = false;
+        }
+        private void OnLostFocus()
+        {
+            foreach (var state in _previews.Values)
+                (state.Session as IGameplaySkillPreviewSource)?.CancelInteraction();
+        }
         private string _previewClockOwner;
         private readonly Dictionary<string,List<PreviewChoice>> _previewChoices=new Dictionary<string,List<PreviewChoice>>();
         private string _inlinePreviewNode;
@@ -42,7 +56,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 foreach(var binding in node?.Payload.Definitions??local?.Definitions??new List<GameplayDefinitionBinding>()){
                     object values=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId)?.Payload;
                     if(values==null&&binding.External)try{values=binding.External.CaptureGraphValues();}catch(NotSupportedException){}
-                    if(!effectOnly&&node!=null&&values!=null&&PreviewFactories.Any(p=>p.Supports(values)))result.Add(new PreviewChoice{Node=node,Values=values,Start=time,Owner=binding.LocalId,EventId=eventId,Key=origin+":"+id+":"+binding.PropertyPath,Label=time.ToString("0.###")+"s · "+GameplaySkillFieldSchema.NodeName(node)+" · "+string.Join("/",origin.Split('/').Select(part=>part.Substring(0,Math.Min(4,part.Length))))});
+                    if(!effectOnly&&node!=null&&values!=null&&PreviewFactories.Any(p=>p.Supports(values)))result.Add(new PreviewChoice{Node=node,Values=values,Start=time,Owner=binding.LocalId,Shared=binding.External,EventId=eventId,Key=origin+":"+id+":"+binding.PropertyPath,Label=time.ToString("0.###")+"s · "+GameplaySkillFieldSchema.NodeName(node)+" · "+string.Join("/",origin.Split('/').Select(part=>part.Substring(0,Math.Min(4,part.Length))))});
                     if(!string.IsNullOrEmpty(binding.LocalId))visit(binding.LocalId,time,origin,eventId,false);
                 }
                 if(effectOnly || local?.Payload is GameplayEffectDefinitionData)return;
@@ -75,7 +89,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(state.Key!=key){
                 state.Session?.Dispose();state.Session=null;state.Key=key;
                 if(!state.HasClock)state.Seconds=choice.Start;
-                try{state.Session=PreviewFactories.First(p=>p.Supports(choice.Values)).Create(_document,choice.Values,choice.Start);}
+                try{
+                    state.Session=PreviewFactories.First(p=>p.Supports(choice.Values)).Create(_document,choice.Values,choice.Start);
+                    if (state.Session is IGameplaySkillPreviewSource source)
+                    {
+                        int index = _document.AuthoringGraph.LocalDefinitions.FindIndex(d => d.Id == choice.Owner);
+                        source.BindSource(choice.Shared ? GameplaySourceHandle.Capture(choice.Shared) :
+                            index >= 0 ? GameplaySourceHandle.Capture(_document, $"authoringGraph.LocalDefinitions.Array.data[{index}].Payload") : null, choice.Shared);
+                    }
+                }
                 catch(Exception error){_feedback=error.Message;RecordPreviewError(choice.Node.Id,error.Message);}
                 state.HasClock=true;
             }
@@ -100,7 +122,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if(EditorApplication.isPlayingOrWillChangePlaymode){EditorGUILayout.HelpBox("编辑模式预览已暂停；请在真实 Scene / Runtime 调试中观察施放。",MessageType.Info);return;}
             var graph=_document.AuthoringGraph;if(graph==null)return;root=root??_selected;
-            if(!inline&&_inlinePreviewNode!=null){
+            if (!inline && _detailsPreviewRoot != root) { DisposeDetailsPreview(); _detailsPreviewRoot = root; }
+            if(!inline&&root==_inlinePreviewNode&&root!=null){
                 GUILayout.Label("编排卡使用同一时间光标；此处调整预览专用输入。",EditorStyles.wordWrappedMiniLabel);
                 State(_inlinePreviewNode).Session?.DrawControls();return;
             }

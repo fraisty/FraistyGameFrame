@@ -76,6 +76,7 @@ namespace FRFrame.Gameplay.Editor
             if(owner is GameplaySequenceCueMarkerAuthoring cue){if(field=="Duration")return cue.HasDuration;if(field=="Magnitude")return cue.HasMagnitude;}
             if(owner is GameplayMoveTargetsActionAuthoring move){if(field=="Blocked")return move.UseControlGate;}
             if(owner is GameplaySearchTargetActionAuthoring search){
+                if(field=="HopIntervalSeconds")return search.RepeatFromResult||search.HopIntervalSeconds!=0;
                 bool length=search.Shape==GameplaySearchShape.Box||search.Shape==GameplaySearchShape.Line||search.Shape==GameplaySearchShape.Ray||search.Shape==GameplaySearchShape.Capsule;
                 if(field=="Direction"||field=="DirectionAngle")return length||search.Shape==GameplaySearchShape.Sector;
                 if(field=="LengthFromTarget")return length;

@@ -58,6 +58,7 @@ namespace FRFrame.Gameplay.Unity
             {
                 var animator=subject.GetComponentInChildren<Animator>(true);
                 var selectedClip=clip;var selectedState=state;
+                string controllerName = null;
                 int selected=GameplayAnimationVariantSelector.Select(variants,cast,v=>v.MinimumLevel,v=>v.Weight,weighted);
                 if(selected>=0){selectedClip=variants[selected].Clip;selectedState=variants[selected].StateName;}
                 if(animator==null)throw new InvalidOperationException("Animation subject has no Animator.");
@@ -75,9 +76,10 @@ namespace FRFrame.Gameplay.Unity
                         throw new InvalidOperationException("Animator state was not found: "+selectedState);
                     if(Array.IndexOf(controller.animationClips,selectedClip)<0)
                         throw new InvalidOperationException("Authored clip is not part of the subject controller.");
+                    controllerName = controller.name;
                 }
                 else if(HasCustomGraph(animator)&&!OwnedGraphs.Contains(animator))throw new InvalidOperationException("Subject already has an external Playables graph.");
-                return new Player(animator,selectedClip,selectedState,layer,backend,loop,restore,blend);
+                return new Player(animator,selectedClip,selectedState,layer,backend,loop,restore,blend,controllerName);
             },weighted&&variants.Length>0,writes:subject=>new[]{new GameplayAnimationWriteTarget(subject.GetComponentInChildren<Animator>(true),"Animator",backend==global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend.PlayablesClip?-1:layer)});
         }
         protected override void ValidateAnimation(GameplayAuthoringValidationContext validation,string path)
@@ -90,10 +92,11 @@ namespace FRFrame.Gameplay.Unity
                 if(variant==null||variant.MinimumLevel<1||variant.Clip==null||variant.Clip.length<=0||WeightedVariants&&(!float.IsFinite(variant.Weight)||variant.Weight<=0)||Backend==global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend.AnimatorState&&string.IsNullOrWhiteSpace(variant.StateName))
                     validation.Error(path+".Variants","A level variant requires a positive level and a nonempty clip/state.");
         }
-        private sealed class Player:IGameplayAnimationPlayer
+        private sealed class Player:IGameplayAnimationPlayer, IGameplayAnimationPlaybackSource
         {
             private readonly Animator _animator;
             private readonly AnimationClip _clip;
+            public string PlaybackSource { get; }
             private readonly int _hash,_layer;
             private readonly global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend _backend;
             private readonly bool _restore;
@@ -116,8 +119,10 @@ namespace FRFrame.Gameplay.Unity
                     &&_animator.GetCurrentAnimatorStateInfo(_layer).shortNameHash!=_hash
                 :!_graph.IsValid()||_animator.runtimeAnimatorController!=null));
             public event Action<string> AnimationEvent;
-            internal Player(Animator animator,AnimationClip clip,string state,int layer,global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend backend,bool loop,bool restore,float blend)
-            {_animator=animator;_clip=clip;_hash=Animator.StringToHash(state??"");_layer=layer;_backend=backend;Loop=loop;_restore=restore;_events=clip.events;_blend=blend;}
+            internal Player(Animator animator,AnimationClip clip,string state,int layer,global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend backend,bool loop,bool restore,float blend,string controllerName)
+            {_animator=animator;_clip=clip;_hash=Animator.StringToHash(state??"");_layer=layer;_backend=backend;Loop=loop;_restore=restore;_events=clip.events;_blend=blend;
+             PlaybackSource=backend==global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend.AnimatorState
+                ? $"Animator · {controllerName} / {state} / {clip.name}" : "Playables · "+clip.name;}
             public void Seek(float seconds)
             {
                 if(_disposed)return;

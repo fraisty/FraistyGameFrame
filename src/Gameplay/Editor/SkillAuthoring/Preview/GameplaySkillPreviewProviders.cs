@@ -34,6 +34,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         void Retry();
     }
 
+    /// <summary>Optional binding for previews that expose edits to the selected authoring source.</summary>
+    public interface IGameplaySkillPreviewSource
+    {
+        void BindSource(GameplaySourceHandle source, bool shared);
+        void CancelInteraction();
+    }
+
     /// <summary>The currently selected authoring projection. Sequence is supplied by the Workbench, never guessed by a provider.</summary>
     public sealed class GameplaySkillPreviewContext
     {

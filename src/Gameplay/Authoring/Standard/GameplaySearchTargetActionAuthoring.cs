@@ -39,6 +39,9 @@ namespace FRFrame.Gameplay.Authoring
         public bool RepeatFromResult;
         [Range(0,1), Tooltip("下一跳的倍率乘此值。逐目标下游读取 Context.Data.Standard.Search.Multiplier。")]
         public float RepeatMultiplier = 1;
+        /// <summary>Seconds between repeated queries. Zero executes every hop in the same rule step.</summary>
+        [Tooltip("0 在同一规则帧完成；正值仅用于圆形逐次重选，首跳立即查询，之后按世界时钟重选。最终结果由搜索完成输出。")]
+        public float HopIntervalSeconds;
         [Tooltip("世界坐标单元中心；按 CellSize 对所在格进行匹配，不依赖 Physics。")]
         public Vector3[] Cells = Array.Empty<Vector3>();
         public float CellSize = 1;
@@ -51,6 +54,9 @@ namespace FRFrame.Gameplay.Authoring
             v.Enum(Shape, p + ".Shape"); v.Enum(Plane, p + ".Plane"); v.Enum(Origin, p + ".Origin");
             if (RepeatFromResult && (Shape != GameplaySearchShape.Circle || !(RepeatMultiplier >= 0 && RepeatMultiplier <= 1)))
                 v.Error(p + ".RepeatFromResult", "逐次重选需要圆形查询与 0–1 的倍率。");
+            if (!float.IsFinite(HopIntervalSeconds) || HopIntervalSeconds < 0 ||
+                (HopIntervalSeconds > 0 && (!RepeatFromResult || Shape != GameplaySearchShape.Circle)))
+                v.Error(p + ".HopIntervalSeconds", "逐跳间隔必须是非负有限秒数；正值需要圆形查询和逐次重选。");
             if(!float.IsFinite(OriginOffset.x)||!float.IsFinite(OriginOffset.y)||!float.IsFinite(OriginOffset.z))v.Error(p+".OriginOffset","原点偏移必须有限。");
             if (Directional) { v.Enum(Direction,p+".Direction"); DirectionAngle?.Validate(v,p+".DirectionAngle"); }
             if (UsesLength && LengthFromTarget && Direction != GameplaySearchDirection.ToPrimaryTarget && Direction != GameplaySearchDirection.ToContextPoint)
@@ -94,7 +100,7 @@ namespace FRFrame.Gameplay.Authoring
                 Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context));
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds);
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;

@@ -17,7 +17,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public IReadOnlyCollection<string> Owners {get;private set;}
         private GameplaySkillAuthoringChange() { }
         private static readonly HashSet<string> StructuralFields=new HashSet<string>{"Action","Payload","Settings","Target","Trigger","size","Mode","CastEvent","Scope","Once","Stacking","DurationPolicy","Period","Overflow"};
-        private static readonly HashSet<string> ContextFields=new HashSet<string>{"Target","Trigger","Conditions","PreserveTriggerContext","Shape","Origin","Direction","Directional","RotateOwner","DurationPolicy","Motion","StraightDestination","Overflow","Period","PeriodValue","TickInterval","Cancel","OwnedByAbility"};
+        private static readonly HashSet<string> ContextFields=new HashSet<string>{"Target","Trigger","Conditions","PreserveTriggerContext","Shape","Origin","Direction","Directional","RotateOwner","DurationPolicy","Motion","StraightDestination","Overflow","Period","PeriodValue","TickInterval","Cancel","OwnedByAbility","HopIntervalSeconds"};
         public static GameplaySkillAuthoringChange Full(bool structural=false)=>new GameplaySkillAuthoringChange{Unknown=true,Structural=structural,Context=true,Owners=Array.Empty<string>()};
         public static GameplaySkillAuthoringChange Local(IEnumerable<string> owners,bool layout=false)=>new GameplaySkillAuthoringChange{Owners=owners.Where(x=>!string.IsNullOrEmpty(x)).Distinct().ToArray(),Layout=layout};
         /// <summary>Array indexes are used only while resolving this immediate edit. Consumers

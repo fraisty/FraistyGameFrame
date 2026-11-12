@@ -91,7 +91,7 @@ namespace FRFrame.Gameplay.Spine
             if(string.IsNullOrWhiteSpace(name))validation.Error(path,"Animation name is required.");
             else if(Skeleton!=null&&Skeleton.GetSkeletonData(false)?.FindAnimation(name)==null)validation.Error(path,"Spine animation was not found: "+name);
         }
-        private sealed class Player:IGameplayAnimationPlayer
+        private sealed class Player:IGameplayAnimationPlayer, IGameplayAnimationPlaybackSource
         {
             private readonly SkeletonAnimation _component;
             private readonly global::Spine.Animation _animation;
@@ -114,6 +114,7 @@ namespace FRFrame.Gameplay.Spine
             public float Duration=>_animation.Duration;
             public bool Loop { get; }
             public bool IsInterrupted=>_component==null||_interrupted||(_started&&!ReferenceEquals(_component.AnimationState.GetCurrent(_track),_entry));
+            public string PlaybackSource => "Spine · " + _component.SkeletonDataAsset.name + " / " + _animation.Name + " / Track " + _track;
             public event Action<string> AnimationEvent;
             internal Player(SkeletonAnimation component,global::Spine.Animation animation,int track,bool loop,bool restore,global::Spine.Skin skin,Material material,float blend)
             {_component=component;_animation=animation;_track=track;Loop=loop;_restore=restore;_skin=skin;_material=material;_blend=blend;}

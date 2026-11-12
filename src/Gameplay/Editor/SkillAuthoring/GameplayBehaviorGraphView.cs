@@ -290,6 +290,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var body=new VisualElement{name="BusinessBody",style={flexDirection=FlexDirection.Row,alignItems=Align.FlexStart}};
                 var outputs=new VisualElement{name="BusinessOutputs",style={width=112,flexShrink=0,paddingRight=8}};
                 foreach(var port in card.outputContainer.Children().OfType<Port>().ToArray())outputs.Add(port);
+                if (((GameplayActionNodePayload)data.Payload).Action is GameplaySearchTargetActionAuthoring)
+                    GroupSearchPorts(outputs);
                 body.Add(content);body.Add(outputs);
                 card.extensionContainer.Insert(1,body);
             }

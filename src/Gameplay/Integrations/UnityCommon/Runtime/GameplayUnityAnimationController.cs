@@ -23,6 +23,13 @@ namespace FRFrame.Gameplay.Unity
         /// <summary>Observable presentation refusal; does not change combat eligibility or cost.</summary>
         public string LastAnimationRejection {get;private set;}
         public event Action<GameplayContext,string> AnimationRejected;
+        /// <summary>Currently sampled cast-owned player resources. Unreported backends still expose their actual write target.</summary>
+        public IEnumerable<(string Channel, string Source, GameplaySourceId Activation)> ActiveAnimationSources()
+        {
+            foreach (var playback in _channels.Values)
+                if (playback.IsPlaying)
+                    yield return (playback.Channel, playback.Source, playback.Activation);
+        }
         private bool RejectAnimation(GameplayAnimationDefinition definition,GameplayContext context,string reason)
         {
             LastAnimationRejection=$"{reason}; source={context?.EffectiveSourceId}; channel={definition.Channel}; priority={definition.Priority}";
@@ -74,7 +81,7 @@ namespace FRFrame.Gameplay.Unity
             _channels[definition.Channel]=playback;
             PhysicalPlayers.Add(playback);
             if(!Actor.Abilities.TryOwnLifetime(grant,playback)){playback.Dispose();return RejectAnimation(definition,context,"GrantLifetimeEnded");}
-            try {player.Seek(0);PromoteQueue(definition.Channel);return true;}catch{playback.Dispose();throw;}
+            try {player.Seek(0);playback.Sampled=true;PromoteQueue(definition.Channel);return true;}catch{playback.Dispose();throw;}
         }
         public void Advance(float amount)
         {
@@ -116,6 +123,11 @@ namespace FRFrame.Gameplay.Unity
             internal string Channel=>_channel;
             internal GameplayUnityAnimationController Owner=>_owner;
             internal GameplayAnimationWriteTarget[] Writes {get;}
+            internal bool Sampled { get; set; }
+            internal bool IsPlaying => Sampled && !_disposed && !_player.IsInterrupted;
+            internal string Source => (_player as IGameplayAnimationPlaybackSource)?.PlaybackSource ??
+                (Writes.Length > 0 ? Writes[0].Domain + " · " + Writes[0].Target.name : "后端未报告资源");
+            internal GameplaySourceId Activation => _context.ActivationSourceId;
             internal Playback(GameplayUnityAnimationController owner,string channel,int priority,GameplayContext context,GameplayAbilityHandle grant,IGameplayAnimationPlayer player,float speed,GameplayAnimationWriteTarget[] writes)
             {_owner=owner;_channel=channel;Priority=priority;_context=context;_grant=grant;_player=player;_speed=speed;Writes=writes;_player.AnimationEvent+=OnEvent;}
             private void OnEvent(string name)

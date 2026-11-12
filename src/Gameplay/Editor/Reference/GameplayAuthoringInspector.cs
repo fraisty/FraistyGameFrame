@@ -112,6 +112,7 @@ namespace FRFrame.Gameplay.Editor
             Labels["ExcludePrimaryTarget"]="排除输入的主要目标";
             Labels["RepeatFromResult"]="从每次结果继续搜索";
             Labels["RepeatMultiplier"]="每跳倍率";
+            Labels["HopIntervalSeconds"]="逐跳间隔（秒）";
             Labels["LaunchFromTriggerPoint"]="从触发事件地点发射";
             Labels["OnlyHitPrimaryTarget"]="仅命中主要目标";
             Labels["EndOnOwnerDeath"]="施法者死亡时结束";

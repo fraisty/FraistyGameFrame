@@ -29,6 +29,7 @@ namespace FRFrame.Gameplay.Standard
         private readonly bool _includeSelf;
         private readonly bool _excludePrimaryTarget, _repeatFromResult;
         private readonly float _repeatMultiplier;
+        private readonly float _hopIntervalSeconds;
         /// <summary>Per-result multiplier in a repeated search. The first result receives 1.</summary>
         public static readonly GameplayTag SearchMultiplierKey = new GameplayTag("Data.Standard.Search.Multiplier");
         private readonly IReadOnlyList<GameplayPoint> _cells;
@@ -42,7 +43,7 @@ namespace FRFrame.Gameplay.Standard
             GameplaySearchDirection direction = GameplaySearchDirection.OwnerFacing,
             IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default,
             bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1,
-            IEnumerable<IGameplaySkillAction> onBegin = null)
+            IEnumerable<IGameplaySkillAction> onBegin = null, float hopIntervalSeconds = 0)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane) ||
                 !Enum.IsDefined(typeof(GameplaySearchOrigin), origin)) throw new ArgumentOutOfRangeException(nameof(shape));
@@ -60,6 +61,10 @@ namespace FRFrame.Gameplay.Standard
             _excludePrimaryTarget = excludePrimaryTarget;
             _repeatFromResult = repeatFromResult;
             _repeatMultiplier = repeatMultiplier;
+            if (!float.IsFinite(hopIntervalSeconds) || hopIntervalSeconds < 0 ||
+                (hopIntervalSeconds > 0 && (!repeatFromResult || shape != GameplaySearchShape.Circle)))
+                throw new ArgumentOutOfRangeException(nameof(hopIntervalSeconds), "A positive hop interval requires repeated circle search.");
+            _hopIntervalSeconds = hopIntervalSeconds;
             _each = Copy(each); _completed = Copy(completed); _empty = Copy(empty);
             _onBegin = Copy(onBegin);
             _cells = new List<GameplayPoint>(cells ?? Array.Empty<GameplayPoint>()).AsReadOnly(); _cellSize = cellSize;
@@ -75,10 +80,20 @@ namespace FRFrame.Gameplay.Standard
         {
             if (!(host is GameplayStandardActor actor) || actor.IsDisposed) throw new InvalidOperationException("Search requires the official standard actor/world host.");
             if (!TryCreateRequest(context, actor, out var request)) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+            GameplayAbilityHandle grant = default;
+            if (_hopIntervalSeconds > 0 && (!actor.IsTargetable || !GameplayStandardActivation.TryFindGrant(actor, context, out grant)))
+                return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
             if (_onBegin.Count > 0)
             {
                 var begin = actor.RunPresentationCallback(_onBegin, context, triggerEvent, canContinue);
                 if (begin.Result == GameplaySkillActionResult.Rejected) return begin;
+            }
+            if (_hopIntervalSeconds > 0)
+            {
+                if (canContinue?.Invoke() == false || !actor.IsTargetable || actor.World.IsDisposed)
+                    return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+                var search = actor.World.RegisterSpatial(new TimedSearch(this, actor, context, triggerEvent, grant, request, canContinue), grant);
+                return new GameplaySkillActionExecution(search?.InitialResult ?? GameplaySkillActionResult.Rejected, context);
             }
             GameplayTargetData targets;
             if (_repeatFromResult)
@@ -95,9 +110,7 @@ namespace FRFrame.Gameplay.Standard
                     var point = target.Position;
                     selected.Add(id);
                     visited.Add(id);
-                    var single = context.WithTarget(new GameplayTargetData(id, point, null, new[] { id }))
-                        .WithValues(context.Values.WithValue(SearchMultiplierKey, multiplier));
-                    var result = actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, request.Geometry.Origin);
+                    var result = RunHop(actor, context, triggerEvent, canContinue, request.Geometry.Origin, id, point, multiplier);
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                     multiplier *= _repeatMultiplier;
                     if (step + 1 < _maxTargets && !actor.IsDisposed)
@@ -117,13 +130,124 @@ namespace FRFrame.Gameplay.Standard
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                 }
             }
+            return RunCompletion(actor, context, targets, triggerEvent, canContinue);
+        }
+        private GameplaySkillActionExecution RunHop(GameplayStandardActor actor, GameplayContext context,
+            GameplayEventData triggerEvent, Func<bool> canContinue, GameplayPoint origin, GameplaySourceId id,
+            GameplayPoint point, float multiplier)
+        {
+            var single = context.WithTarget(new GameplayTargetData(id, point, null, new[] { id }))
+                .WithValues(context.Values.WithValue(SearchMultiplierKey, multiplier));
+            return actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, origin);
+        }
+        private GameplaySkillActionExecution RunCompletion(GameplayStandardActor actor, GameplayContext context,
+            GameplayTargetData targets, GameplayEventData triggerEvent, Func<bool> canContinue, Action beforeCompleted = null)
+        {
             var resultContext = context.WithTarget(targets);
             if (targets.Targets.Count == 0)
             {
-                var result = GameplaySkillActionRunner.Execute(_empty, resultContext, triggerEvent, host, canContinue);
+                var result = GameplaySkillActionRunner.Execute(_empty, resultContext, triggerEvent, actor, canContinue);
                 if (result.Result == GameplaySkillActionResult.Rejected) return result;
             }
+            beforeCompleted?.Invoke();
             return actor.RunPresentationCallback(_completed, resultContext, triggerEvent, canContinue);
+        }
+
+        private sealed class TimedSearch : GameplaySpatialOperation
+        {
+            private readonly GameplaySearchTargetAction _action;
+            private readonly GameplayContext _cast;
+            private readonly GameplayEventData _trigger;
+            private readonly GameplayAbilityHandle _grant;
+            private readonly GameplayPoint _origin;
+            private readonly List<GameplaySourceId> _selected = new List<GameplaySourceId>();
+            private readonly HashSet<GameplaySourceId> _visited = new HashSet<GameplaySourceId>();
+            private GameplaySpatialSearchRequest _initialRequest;
+            private Func<bool> _initialGuard;
+            private double _elapsed;
+            private float _multiplier = 1;
+            private bool _completing;
+            internal GameplaySkillActionResult InitialResult { get; private set; }
+
+            internal TimedSearch(GameplaySearchTargetAction action, GameplayStandardActor actor, GameplayContext cast,
+                GameplayEventData trigger, GameplayAbilityHandle grant, GameplaySpatialSearchRequest request, Func<bool> initialGuard)
+                : base(actor, cast, grant, null)
+            {
+                _action = action;
+                _cast = cast;
+                _trigger = trigger;
+                _grant = grant;
+                _initialRequest = request;
+                _initialGuard = initialGuard;
+                _origin = Position = request.Geometry.Origin;
+            }
+
+            // The Sequence guard applies during the marker. Later hops belong to the Ability,
+            // even when the launching Sequence has finished naturally.
+            private bool CanContinue() => Owner.IsTargetable && !Owner.World.IsDisposed &&
+                (_completing ? Owner.Abilities.IsActive(_grant) : !IsDisposed) && _initialGuard?.Invoke() != false;
+
+            protected override void OnStart()
+            {
+                Owner.CombatChanged += ObserveCombat;
+                InitialResult = Hop(_initialRequest);
+                _initialRequest = null;
+                _initialGuard = null;
+            }
+
+            private void ObserveCombat(GameplayCombatOutcome outcome)
+            {
+                if (!Owner.IsTargetable) StopForDeath();
+            }
+
+            private void StopForDeath()
+            {
+                Finish(GameplaySpatialEndReason.Died);
+                Owner.Abilities.Cancel(_grant);
+            }
+
+            protected override void OnFinished(GameplaySpatialEndReason reason) => Owner.CombatChanged -= ObserveCombat;
+
+            internal override void Advance(float delta)
+            {
+                if (!Owner.IsTargetable) { StopForDeath(); return; }
+                _elapsed += delta;
+                // Match the Sequence clock's float authoring boundary without rounding accumulated time.
+                while (!IsDisposed && (float)_elapsed >= (float)(_selected.Count * (double)_action._hopIntervalSeconds))
+                {
+                    _action.TryCreateRequest(_cast, Owner, out var request, Position, _visited);
+                    Hop(request);
+                }
+            }
+
+            private GameplaySkillActionResult Hop(GameplaySpatialSearchRequest request)
+            {
+                var id = Owner.World.Spatial.Query(request).PrimaryTargetId;
+                if (_selected.Count < _action._maxTargets && id.IsValid && Owner.World.TryGetActor(id, out var target))
+                {
+                    var segmentStart = Position;
+                    Position = target.Position;
+                    _selected.Add(id);
+                    _visited.Add(id);
+                    var hit = _action.RunHop(Owner, _cast, _trigger, CanContinue, segmentStart, id, Position, _multiplier);
+                    if (hit.Result == GameplaySkillActionResult.Rejected || !CanContinue())
+                    {
+                        Finish(GameplaySpatialEndReason.Cancelled);
+                        return hit.Result;
+                    }
+                    _multiplier *= _action._repeatMultiplier;
+                    if (_selected.Count < _action._maxTargets) return hit.Result;
+                }
+                var targets = new GameplayTargetData(_selected.Count > 0 ? _selected[0] : default, _origin, null, _selected);
+                var result = _action.RunCompletion(Owner, _cast, targets, _trigger, CanContinue, () =>
+                {
+                    if (!CanContinue()) return;
+                    _completing = true;
+                    Finish(GameplaySpatialEndReason.Completed);
+                });
+                if (!IsDisposed) Finish(GameplaySpatialEndReason.Cancelled);
+                return result.Result;
+            }
         }
         /// <summary>Side-effect-free canonical request used by both runtime query and Editor preview.
         /// Only dimensions used by the selected shape evaluate their AST; inactive fields are retained

@@ -26,7 +26,32 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private void AddMainAnimationControls(Node card,string owner,GameplayAuthoringTimeline timeline)
         {
             string main=timeline.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);
+            var source = new Label(MainAnimationSource(timeline)) { name = "MainAnimationProvenance" };
+            source.style.whiteSpace = WhiteSpace.Normal;
+            source.style.marginLeft = 10;
+            source.style.marginRight = 10;
+            card.extensionContainer.Add(source);
             if(main==null)card.extensionContainer.Add(new Button(()=>ShowMainAnimationMenu(null,timeline)){text="＋ 设置主动画（可选）",tooltip="主动画使用真实 Animation Action 和唯一 Schedule；无动画也能执行。"});
+        }
+        private string MainAnimationSource(GameplayAuthoringTimeline timeline)
+        {
+            var graph = _document.AuthoringGraph;
+            var scheduled = timeline.Events
+                .Select(e => graph.Nodes.Find(n => n.Id == e.EntryNodeId))
+                .Where(n => (n?.Payload as GameplayActionNodePayload)?.Action is GameplaySkillActionAuthoring action &&
+                    GameplaySkillNodeDescriptors.Get(action.GetType()).IsAnimation).ToArray();
+            if (scheduled.Length == 0) return "技能主动画：未配置（合法）。运行时宿主可使用默认施放动作。";
+            var main = scheduled.FirstOrDefault(n => IsTimelineInline(n.Id));
+            if (main == null) return "技能主动画：未配置为内联主动画。已安排独立动画事件，可在时间轴定位。";
+            if (!(GameplaySkillNodeDisplay.BoundValues(main, graph) is GameplayLocalDefinitionPayload source))
+                return "技能主动画：已安排，资源待配置。";
+            var validation = new GameplayAuthoringValidationContext();
+            source.Validate(validation, "技能主动画");
+            if (validation.HasErrors) return "技能主动画：已安排，资源待配置。";
+            var binding = main.Payload.Definitions.FirstOrDefault(b => b.External);
+            string resource = GameplaySkillFieldSchema.ValueSummary(source)?.Split('\n')[0] ?? GameplaySkillFieldSchema.Name(source.GetType());
+            return "技能主动画：已配置 · " + resource +
+                (binding == null ? " · 本地来源" : " · 共享来源 " + binding.External.name);
         }
         private void ShowMainAnimationMenu(string main,GameplayAuthoringTimeline timeline)
         {
@@ -58,7 +83,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             string owner=selected!=null&&_inlineOwners.TryGetValue(selected,out var timelineOwner)?timelineOwner:selected;
             var node=_document.AuthoringGraph.Nodes.Find(n=>n.Id==owner);if(node==null)return;
             foreach(var current in _document.AuthoringGraph.Timelines.Where(t=>node.Payload.Definitions.Any(b=>b.LocalId==t.Id))){
-                string main=current.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);if(main==null)continue;
+                string main=current.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);
+                if (_nodes.TryGetValue(owner, out var card))
+                    GUILayout.Label(card.extensionContainer.Q<Label>("MainAnimationProvenance")?.text, EditorStyles.wordWrappedMiniLabel);
+                if(main==null)continue;
                 string timelineId=current.Id;var occurrence=current.Events.Single(e=>e.EntryNodeId==main);string entry=occurrence.Id;
                 GUILayout.Space(8);GUILayout.Label("主动画设置",EditorStyles.boldLabel);
                 if(GUILayout.Button(new GUIContent("预览输入…","调整预览等级、变体采样和临时数值输入。")))

@@ -95,7 +95,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("正式范围数值","可用常量、等级表、公式；形状切换保留原有配置。",dimensions.ToArray());
                 yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf");
                 yield return Group("逐次重选","圆形查询从上一目标的位置选最近未访问目标，目标上限为总跳数。逐目标分支可读取 Context.Data.Standard.Search.Multiplier。",
-                    "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier");
+                    "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier","HopIntervalSeconds");
                 yield return Group("正式续接","查询前保留原输入；每个目标提供单个 Actor；搜索完成收到完整结果。","OnBegin","EachTarget","Completed","NoTargets");
             }
             else if(value is GameplayDamageExecutionAuthoring)

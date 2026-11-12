@@ -153,17 +153,10 @@ namespace FRFrame.Gameplay.Unity
                     var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
-                    var offset=definition.Offset;var scale=definition.Scale*intensity;
-                    var rotation=Quaternion.identity;
-                    if (end.HasValue)
-                    {
-                        var direction=end.Value-point;
-                        point+=direction*.5f;
-                        scale.x=definition.Scale.x*direction.magnitude;
-                        rotation=Quaternion.FromToRotation(Vector3.right,direction);
-                    }
-                    else if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
-                    view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=rotation;
+                    var pose = ResolveCueGeometry(point, end, definition.Offset, definition.Scale, definition.MirrorFacing && mirror, intensity);
+                    view.transform.SetParent(definition.Follow ? parent : null, false);
+                    view.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
+                    view.transform.localScale = pose.Scale;
                     cue.Particles=view.GetComponentsInChildren<ParticleSystem>();
                     foreach(var particles in cue.Particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);particles.Pause(false);}
                 }
@@ -180,6 +173,22 @@ namespace FRFrame.Gameplay.Unity
                 return true;
             }
             catch{cue.Dispose();throw;}
+        }
+
+        /// <summary>World placement shared by the runtime player and the editor's simulated anchors.
+        /// A segment uses distance for X; intensity affects its transverse scale only.</summary>
+        public static (Vector3 Position, Quaternion Rotation, Vector3 Scale) ResolveCueGeometry(
+            Vector3 origin, Vector3? end, Vector3 offset, Vector3 scale, bool mirror, float intensity)
+        {
+            var scaled = scale * intensity;
+            if (end.HasValue)
+            {
+                var direction = end.Value - origin;
+                scaled.x = scale.x * direction.magnitude;
+                return (origin + direction * .5f + offset, Quaternion.FromToRotation(Vector3.right, direction), scaled);
+            }
+            if (mirror) { offset.x = -offset.x; scaled.x = -scaled.x; }
+            return (origin + offset, Quaternion.identity, scaled);
         }
         private sealed class CueLease:IDisposable
         {

@@ -60595,8 +60595,9 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if (payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port))
                 return new Inputs(true, input.Point, "Effect 生命周期使用该组的实际目标。", optionalPoint: !input.Point);
             if(payload is GameplayEffectDefinitionData&&GameplayGraphEffectCallbacks.IsPort(payload,port))return input.With(true,input.Point,"Effect 续接到同一有效目标",false,input.OptionalPoint);
-            if(payload is GameplaySearchTargetActionAuthoring){
+            if(payload is GameplaySearchTargetActionAuthoring search){
                 if(port=="EachTarget")return input.With(true,true,"搜索的有效逐目标 Actor/Point");
+                if(port=="Then"&&search.HopIntervalSeconds>0)return input;
                 if(port=="NoTargets"||port=="Completed"||port=="Then")return input.With(false,true,"搜索完成/无目标不保证 Actor；先以地点重新搜索");
             }
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
@@ -61866,6 +61867,9 @@ namespace FRFrame.Gameplay.Authoring
         public bool RepeatFromResult;
         [Range(0,1), Tooltip("下一跳的倍率乘此值。逐目标下游读取 Context.Data.Standard.Search.Multiplier。")]
         public float RepeatMultiplier = 1;
+        /// <summary>Seconds between repeated queries. Zero executes every hop in the same rule step.</summary>
+        [Tooltip("0 在同一规则帧完成；正值仅用于圆形逐次重选，首跳立即查询，之后按世界时钟重选。最终结果由搜索完成输出。")]
+        public float HopIntervalSeconds;
         [Tooltip("世界坐标单元中心；按 CellSize 对所在格进行匹配，不依赖 Physics。")]
         public Vector3[] Cells = Array.Empty<Vector3>();
         public float CellSize = 1;
@@ -61878,6 +61882,9 @@ namespace FRFrame.Gameplay.Authoring
             v.Enum(Shape, p + ".Shape"); v.Enum(Plane, p + ".Plane"); v.Enum(Origin, p + ".Origin");
             if (RepeatFromResult && (Shape != GameplaySearchShape.Circle || !(RepeatMultiplier >= 0 && RepeatMultiplier <= 1)))
                 v.Error(p + ".RepeatFromResult", "逐次重选需要圆形查询与 0–1 的倍率。");
+            if (!float.IsFinite(HopIntervalSeconds) || HopIntervalSeconds < 0 ||
+                (HopIntervalSeconds > 0 && (!RepeatFromResult || Shape != GameplaySearchShape.Circle)))
+                v.Error(p + ".HopIntervalSeconds", "逐跳间隔必须是非负有限秒数；正值需要圆形查询和逐次重选。");
             if(!float.IsFinite(OriginOffset.x)||!float.IsFinite(OriginOffset.y)||!float.IsFinite(OriginOffset.z))v.Error(p+".OriginOffset","原点偏移必须有限。");
             if (Directional) { v.Enum(Direction,p+".Direction"); DirectionAngle?.Validate(v,p+".DirectionAngle"); }
             if (UsesLength && LengthFromTarget && Direction != GameplaySearchDirection.ToPrimaryTarget && Direction != GameplaySearchDirection.ToContextPoint)
@@ -61921,7 +61928,7 @@ namespace FRFrame.Gameplay.Authoring
                 Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context));
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds);
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;
@@ -64397,6 +64404,7 @@ namespace FRFrame.Gameplay.Editor
             if(owner is GameplaySequenceCueMarkerAuthoring cue){if(field=="Duration")return cue.HasDuration;if(field=="Magnitude")return cue.HasMagnitude;}
             if(owner is GameplayMoveTargetsActionAuthoring move){if(field=="Blocked")return move.UseControlGate;}
             if(owner is GameplaySearchTargetActionAuthoring search){
+                if(field=="HopIntervalSeconds")return search.RepeatFromResult||search.HopIntervalSeconds!=0;
                 bool length=search.Shape==GameplaySearchShape.Box||search.Shape==GameplaySearchShape.Line||search.Shape==GameplaySearchShape.Ray||search.Shape==GameplaySearchShape.Capsule;
                 if(field=="Direction"||field=="DirectionAngle")return length||search.Shape==GameplaySearchShape.Sector;
                 if(field=="LengthFromTarget")return length;
@@ -64619,6 +64627,7 @@ namespace FRFrame.Gameplay.Editor
             Labels["ExcludePrimaryTarget"]="排除输入的主要目标";
             Labels["RepeatFromResult"]="从每次结果继续搜索";
             Labels["RepeatMultiplier"]="每跳倍率";
+            Labels["HopIntervalSeconds"]="逐跳间隔（秒）";
             Labels["LaunchFromTriggerPoint"]="从触发事件地点发射";
             Labels["OnlyHitPrimaryTarget"]="仅命中主要目标";
             Labels["EndOnOwnerDeath"]="施法者死亡时结束";
@@ -66720,7 +66729,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("正式范围数值","可用常量、等级表、公式；形状切换保留原有配置。",dimensions.ToArray());
                 yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf");
                 yield return Group("逐次重选","圆形查询从上一目标的位置选最近未访问目标，目标上限为总跳数。逐目标分支可读取 Context.Data.Standard.Search.Multiplier。",
-                    "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier");
+                    "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier","HopIntervalSeconds");
                 yield return Group("正式续接","查询前保留原输入；每个目标提供单个 Actor；搜索完成收到完整结果。","OnBegin","EachTarget","Completed","NoTargets");
             }
             else if(value is GameplayDamageExecutionAuthoring)
@@ -67548,6 +67557,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         void Retry();
     }
 
+    /// <summary>Optional binding for previews that expose edits to the selected authoring source.</summary>
+    public interface IGameplaySkillPreviewSource
+    {
+        void BindSource(GameplaySourceHandle source, bool shared);
+        void CancelInteraction();
+    }
+
     /// <summary>The currently selected authoring projection. Sequence is supplied by the Workbench, never guessed by a provider.</summary>
     public sealed class GameplaySkillPreviewContext
     {
@@ -67938,6 +67954,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var body=new VisualElement{name="BusinessBody",style={flexDirection=FlexDirection.Row,alignItems=Align.FlexStart}};
                 var outputs=new VisualElement{name="BusinessOutputs",style={width=112,flexShrink=0,paddingRight=8}};
                 foreach(var port in card.outputContainer.Children().OfType<Port>().ToArray())outputs.Add(port);
+                if (((GameplayActionNodePayload)data.Payload).Action is GameplaySearchTargetActionAuthoring)
+                    GroupSearchPorts(outputs);
                 body.Add(content);body.Add(outputs);
                 card.extensionContainer.Insert(1,body);
             }
@@ -68352,7 +68370,32 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private void AddMainAnimationControls(Node card,string owner,GameplayAuthoringTimeline timeline)
         {
             string main=timeline.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);
+            var source = new Label(MainAnimationSource(timeline)) { name = "MainAnimationProvenance" };
+            source.style.whiteSpace = WhiteSpace.Normal;
+            source.style.marginLeft = 10;
+            source.style.marginRight = 10;
+            card.extensionContainer.Add(source);
             if(main==null)card.extensionContainer.Add(new Button(()=>ShowMainAnimationMenu(null,timeline)){text="＋ 设置主动画（可选）",tooltip="主动画使用真实 Animation Action 和唯一 Schedule；无动画也能执行。"});
+        }
+        private string MainAnimationSource(GameplayAuthoringTimeline timeline)
+        {
+            var graph = _document.AuthoringGraph;
+            var scheduled = timeline.Events
+                .Select(e => graph.Nodes.Find(n => n.Id == e.EntryNodeId))
+                .Where(n => (n?.Payload as GameplayActionNodePayload)?.Action is GameplaySkillActionAuthoring action &&
+                    GameplaySkillNodeDescriptors.Get(action.GetType()).IsAnimation).ToArray();
+            if (scheduled.Length == 0) return "技能主动画：未配置（合法）。运行时宿主可使用默认施放动作。";
+            var main = scheduled.FirstOrDefault(n => IsTimelineInline(n.Id));
+            if (main == null) return "技能主动画：未配置为内联主动画。已安排独立动画事件，可在时间轴定位。";
+            if (!(GameplaySkillNodeDisplay.BoundValues(main, graph) is GameplayLocalDefinitionPayload source))
+                return "技能主动画：已安排，资源待配置。";
+            var validation = new GameplayAuthoringValidationContext();
+            source.Validate(validation, "技能主动画");
+            if (validation.HasErrors) return "技能主动画：已安排，资源待配置。";
+            var binding = main.Payload.Definitions.FirstOrDefault(b => b.External);
+            string resource = GameplaySkillFieldSchema.ValueSummary(source)?.Split('\n')[0] ?? GameplaySkillFieldSchema.Name(source.GetType());
+            return "技能主动画：已配置 · " + resource +
+                (binding == null ? " · 本地来源" : " · 共享来源 " + binding.External.name);
         }
         private void ShowMainAnimationMenu(string main,GameplayAuthoringTimeline timeline)
         {
@@ -68384,7 +68427,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             string owner=selected!=null&&_inlineOwners.TryGetValue(selected,out var timelineOwner)?timelineOwner:selected;
             var node=_document.AuthoringGraph.Nodes.Find(n=>n.Id==owner);if(node==null)return;
             foreach(var current in _document.AuthoringGraph.Timelines.Where(t=>node.Payload.Definitions.Any(b=>b.LocalId==t.Id))){
-                string main=current.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);if(main==null)continue;
+                string main=current.Events.Select(e=>e.EntryNodeId).FirstOrDefault(IsTimelineInline);
+                if (_nodes.TryGetValue(owner, out var card))
+                    GUILayout.Label(card.extensionContainer.Q<Label>("MainAnimationProvenance")?.text, EditorStyles.wordWrappedMiniLabel);
+                if(main==null)continue;
                 string timelineId=current.Id;var occurrence=current.Events.Single(e=>e.EntryNodeId==main);string entry=occurrence.Id;
                 GUILayout.Space(8);GUILayout.Label("主动画设置",EditorStyles.boldLabel);
                 if(GUILayout.Button(new GUIContent("预览输入…","调整预览等级、变体采样和临时数值输入。")))
@@ -68748,11 +68794,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     port.portName=cue?"开始播放后继续":starts?"启动后继续":"继续主链";
                     port.tooltip=cue?"成功启动特效或音频后立即执行下游，不等待播放结束。":starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
                 }
-                if(action is GameplaySearchTargetActionAuthoring){
-                    if(socket?.Port=="Completed"){port.portName="完成 · 结果集";port.tooltip="搜索后调用一次，包含完整结果集；也可能为空，不能假定存在目标。";}
-                    if(socket?.Port=="EachTarget")port.tooltip="对每个有效目标分别执行；下游接收该目标和采样地点。";
-                    if(socket?.Port=="NoTargets"){port.portName="未找到目标";port.tooltip="没有有效目标时调用；只有搜索中心地点，不提供 Actor。";}
-                }
                 port.style.minHeight=22;port.style.fontSize=12;port.style.flexShrink=0;
                 var connector=port.Q("connector");if(connector!=null){connector.style.width=12;connector.style.height=12;connector.style.minWidth=12;connector.style.flexShrink=0;}
                 if(port.portType==typeof(GameplayEffectDefinitionAsset)){
@@ -68761,6 +68802,64 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
             }
             var contract=new Label{name="ContextContract"};contract.style.whiteSpace=WhiteSpace.Normal;contract.style.color=new Color(1,.75f,.38f);contract.style.fontSize=11;contract.style.marginLeft=10;contract.style.marginRight=10;contract.style.marginBottom=6;contract.style.display=DisplayStyle.None;card.extensionContainer.Add(contract);
+        }
+        private static void GroupSearchPorts(VisualElement outputs)
+        {
+            outputs.style.width = 132;
+            var ports = outputs.Children().OfType<Port>().ToDictionary(p => ((Socket)p.userData).Port);
+            outputs.Clear();
+            AddSection("查询开始", "OnBegin");
+            AddSection("单个目标", "EachTarget");
+            AddSection("搜索结束", "Completed", "NoTargets");
+            if (ports.TryGetValue("Then", out var continuation)) outputs.Add(continuation);
+
+            void AddSection(string title, params string[] keys)
+            {
+                var heading = new Label(title) { pickingMode = PickingMode.Ignore };
+                heading.style.fontSize = 10;
+                heading.style.color = new Color(.72f, .79f, .84f);
+                heading.style.unityTextAlign = TextAnchor.MiddleRight;
+                heading.style.paddingRight = 13;
+                heading.style.borderTopWidth = 1;
+                heading.style.borderTopColor = new Color(.36f, .4f, .44f);
+                outputs.Add(heading);
+                foreach (var key in keys) outputs.Add(ports[key]);
+            }
+        }
+
+        private void RefreshSearchPorts(string id, GameplaySearchTargetActionAuthoring search, bool refreshConnections)
+        {
+            if (_outputs.TryGetValue(Key(id, "Then"), out var next))
+            {
+                next.portName = search.HopIntervalSeconds > 0 ? "启动后继续" : "继续主链";
+                next.tooltip = search.HopIntervalSeconds > 0
+                    ? "首跳处理后沿原输入继续。最终结果与结束施放请接搜索完成。"
+                    : "搜索与分支完成后继续，接收实际输出上下文。";
+            }
+            if (!refreshConnections) return;
+            Set("OnBegin", "开始", "查询前调用一次，保留原始输入。");
+            Set("EachTarget", "每个目标", "每次选到目标时调用，提供单个 Actor、采样地点及逐次重选倍率。");
+            Set("Completed", "完成 · 结果集", "正常结束时调用一次，提供最终结果集。零结果时在无目标回调之后调用。");
+            Set("NoTargets", "未找到目标", "整次查询零结果时先调用，提供查询中心。之后仍会正常调用完成。");
+
+            void Set(string key, string label, string description)
+            {
+                if (!_outputs.TryGetValue(Key(id, key), out var port)) return;
+                var graph = _document.AuthoringGraph;
+                var edges = graph.Connections.Where(e => e.FromNodeId == id && e.OutputPortKey == key).OrderBy(e => e.Order).ToArray();
+                var types = edges.Select(e => Record(e.ToNodeId)).Where(node => (node?.Payload as GameplayActionNodePayload)?.Action != null)
+                    .Select(node =>
+                    {
+                        var action = ((GameplayActionNodePayload)node.Payload).Action;
+                        return GameplaySkillFieldSchema.ValueNodeTypeName(GameplaySkillNodeDisplay.BoundValues(node, graph))
+                            ?? GameplaySkillNodeDescriptors.Get(action.GetType()).DisplayName;
+                    }).GroupBy(type => type);
+                string summary = string.Join(" / ", types.Select(group => group.Key + " ×" + group.Count()));
+                port.portName = label + " [" + edges.Length + "]";
+                port.tooltip = description + (summary.Length == 0 ? "" : "\n直接连接  " + summary);
+                foreach (var edge in port.connections)
+                    edge.tooltip = "搜索目标 · " + label + " → " + edge.input.node.title + "\n" + description;
+            }
         }
         private static void Heading(VisualElement side,string text,bool right)
         {
@@ -68881,11 +68980,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     Set("ExecutionStatus",(active.Contains(id)?"正式执行":data.Payload is GameplayRuleNodePayload?"未启用 · 不参与执行":"未接入执行流程 · 不参与执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地"));
                     var editors=node.extensionContainer.Query<GameplaySkillCardEditor>().ToList();foreach(var editor in editors)editor.Refresh();
                     Set("BusinessSummary",GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,editors.Any(e=>e.HasFields)));
+                    if ((data.Payload as GameplayActionNodePayload)?.Action is GameplaySearchTargetActionAuthoring search)
+                        RefreshSearchPorts(id, search, full);
                     RefreshEffectLifecycleRows(node);
                     if(data.Payload is GameplayAbilityNodePayload)Set("AbilitySummary",_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能");
                     foreach(var binding in data.Payload.Definitions){var definition=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);if(definition!=null)Set("Definition-"+definition.Id,DefinitionSummary(definition));}
                     foreach(var label in node.extensionContainer.Query<Label>(className:"animation-source").ToList()){var animation=Record((string)label.userData);if(animation==null)continue;object values=GameplaySkillNodeDisplay.BoundValues(animation,_document.AuthoringGraph);string text=IsTimelineInline(animation.Id)?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(animation.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):GameplaySkillNodeDisplay.EventLabel(animation,_document.AuthoringGraph)+" · 参数在独立动画卡";if(label.text!=text)label.text=text;}
                     foreach(var timeline in _document.AuthoringGraph.Timelines.Where(t=>data.Payload.Definitions.Any(b=>b.LocalId==t.Id))){var entries=timeline.Events.Where(e=>!IsTimelineInline(e.EntryNodeId)).OrderBy(e=>e.TimeSeconds).ThenBy(e=>e.Order).ToArray();for(int i=0;i<entries.Length;i++)if(_outputs.TryGetValue(Key(entries[i].Id,"Schedule"),out var port)){string caption="#"+(i+1)+" "+(entries[i].TimeSeconds*timeline.FramesPerSecond).ToString("0.#")+"f";if(port.portName!=caption){port.tooltip="◇ 真实时间调度 · "+caption+"\n事件 "+entries[i].Id+"\n单击编号定位；Order、目标与条件见该事件。";}}}
+                    var authoredTimeline = _document.AuthoringGraph.Timelines.Find(t => data.Payload.Definitions.Any(b => b.LocalId == t.Id));
+                    if (authoredTimeline != null) Set("MainAnimationProvenance", MainAnimationSource(authoredTimeline));
                     foreach(var timelineView in node.Query<GameplaySkillTimeline>().ToList())timelineView.InvalidatePresentation();
                     node.MarkDirtyRepaint();
                     void Set(string name,string value){var label=node.extensionContainer.Q<Label>(name);if(label!=null){if(label.text!=value)label.text=value;label.style.display=string.IsNullOrEmpty(value)?DisplayStyle.None:DisplayStyle.Flex;}}
@@ -69735,7 +69838,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public IReadOnlyCollection<string> Owners {get;private set;}
         private GameplaySkillAuthoringChange() { }
         private static readonly HashSet<string> StructuralFields=new HashSet<string>{"Action","Payload","Settings","Target","Trigger","size","Mode","CastEvent","Scope","Once","Stacking","DurationPolicy","Period","Overflow"};
-        private static readonly HashSet<string> ContextFields=new HashSet<string>{"Target","Trigger","Conditions","PreserveTriggerContext","Shape","Origin","Direction","Directional","RotateOwner","DurationPolicy","Motion","StraightDestination","Overflow","Period","PeriodValue","TickInterval","Cancel","OwnedByAbility"};
+        private static readonly HashSet<string> ContextFields=new HashSet<string>{"Target","Trigger","Conditions","PreserveTriggerContext","Shape","Origin","Direction","Directional","RotateOwner","DurationPolicy","Motion","StraightDestination","Overflow","Period","PeriodValue","TickInterval","Cancel","OwnedByAbility","HopIntervalSeconds"};
         public static GameplaySkillAuthoringChange Full(bool structural=false)=>new GameplaySkillAuthoringChange{Unknown=true,Structural=structural,Context=true,Owners=Array.Empty<string>()};
         public static GameplaySkillAuthoringChange Local(IEnumerable<string> owners,bool layout=false)=>new GameplaySkillAuthoringChange{Owners=owners.Where(x=>!string.IsNullOrEmpty(x)).Distinct().ToArray(),Layout=layout};
         /// <summary>Array indexes are used only while resolving this immediate edit. Consumers
@@ -69869,7 +69972,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
         /// <summary>Reference viewing is a workbench mode, never a second skill runtime source.</summary>
         internal static GameplaySkillDocumentAsset ReadOnlyDocument;
-        internal static bool IsReadOnly(GameplaySkillDocumentAsset document)=>document&&document==ReadOnlyDocument;
+        /// <summary>Whether the current Workbench presents this document as a read-only reference.</summary>
+        public static bool IsReadOnly(GameplaySkillDocumentAsset document)=>document&&document==ReadOnlyDocument;
         private static GameplayAuthoringGraph CopyGraph(GameplaySkillDocumentAsset source,GameplaySkillDocumentAsset destination)
         {
             var original=source.AuthoringGraph;
@@ -70993,6 +71097,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     input = Merge(RunOutput(id, "TrueActions", input), RunOutput(id, "FalseActions", input));
                 else if (payload.Action is GameplaySearchTargetActionAuthoring search)
                 {
+                    RunOutput(id, "OnBegin", input);
                     var each = input;
                     if (search.RepeatFromResult)
                     {
@@ -71003,7 +71108,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     }
                     RunOutput(id, "EachTarget", each);
                     RunOutput(id, "NoTargets", input);
-                    input = RunOutput(id, "Completed", input);
+                    var completed = RunOutput(id, "Completed", input);
+                    if (search.HopIntervalSeconds == 0) input = completed;
                 }
                 else
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload.Action))
@@ -72935,6 +73041,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if(node.Payload is GameplayAbilityNodePayload)return null;
             var action=(node.Payload as GameplayActionNodePayload)?.Action;
+            if (action is GameplaySearchTargetActionAuthoring search && search.RepeatFromResult)
+                return search.HopIntervalSeconds > 0 ? $"逐跳 · {search.HopIntervalSeconds:0.00#} 秒" : "同步重选 · 同一规则帧";
             if(action is GameplayOwnedSequenceActionAuthoring||action is GameplaySkillPlaySequenceActionAuthoring)return null;
             if(action is GameplayApplyToTargetsActionAuthoring||action is GameplaySkillApplyEffectActionAuthoring){
                 var binding=node.Payload.Definitions.FirstOrDefault(b=>b.PropertyPath=="Effect");
@@ -73561,7 +73669,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             layoutMenu.menu.AppendAction("预览整理（不写入）",_=>Canvas.PreviewLayout(),_=>Canvas.BusinessReading?DropdownMenuAction.Status.Disabled:DropdownMenuAction.Status.Normal);
             layoutMenu.menu.AppendAction("应用预览（一次 Undo）",_=>Canvas.ApplyLayoutPreview(),_=>Canvas.BusinessReading?DropdownMenuAction.Status.Disabled:DropdownMenuAction.Status.Normal);
             layoutMenu.menu.AppendAction("取消预览",_=>Canvas.CancelLayoutPreview());tools.Add(layoutMenu);
-            tools.Add(new ToolbarButton(() => { _inspectorOpen=!_inspectorOpen;ApplyPaneWidths();SavePanePreferences(); }) { text = "详情 / 预览 / 试装" });
+            tools.Add(new ToolbarButton(() => { _inspectorOpen=!_inspectorOpen;if(!_inspectorOpen)DisposeDetailsPreview();ApplyPaneWidths();SavePanePreferences(); }) { text = "详情 / 预览 / 试装" });
             tools.Add(new ToolbarButton(()=>EditorWindow.GetWindow<FRFrame.Gameplay.Editor.RuntimeDebugger.GameplayRuntimeDebuggerWindow>().Show()){text="Runtime 调试"});
             rootVisualElement.Add(new IMGUIContainer(DrawSourceBar){style={height=27,flexShrink=0}});
             var workspace=new VisualElement{style={flexDirection=FlexDirection.Row,flexGrow=1,minHeight=0}};
@@ -73667,6 +73775,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if (_inspector.style.backgroundColor.value != panelColor) _inspector.style.backgroundColor = panelColor;
             using var pane = new GameplayInspectorIMGUI.Pane(_inspector.resolvedStyle.width);
             _detailTab=GUILayout.Toolbar(_detailTab,new[]{"业务参数","预览 / 范围","Scene / 调试","校验"});
+            if (_detailTab != 1) DisposeDetailsPreview();
             using var scroll = new EditorGUILayout.ScrollViewScope(_inspectorScroll);
             _inspectorScroll = scroll.scrollPosition;
             if (!string.IsNullOrEmpty(_feedback)) EditorGUILayout.HelpBox(_feedback, MessageType.Info);
@@ -73699,6 +73808,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(reason!=null)EditorGUILayout.HelpBox(reason,MessageType.Info);
             using(new EditorGUI.DisabledScope(reason!=null))if(GUILayout.Button(_installation==null?"安装当前正式技能":"释放并重装"))Attempt(()=>{DisposeInstallation();_installation=host.Install(_document);});
             _installation?.Draw();if(_installation!=null&&GUILayout.Button("结束本窗口试装"))DisposeInstallation();
+        }
+        private void OnInspectorUpdate()
+        {
+            if (EditorApplication.isPlaying && _inspectorOpen && _detailTab == 2) _details?.MarkDirtyRepaint();
         }
 
         public static void DrawTimelineFields(GameplaySkillDocumentAsset document, string nodeId,string selectedEventId=null)
@@ -74065,7 +74178,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 {
     public sealed partial class GameplaySkillWorkbench
     {
-        private sealed class PreviewChoice {internal GameplayAuthoringNode Node;internal object Values;internal float Start;internal string Key,Label,Owner,EventId;}
+        private sealed class PreviewChoice {internal GameplayAuthoringNode Node;internal object Values;internal float Start;internal string Key,Label,Owner,EventId;internal GameplayDefinitionAsset Shared;}
         // Seconds are absolute within Root's timeline. ChoiceKey includes the occurrence path,
         // so reusing one animation action never aliases two scheduled previews.
         private sealed class PreviewSeekRequest {internal string ChoiceKey;internal float Seconds;}
@@ -74073,6 +74186,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private readonly Dictionary<string,PreviewState> _previews=new Dictionary<string,PreviewState>();
         private PreviewState State(string root){if(!_previews.TryGetValue(root,out var state)){var cursor=Canvas.PreviewCursor(root);_previews[root]=state=new PreviewState{Seconds=cursor??0,HasClock=cursor.HasValue};}return state;}
         private void DisposePreview(){_previewChoices.Clear();_rangeKey=null;_previewPlaying=false;foreach(var state in _previews.Values){state.Session?.Dispose();state.Session=null;state.Key=null;}}
+        private string _detailsPreviewRoot;
+        private void DisposeDetailsPreview()
+        {
+            string root = _detailsPreviewRoot;
+            _detailsPreviewRoot = null;
+            if (root == null || root == _inlinePreviewNode || !_previews.TryGetValue(root, out var state)) return;
+            state.Session?.Dispose();state.Session=null;state.Key=null;
+            if (_previewClockOwner == root) _previewPlaying = false;
+        }
+        private void OnLostFocus()
+        {
+            foreach (var state in _previews.Values)
+                (state.Session as IGameplaySkillPreviewSource)?.CancelInteraction();
+        }
         private string _previewClockOwner;
         private readonly Dictionary<string,List<PreviewChoice>> _previewChoices=new Dictionary<string,List<PreviewChoice>>();
         private string _inlinePreviewNode;
@@ -74097,7 +74224,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 foreach(var binding in node?.Payload.Definitions??local?.Definitions??new List<GameplayDefinitionBinding>()){
                     object values=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId)?.Payload;
                     if(values==null&&binding.External)try{values=binding.External.CaptureGraphValues();}catch(NotSupportedException){}
-                    if(!effectOnly&&node!=null&&values!=null&&PreviewFactories.Any(p=>p.Supports(values)))result.Add(new PreviewChoice{Node=node,Values=values,Start=time,Owner=binding.LocalId,EventId=eventId,Key=origin+":"+id+":"+binding.PropertyPath,Label=time.ToString("0.###")+"s · "+GameplaySkillFieldSchema.NodeName(node)+" · "+string.Join("/",origin.Split('/').Select(part=>part.Substring(0,Math.Min(4,part.Length))))});
+                    if(!effectOnly&&node!=null&&values!=null&&PreviewFactories.Any(p=>p.Supports(values)))result.Add(new PreviewChoice{Node=node,Values=values,Start=time,Owner=binding.LocalId,Shared=binding.External,EventId=eventId,Key=origin+":"+id+":"+binding.PropertyPath,Label=time.ToString("0.###")+"s · "+GameplaySkillFieldSchema.NodeName(node)+" · "+string.Join("/",origin.Split('/').Select(part=>part.Substring(0,Math.Min(4,part.Length))))});
                     if(!string.IsNullOrEmpty(binding.LocalId))visit(binding.LocalId,time,origin,eventId,false);
                 }
                 if(effectOnly || local?.Payload is GameplayEffectDefinitionData)return;
@@ -74130,7 +74257,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(state.Key!=key){
                 state.Session?.Dispose();state.Session=null;state.Key=key;
                 if(!state.HasClock)state.Seconds=choice.Start;
-                try{state.Session=PreviewFactories.First(p=>p.Supports(choice.Values)).Create(_document,choice.Values,choice.Start);}
+                try{
+                    state.Session=PreviewFactories.First(p=>p.Supports(choice.Values)).Create(_document,choice.Values,choice.Start);
+                    if (state.Session is IGameplaySkillPreviewSource source)
+                    {
+                        int index = _document.AuthoringGraph.LocalDefinitions.FindIndex(d => d.Id == choice.Owner);
+                        source.BindSource(choice.Shared ? GameplaySourceHandle.Capture(choice.Shared) :
+                            index >= 0 ? GameplaySourceHandle.Capture(_document, $"authoringGraph.LocalDefinitions.Array.data[{index}].Payload") : null, choice.Shared);
+                    }
+                }
                 catch(Exception error){_feedback=error.Message;RecordPreviewError(choice.Node.Id,error.Message);}
                 state.HasClock=true;
             }
@@ -74155,7 +74290,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if(EditorApplication.isPlayingOrWillChangePlaymode){EditorGUILayout.HelpBox("编辑模式预览已暂停；请在真实 Scene / Runtime 调试中观察施放。",MessageType.Info);return;}
             var graph=_document.AuthoringGraph;if(graph==null)return;root=root??_selected;
-            if(!inline&&_inlinePreviewNode!=null){
+            if (!inline && _detailsPreviewRoot != root) { DisposeDetailsPreview(); _detailsPreviewRoot = root; }
+            if(!inline&&root==_inlinePreviewNode&&root!=null){
                 GUILayout.Label("编排卡使用同一时间光标；此处调整预览专用输入。",EditorStyles.wordWrappedMiniLabel);
                 State(_inlinePreviewNode).Session?.DrawControls();return;
             }
@@ -78314,7 +78450,7 @@ namespace FRFrame.Gameplay.Spine
             if(string.IsNullOrWhiteSpace(name))validation.Error(path,"Animation name is required.");
             else if(Skeleton!=null&&Skeleton.GetSkeletonData(false)?.FindAnimation(name)==null)validation.Error(path,"Spine animation was not found: "+name);
         }
-        private sealed class Player:IGameplayAnimationPlayer
+        private sealed class Player:IGameplayAnimationPlayer, IGameplayAnimationPlaybackSource
         {
             private readonly SkeletonAnimation _component;
             private readonly global::Spine.Animation _animation;
@@ -78337,6 +78473,7 @@ namespace FRFrame.Gameplay.Spine
             public float Duration=>_animation.Duration;
             public bool Loop { get; }
             public bool IsInterrupted=>_component==null||_interrupted||(_started&&!ReferenceEquals(_component.AnimationState.GetCurrent(_track),_entry));
+            public string PlaybackSource => "Spine · " + _component.SkeletonDataAsset.name + " / " + _animation.Name + " / Track " + _track;
             public event Action<string> AnimationEvent;
             internal Player(SkeletonAnimation component,global::Spine.Animation animation,int track,bool loop,bool restore,global::Spine.Skin skin,Material material,float blend)
             {_component=component;_animation=animation;_track=track;Loop=loop;_restore=restore;_skin=skin;_material=material;_blend=blend;}
@@ -78479,6 +78616,7 @@ namespace FRFrame.Gameplay.Spine
 <file path="Gameplay/Integrations/UnityCommon/Editor/GameplayAnimationPreviewProvider.cs">
 using System;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
@@ -78505,12 +78643,21 @@ namespace FRFrame.Gameplay.Unity.Editor
         public bool CanPreview(GameplaySkillDefinitionAsset skill)=>!EditorApplication.isPlayingOrWillChangePlaymode;
         public IGameplaySkillPreviewSession CreateSession(GameplaySkillDefinitionAsset skill)=>new GameplayAnimationPreviewSession();
     }
-    public sealed partial class GameplayAnimationPreviewSession:IGameplaySkillPreviewSession,IGameplaySkillPreviewDiagnostics
+    public sealed partial class GameplayAnimationPreviewSession:IGameplaySkillPreviewSession,IGameplaySkillPreviewDiagnostics,IGameplaySkillPreviewSource
     {
         private GameplayAnimationAsset _source;
         private GameplayPresentationCueAsset _cueSource;
         private GameplayFloatingTextAsset _textSource;
         private GameplayUnityCuePreview _cuePreview;
+        private GameplaySourceHandle _previewSource;
+        private bool _sharedPreviewSource;
+        public void BindSource(GameplaySourceHandle source, bool shared)
+        {
+            _previewSource = source;
+            _sharedPreviewSource = shared;
+            _cuePreview?.BindSource(source, shared);
+        }
+        public void CancelInteraction() => _cuePreview?.CancelInteraction();
         private float _presentationStart;
         private GameObject _subject;
         private IGameplayAnimationPlayer _player;
@@ -78584,7 +78731,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             _error=null;
             try
             {
-                if(_source==null&&_values==null){_speed=1;if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());return;}
+                if(_source==null&&_values==null){_speed=1;if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());_cuePreview?.BindSource(_previewSource,_sharedPreviewSource);return;}
                 _subject=(_values??_source.CaptureGraphValues() as GameplayAnimationData).CreatePreviewSubject();_subject.hideFlags=HideFlags.HideAndDontSave;
                 _preview=new PreviewRenderUtility();_preview.AddSingleGO(_subject);
                 (_values??_source.CaptureGraphValues() as GameplayAnimationData).ConfigurePreviewCamera(_preview.camera);
@@ -79001,8 +79148,11 @@ using System;
 using System.Linq;
 using System.Reflection;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor;
+using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
+using PositionSource = FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.PositionSource;
 
 namespace FRFrame.Gameplay.Unity.Editor
 {
@@ -79016,6 +79166,24 @@ namespace FRFrame.Gameplay.Unity.Editor
         private ParticleSystem[] _particles=Array.Empty<ParticleSystem>();
         private GameplayFloatingTextWidget _widget;
         private Vector3 _start;
+        private GameplayPresentationCueData _values;
+        private GameplaySourceHandle _source;
+        private bool _shared, _auditioning;
+        private bool _facingLeft = SessionState.GetBool("FRFrame.CuePreview.FacingLeft", false);
+        private bool _spatial = SessionState.GetBool("FRFrame.CuePreview.Spatial", false);
+        private Vector3 _owner = SessionState.GetVector3("FRFrame.CuePreview.Owner", Vector3.zero);
+        private Vector3 _target = SessionState.GetVector3("FRFrame.CuePreview.Target", new Vector3(3, 0, 0));
+        private Vector3 _point = SessionState.GetVector3("FRFrame.CuePreview.Point", new Vector3(3, 0, 0));
+        private Vector3 _binding = SessionState.GetVector3("FRFrame.CuePreview.Binding", Vector3.up);
+        private float _actorHeight = SessionState.GetFloat("FRFrame.CuePreview.ActorHeight", 1.65f);
+        private float _intensity = 1;
+        private string _valueNote;
+        private Vector3 _materialCameraPosition;
+        private float _materialCameraSize;
+        private int _hotControl, _dragAxis;
+        private Vector2 _dragMouse, _dragBasis;
+        private Vector3 _draft, _dragStart;
+        private Renderer[] _renderers;
         internal GameObject Subject {get;private set;}
         internal Camera Camera=>_preview?.camera;
         internal float Duration {get;private set;}
@@ -79026,8 +79194,12 @@ namespace FRFrame.Gameplay.Unity.Editor
             try{
                 var build=new GameplayAuthoringBuildContext();
                 if(cue!=null){
+                    _values = cue;
                     _cue=cue.Build(build);
-                    if(!_cue.RecycleWhenParticlesFinish)Duration=GameplayValueEvaluator.Evaluate(_cue.Duration,application);
+                    if (!_cue.RecycleWhenParticlesFinish)
+                        Duration = Sample(_cue.Duration, cue.Duration, _cue.Clip ? _cue.Clip.length : 1, "时限", positive: true);
+                    if (_cue.Intensity != null)
+                        _intensity = Mathf.Max(0, Sample(_cue.Intensity, cue.Intensity, 1, "强度"));
                 }
                 else{_text=text.Build(build);Duration=_text.Duration;}
                 if(_cue?.RecycleWhenParticlesFinish!=true&&(!float.IsFinite(Duration)||Duration<=0))
@@ -79043,6 +79215,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 _preview.camera.nearClipPlane=.01f;_preview.camera.farClipPlane=100;
                 _preview.lights[0].intensity=1;_preview.lights[0].transform.rotation=Quaternion.Euler(40,40,0);
                 _particles=Subject.GetComponentsInChildren<ParticleSystem>(true);
+                _renderers = Subject.GetComponentsInChildren<Renderer>(true);
                 if(_cue?.RecycleWhenParticlesFinish==true)Duration=EstimateParticlePreviewDuration();
                 foreach(var particles in _particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);}
                 if(_text!=null){
@@ -79050,18 +79223,59 @@ namespace FRFrame.Gameplay.Unity.Editor
                     _widget.OpenStandalone(new GameplayFloatingTextContent("PREVIEW",text.DamageColor));
                     var canvas=Subject.GetComponent<Canvas>();if(canvas!=null)canvas.worldCamera=_preview.camera;
                 }
+                _spatial = false;
                 Seek(0,true);
                 var bounds=new Bounds(_start,Vector3.one);
-                foreach(var renderer in Subject.GetComponentsInChildren<Renderer>(true))bounds.Encapsulate(renderer.bounds);
-                _preview.camera.transform.position=bounds.center+new Vector3(0,0,-10);
-                _preview.camera.orthographicSize=Mathf.Max(.7f,bounds.extents.y*1.3f,bounds.extents.x);
+                foreach(var renderer in _renderers)bounds.Encapsulate(renderer.bounds);
+                _materialCameraPosition = bounds.center + new Vector3(0,0,-10);
+                _materialCameraSize = Mathf.Max(.7f,bounds.extents.y*1.3f,bounds.extents.x);
+                _spatial = SessionState.GetBool("FRFrame.CuePreview.Spatial", false);
             }catch{Dispose();throw;}
+
+            float Sample(IGameplayFloatValue value, GameplayFloatValueAuthoring source, float fallback, string label, bool positive = false)
+            {
+                try
+                {
+                    float result = GameplayValueEvaluator.Evaluate(value, application);
+                    if (!positive || result > 0 || source is GameplayConstantFloatValueAuthoring) return result;
+                    _valueNote += label + "在当前预览输入下不为正，示意使用 " + fallback + "。\n";
+                }
+                catch (Exception error) when (!(source is GameplayConstantFloatValueAuthoring) &&
+                    (error is InvalidOperationException || error is ArithmeticException || error is System.Collections.Generic.KeyNotFoundException))
+                {
+                    _valueNote += label + "缺少有效预览输入，示意使用 " + fallback + "。\n";
+                }
+                return fallback;
+            }
         }
+        internal void BindSource(GameplaySourceHandle source, bool shared) { _source = source; _shared = shared; }
+
+        private GameplaySkillDocumentAsset WritableDocument =>
+            !_shared && !EditorApplication.isPlayingOrWillChangePlaymode &&
+            _source?.Owner is GameplaySkillDocumentAsset document && !GameplaySkillAuthoringCommands.IsReadOnly(document)
+                ? document : null;
+
         internal void Seek(float seconds,bool started)
         {
             if(Subject==null)return;
-            bool visible=started&&(_cue?.RecycleWhenParticlesFinish==true||seconds<Duration);
+            var end = End;
+            bool visible=started&&(_cue?.RecycleWhenParticlesFinish==true||seconds<Duration) &&
+                (!_spatial || _cue == null || !end.HasValue || (end.Value - Origin).sqrMagnitude > .000001f);
             Subject.SetActive(visible);if(!visible)return;
+            if (_cue != null)
+            {
+                if (_spatial)
+                {
+                    var pose = Pose;
+                    Subject.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
+                    Subject.transform.localScale = pose.Scale;
+                }
+                else
+                {
+                    Subject.transform.SetPositionAndRotation(_start, Quaternion.identity);
+                    Subject.transform.localScale = _cue.Prefab.transform.localScale;
+                }
+            }
             foreach(var particles in _particles){particles.Simulate(seconds,false,true,true);particles.Pause(false);}
             if(_widget!=null){Subject.transform.position=_start+Vector3.up*(seconds*_text.RiseSpeed);_widget.SetOpacity(1-seconds/Duration);}
         }
@@ -79093,29 +79307,295 @@ namespace FRFrame.Gameplay.Unity.Editor
         {
             if(_cue?.RecycleWhenParticlesFinish==true)
                 EditorGUILayout.LabelField("播完回收 · 预览范围估算",Duration.ToString("0.###")+" 秒");
-            else EditorGUILayout.LabelField("正式表现素材 / 持续秒",Duration.ToString("0.###"));
+            else EditorGUILayout.LabelField("素材预览时长",Duration.ToString("0.###")+" 秒");
+            if (_cue == null)
+            {
+                EditorGUILayout.LabelField("飘字为样式预览；实际数字来自已提交的战斗结果。",EditorStyles.wordWrappedMiniLabel);
+                return;
+            }
+            if (!string.IsNullOrEmpty(_valueNote)) EditorGUILayout.HelpBox(_valueNote.TrimEnd(), MessageType.Info);
             if(_cue?.Kind==GameplayPresentationCueAsset.CueKind.Audio){
-                EditorGUILayout.ObjectField("音频素材",_cue.Clip,typeof(AudioClip),false);
-                EditorGUILayout.LabelField("运行音量 / 音高",_cue.Volume+" / "+_cue.Pitch);
-                EditorGUILayout.LabelField("试听原Clip为标准音高；Play安装使用配置音量、音高和Loop。",EditorStyles.wordWrappedMiniLabel);
+                using (new EditorGUI.DisabledScope(true)) EditorGUILayout.ObjectField("音频素材",_cue.Clip,typeof(AudioClip),false);
+                EditorGUILayout.LabelField("试听原 Clip 一次。实际播放使用配置音量、音高、循环及宿主音频混音。",EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField(_cue.OwnedByAbility ? "施放结束会停止本音频，包括仍在播放的尾音。" : "一次性尾音按 Cue 自己的回收时限播放。", EditorStyles.wordWrappedMiniLabel);
                 if(GUILayout.Button("试听现有音频（一次）")){
-                    var utility=AppDomain.CurrentDomain.GetAssemblies().Select(a=>a.GetType("UnityEditor.AudioUtil")).FirstOrDefault(t=>t!=null);
-                    var play=utility?.GetMethod("PlayPreviewClip",BindingFlags.Static|BindingFlags.Public|BindingFlags.NonPublic);
+                    var play=AudioMethod("PlayPreviewClip");
                     if(play==null)throw new InvalidOperationException("Installed Editor audio audition is unavailable.");
                     play.Invoke(null,new object[]{_cue.Clip,0,false});
+                    _auditioning = true;
                 }
             }
-            else EditorGUILayout.LabelField(_text!=null?"飘字为样式预览；实际数字只来自已提交的战斗结果。":"独立素材预览；Origin / Follow 由实际 Runtime Host 绑定。",EditorStyles.wordWrappedMiniLabel);
+            else
+            {
+                bool spatial = GUILayout.Toolbar(_spatial ? 1 : 0, new[] { "素材预览", "场景相对预览" }) == 1;
+                if (spatial != _spatial) { CancelInteraction(); _spatial = spatial; SessionState.SetBool("FRFrame.CuePreview.Spatial", spatial); }
+                if (_spatial)
+                {
+                    EditorGUILayout.HelpBox("Editor 示意。修改正式参数后请保存，进入 Scene / 调试重新试装。", MessageType.Info);
+                    _owner = AnchorField("模拟 Owner", _owner, "Owner");
+                    _target = AnchorField("模拟 Target", _target, "Target");
+                    if (_cue.Origin == PositionSource.ContextPoint) _point = AnchorField("模拟 Point", _point, "Point");
+                    bool facingLeft = EditorGUILayout.Toggle("施法者朝左", _facingLeft);
+                    if (facingLeft != _facingLeft) SessionState.SetBool("FRFrame.CuePreview.FacingLeft", _facingLeft = facingLeft);
+                    float height = EditorGUILayout.Slider("角色参考高度", _actorHeight, .2f, 4);
+                    if (height != _actorHeight) SessionState.SetFloat("FRFrame.CuePreview.ActorHeight", _actorHeight = height);
+                    if (UsesBinding) _binding = AnchorField("模拟挂点偏移", _binding, "Binding");
+                    if (End.HasValue)
+                        EditorGUILayout.LabelField($"两点距离 {Vector3.Distance(Origin, End.Value):0.##}。Scale X 乘距离，Y 调宽度。\nCallbackSegment 的实机起点与命中点由回调提供。", EditorStyles.wordWrappedMiniLabel);
+                    else if (_cue.Follow)
+                        EditorGUILayout.LabelField(_cue.Origin == PositionSource.ContextPoint
+                            ? "ContextPoint 是固定世界地点，没有跟随对象。"
+                            : "跟随所选 Actor 或挂点。绿色虚线标出跟随锚点。", EditorStyles.wordWrappedMiniLabel);
+                    if (WritableDocument) EditorGUILayout.LabelField("拖动中心十字调偏移，拖动 X / Y 方块调缩放。Esc 取消。", EditorStyles.wordWrappedMiniLabel);
+                }
+            }
+            DrawSourceFields();
         }
+
+        private static MethodInfo AudioMethod(string name) => typeof(AudioImporter).Assembly
+            .GetType("UnityEditor.AudioUtil")?.GetMethod(name, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+
+        private static Vector3 AnchorField(string title, Vector3 current, string key)
+        {
+            var value = EditorGUILayout.Vector3Field(title, current);
+            if (value != current) SessionState.SetVector3("FRFrame.CuePreview." + key, value);
+            return value;
+        }
+
+        private void DrawSourceFields()
+        {
+            if (!WritableDocument)
+            {
+                EditorGUILayout.LabelField(_shared ? "共享 Cue · 当前技能只读" : "当前来源只读", EditorStyles.wordWrappedMiniLabel);
+                if (_shared && _source?.Owner is UnityEngine.Object asset && GUILayout.Button("定位共享 Cue 来源"))
+                { Selection.activeObject = asset; EditorGUIUtility.PingObject(asset); }
+                using (new EditorGUI.DisabledScope(true))
+                {
+                    if (_cue.Kind == GameplayPresentationCueAsset.CueKind.Vfx)
+                    {
+                        EditorGUILayout.Vector3Field("偏移", _cue.Offset);
+                        EditorGUILayout.Vector3Field("缩放", _cue.Scale);
+                        EditorGUILayout.Toggle("跟随", _cue.Follow);
+                        EditorGUILayout.Toggle("朝向镜像", _cue.MirrorFacing);
+                        EditorGUILayout.TextField("挂点", _cue.Binding ?? "");
+                    }
+                    else EditorGUILayout.LabelField($"音量 {_cue.Volume:0.##} / 音高 {_cue.Pitch:0.##} / 循环 {(_cue.AudioLoop ? "开" : "关")}");
+                }
+                return;
+            }
+            if (!_source.TryResolve(out string path)) return;
+            var document = WritableDocument;
+            using var serialized = new SerializedObject(document);
+            var cue = serialized.FindProperty(path);
+            var paths = new System.Collections.Generic.List<string>();
+            Draw("Origin", "位置来源");
+            if (_cue.Kind == GameplayPresentationCueAsset.CueKind.Vfx)
+            {
+                Draw("Offset", "偏移");
+                Draw("Scale", "缩放");
+                Draw("Binding", "挂点");
+                using (new EditorGUI.DisabledScope(End.HasValue)) { Draw("Follow", "跟随"); Draw("MirrorFacing", "朝向镜像"); }
+                Draw("RecycleWhenParticlesFinish", "粒子播完回收");
+            }
+            else
+            {
+                Draw("Volume", "音量"); Draw("Pitch", "音高"); Draw("AudioLoop", "循环");
+            }
+            Draw("OwnedByAbility", "随技能结束清理");
+            if (!_cue.RecycleWhenParticlesFinish)
+            {
+                if (_values.Duration is GameplayConstantFloatValueAuthoring) Draw("Duration.Value", "回收时限（秒）");
+                else EditorGUILayout.LabelField("回收时限来自数值表达式，请在业务参数中编辑其来源。", EditorStyles.wordWrappedMiniLabel);
+            }
+            if (paths.Count > 0) GameplaySkillFieldSchema.ApplyFields(serialized, document, false, paths);
+
+            void Draw(string name, string label)
+            {
+                var property = cue.FindPropertyRelative(name);
+                EditorGUI.BeginChangeCheck();
+                EditorGUILayout.PropertyField(property, new GUIContent(label));
+                if (EditorGUI.EndChangeCheck()) paths.Add(property.propertyPath);
+            }
+        }
+
+        private bool UsesBinding => !string.IsNullOrEmpty(_cue.Binding) &&
+            (_cue.Origin == PositionSource.Owner || _cue.Origin == PositionSource.PrimaryTarget);
+        private Vector3 Origin => _cue.Origin switch
+        {
+            PositionSource.ContextPoint => _point,
+            PositionSource.TargetToOwner => _target,
+            PositionSource.PrimaryTarget => _target + (UsesBinding ? _binding : Vector3.zero),
+            _ => _owner + (UsesBinding ? _binding : Vector3.zero)
+        };
+        private Vector3? End => _cue?.Origin switch
+        {
+            PositionSource.CallbackSegment => _target,
+            PositionSource.TargetToOwner => _owner,
+            _ => null
+        };
+        private (Vector3 Position, Quaternion Rotation, Vector3 Scale) Pose => GameplayUnityAnimationController.ResolveCueGeometry(
+            Origin, End, _hotControl != 0 && _dragAxis == 0 ? _draft : _cue.Offset,
+            _hotControl != 0 && _dragAxis != 0 ? _draft : _cue.Scale, _cue.MirrorFacing && _facingLeft, _intensity);
         internal void Render(Rect viewport)
         {
             if(_preview==null){EditorGUI.HelpBox(viewport,"选择实际音频素材；可试听或在真实Scene安装运行。",MessageType.Info);return;}
-            if(Event.current.type!=EventType.Repaint)return;
+            if (_spatial && _cue != null) DrawSpatial(viewport);
+            else
+            {
+                _preview.camera.transform.position = _materialCameraPosition;
+                _preview.camera.orthographicSize = _materialCameraSize;
+                _preview.camera.ResetAspect();
+            }
+            if(Event.current.type!=EventType.Repaint || _preview == null)return;
             _preview.BeginPreview(viewport,GUIStyle.none);_preview.camera.Render();
-            GUI.DrawTexture(viewport,_preview.EndPreview(),ScaleMode.ScaleToFit,false);
+            GUI.DrawTexture(viewport,_preview.EndPreview(),ScaleMode.StretchToFill,false);
+            if (_spatial && _cue != null) DrawSpatialOverlay(viewport);
+        }
+        private void DrawSpatial(Rect viewport)
+        {
+            if (viewport.width <= 1 || viewport.height <= 1) return;
+            var camera = _preview.camera;
+            var pose = Pose;
+            if (_hotControl == 0)
+            {
+                var frame = new Bounds(_owner, Vector3.one);
+                frame.Encapsulate(_target); frame.Encapsulate(_owner + Vector3.up * _actorHeight);
+                frame.Encapsulate(_target + Vector3.up * _actorHeight);
+                frame.Encapsulate(Origin); frame.Encapsulate(pose.Position);
+                camera.aspect = viewport.width / viewport.height;
+                camera.transform.position = frame.center + Vector3.back * 10;
+                camera.orthographicSize = Mathf.Max(1, frame.extents.y, frame.extents.x / camera.aspect) * 1.45f;
+            }
+            int control = GUIUtility.GetControlID(FocusType.Passive, viewport);
+            var evt = Event.current;
+            if (_hotControl != 0 && (GUIUtility.hotControl != _hotControl || evt.type == EventType.Ignore ||
+                (evt.type == EventType.KeyDown && evt.keyCode == KeyCode.Escape)))
+            { CancelInteraction(); if (evt.type == EventType.KeyDown) evt.Use(); GUI.changed = true; return; }
+            Vector2 center = Project(viewport, pose.Position);
+            var xAxis = HandleAxis(viewport, pose.Rotation * Vector3.right);
+            var yAxis = HandleAxis(viewport, pose.Rotation * Vector3.up);
+            if (evt.type == EventType.MouseDown && evt.button == 0 && viewport.Contains(evt.mousePosition) && WritableDocument)
+            {
+                int axis = Vector2.Distance(evt.mousePosition, center) < 10 ? 0 :
+                    Vector2.Distance(evt.mousePosition, center + xAxis * 34) < 9 ? 1 :
+                    Vector2.Distance(evt.mousePosition, center + yAxis * 34) < 9 ? 2 : -1;
+                if (axis < 0) return;
+                _dragAxis = axis;
+                _dragBasis = axis == 1 ? xAxis : yAxis;
+                _dragStart = _draft = axis == 0 ? _cue.Offset : _cue.Scale;
+                _dragMouse = evt.mousePosition;
+                _hotControl = GUIUtility.hotControl = control;
+                evt.Use();
+            }
+            else if (_hotControl == control && evt.type == EventType.MouseDrag)
+            {
+                float unitsPerPixel = 2 * camera.orthographicSize / viewport.height;
+                var delta = evt.mousePosition - _dragMouse;
+                _draft = _dragStart;
+                if (_dragAxis == 0)
+                    _draft += new Vector3(!End.HasValue && _cue.MirrorFacing && _facingLeft ? -delta.x : delta.x, -delta.y, 0) * unitsPerPixel;
+                else
+                {
+                    float divisor = _dragAxis == 1 && End.HasValue ? Vector3.Distance(Origin, End.Value) : 1;
+                    _draft[_dragAxis - 1] += Vector2.Dot(delta, _dragBasis) * unitsPerPixel / Mathf.Max(.001f, divisor);
+                }
+                evt.Use(); GUI.changed = true;
+            }
+            else if (_hotControl == control && evt.rawType == EventType.MouseUp && evt.button == 0)
+            {
+                var document = WritableDocument;
+                string field = _dragAxis == 0 ? "Offset" : "Scale";
+                var value = _draft;
+                CancelInteraction(); evt.Use(); GUI.changed = true;
+                if (document && value != _dragStart && _source.TryResolve(out string path))
+                {
+                    using var serialized = new SerializedObject(document);
+                    var property = serialized.FindProperty(path).FindPropertyRelative(field);
+                    property.vector3Value = value;
+                    Undo.IncrementCurrentGroup();
+                    Undo.SetCurrentGroupName("调整 Cue " + (field == "Offset" ? "偏移" : "缩放"));
+                    GameplaySkillFieldSchema.ApplyFields(serialized, document, false, new[] { property.propertyPath });
+                }
+            }
+        }
+
+        private Vector2 Project(Rect viewport, Vector3 point)
+        {
+            var uv = _preview.camera.WorldToViewportPoint(point);
+            return new Vector2(viewport.x + uv.x * viewport.width, viewport.y + (1 - uv.y) * viewport.height);
+        }
+        private Vector2 HandleAxis(Rect viewport, Vector3 axis) => (Project(viewport, axis) - Project(viewport, Vector3.zero)).normalized;
+
+        private void DrawSpatialOverlay(Rect viewport)
+        {
+            if (viewport.width <= 1 || viewport.height <= 1) return;
+            GUI.BeginGroup(viewport);
+            viewport.position = Vector2.zero;
+            Handles.BeginGUI();
+            Color previous = Handles.color;
+            var pose = Pose;
+            var owner = Project(viewport, _owner);
+            Mark(_owner, "Owner", new Color(.35f,.85f,1), _actorHeight);
+            Mark(_target, "Target", new Color(1,.6f,.35f), _actorHeight);
+            Mark(Origin, UsesBinding ? "模拟挂点" : "原点", Color.white);
+            if (End.HasValue) { Handles.color = Color.yellow; Handles.DrawAAPolyLine(2, Project(viewport, Origin), Project(viewport, End.Value)); }
+            Handles.color = Color.gray;
+            Handles.DrawAAPolyLine(2, owner, Project(viewport, _owner + Vector3.right));
+            Handles.DrawAAPolyLine(2, owner, Project(viewport, _owner + Vector3.up));
+            GUI.Label(new Rect(owner.x + 6, owner.y + 3, 105, 18), "世界轴 · 1 单位", EditorStyles.miniLabel);
+            var center = Project(viewport, pose.Position);
+            Handles.color = Color.green;
+            if (_cue.Follow && (_cue.Origin == PositionSource.Owner || _cue.Origin == PositionSource.PrimaryTarget))
+                Handles.DrawDottedLine(Project(viewport, Origin), center, 4);
+            Handles.DrawAAPolyLine(2, center - Vector2.right * 6, center + Vector2.right * 6);
+            Handles.DrawAAPolyLine(2, center - Vector2.up * 6, center + Vector2.up * 6);
+            if (Subject.activeSelf && _renderers.Length > 0)
+            {
+                var bounds = _renderers[0].bounds;
+                foreach (var renderer in _renderers) bounds.Encapsulate(renderer.bounds);
+                var min = Project(viewport, bounds.min);
+                var max = Project(viewport, bounds.max);
+                Handles.color = new Color(.7f, 1, .8f, .7f);
+                Handles.DrawAAPolyLine(1, min, new Vector2(max.x,min.y), max, new Vector2(min.x,max.y), min);
+            }
+            if (WritableDocument)
+            {
+                DrawScaleHandle(pose.Rotation * Vector3.right, "X", new Color(1,.55f,.42f));
+                DrawScaleHandle(pose.Rotation * Vector3.up, "Y", new Color(.6f,1,.55f));
+            }
+            GUI.Label(new Rect(5, 3, viewport.width - 10, 18), $"生成位置 {pose.Position.ToString("F2")}", EditorStyles.miniLabel);
+            Handles.color = previous;
+            Handles.EndGUI();
+            GUI.EndGroup();
+
+            void Mark(Vector3 point, string label, Color color, float height = 0)
+            {
+                var bottom = Project(viewport, point);
+                var top = Project(viewport, point + Vector3.up * height);
+                Handles.color = color;
+                if (height > 0) Handles.DrawAAPolyLine(2, bottom, top);
+                EditorGUI.DrawRect(new Rect(bottom.x - 3, bottom.y - 3, 6, 6), color);
+                GUI.Label(new Rect(top.x + 5, top.y - 16, 80, 18), label, EditorStyles.miniLabel);
+            }
+            void DrawScaleHandle(Vector3 direction, string label, Color color)
+            {
+                var end = center + HandleAxis(viewport, direction) * 34;
+                Handles.color = color;
+                Handles.DrawAAPolyLine(1, center, end);
+                EditorGUI.DrawRect(new Rect(end.x - 4,end.y - 4,8,8), color);
+                GUI.Label(new Rect(end.x + 5,end.y - 8,18,18), label, EditorStyles.miniLabel);
+            }
+        }
+        internal void CancelInteraction()
+        {
+            if (_hotControl == 0) return;
+            if (GUIUtility.hotControl == _hotControl) GUIUtility.hotControl = 0;
+            _hotControl = 0;
         }
         public void Dispose()
         {
+            CancelInteraction();
+            if (_auditioning) { AudioMethod("StopAllPreviewClips")?.Invoke(null, null); _auditioning = false; }
             _preview?.Cleanup();_preview=null;
             if(Subject!=null)UnityEngine.Object.DestroyImmediate(Subject);Subject=null;
         }
@@ -79412,6 +79892,7 @@ namespace FRFrame.Gameplay.Unity
             {
                 var animator=subject.GetComponentInChildren<Animator>(true);
                 var selectedClip=clip;var selectedState=state;
+                string controllerName = null;
                 int selected=GameplayAnimationVariantSelector.Select(variants,cast,v=>v.MinimumLevel,v=>v.Weight,weighted);
                 if(selected>=0){selectedClip=variants[selected].Clip;selectedState=variants[selected].StateName;}
                 if(animator==null)throw new InvalidOperationException("Animation subject has no Animator.");
@@ -79429,9 +79910,10 @@ namespace FRFrame.Gameplay.Unity
                         throw new InvalidOperationException("Animator state was not found: "+selectedState);
                     if(Array.IndexOf(controller.animationClips,selectedClip)<0)
                         throw new InvalidOperationException("Authored clip is not part of the subject controller.");
+                    controllerName = controller.name;
                 }
                 else if(HasCustomGraph(animator)&&!OwnedGraphs.Contains(animator))throw new InvalidOperationException("Subject already has an external Playables graph.");
-                return new Player(animator,selectedClip,selectedState,layer,backend,loop,restore,blend);
+                return new Player(animator,selectedClip,selectedState,layer,backend,loop,restore,blend,controllerName);
             },weighted&&variants.Length>0,writes:subject=>new[]{new GameplayAnimationWriteTarget(subject.GetComponentInChildren<Animator>(true),"Animator",backend==global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend.PlayablesClip?-1:layer)});
         }
         protected override void ValidateAnimation(GameplayAuthoringValidationContext validation,string path)
@@ -79444,10 +79926,11 @@ namespace FRFrame.Gameplay.Unity
                 if(variant==null||variant.MinimumLevel<1||variant.Clip==null||variant.Clip.length<=0||WeightedVariants&&(!float.IsFinite(variant.Weight)||variant.Weight<=0)||Backend==global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend.AnimatorState&&string.IsNullOrWhiteSpace(variant.StateName))
                     validation.Error(path+".Variants","A level variant requires a positive level and a nonempty clip/state.");
         }
-        private sealed class Player:IGameplayAnimationPlayer
+        private sealed class Player:IGameplayAnimationPlayer, IGameplayAnimationPlaybackSource
         {
             private readonly Animator _animator;
             private readonly AnimationClip _clip;
+            public string PlaybackSource { get; }
             private readonly int _hash,_layer;
             private readonly global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend _backend;
             private readonly bool _restore;
@@ -79470,8 +79953,10 @@ namespace FRFrame.Gameplay.Unity
                     &&_animator.GetCurrentAnimatorStateInfo(_layer).shortNameHash!=_hash
                 :!_graph.IsValid()||_animator.runtimeAnimatorController!=null));
             public event Action<string> AnimationEvent;
-            internal Player(Animator animator,AnimationClip clip,string state,int layer,global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend backend,bool loop,bool restore,float blend)
-            {_animator=animator;_clip=clip;_hash=Animator.StringToHash(state??"");_layer=layer;_backend=backend;Loop=loop;_restore=restore;_events=clip.events;_blend=blend;}
+            internal Player(Animator animator,AnimationClip clip,string state,int layer,global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend backend,bool loop,bool restore,float blend,string controllerName)
+            {_animator=animator;_clip=clip;_hash=Animator.StringToHash(state??"");_layer=layer;_backend=backend;Loop=loop;_restore=restore;_events=clip.events;_blend=blend;
+             PlaybackSource=backend==global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend.AnimatorState
+                ? $"Animator · {controllerName} / {state} / {clip.name}" : "Playables · "+clip.name;}
             public void Seek(float seconds)
             {
                 if(_disposed)return;
@@ -79771,6 +80256,12 @@ namespace FRFrame.Gameplay.Unity
         bool IsInterrupted { get; }
         void Seek(float seconds);
         event Action<string> AnimationEvent;
+    }
+
+    /// <summary>Optional diagnostic label for the actual backend resource selected by a player.</summary>
+    public interface IGameplayAnimationPlaybackSource
+    {
+        string PlaybackSource { get; }
     }
 }
 </file>
@@ -80638,6 +81129,13 @@ namespace FRFrame.Gameplay.Unity
         /// <summary>Observable presentation refusal; does not change combat eligibility or cost.</summary>
         public string LastAnimationRejection {get;private set;}
         public event Action<GameplayContext,string> AnimationRejected;
+        /// <summary>Currently sampled cast-owned player resources. Unreported backends still expose their actual write target.</summary>
+        public IEnumerable<(string Channel, string Source, GameplaySourceId Activation)> ActiveAnimationSources()
+        {
+            foreach (var playback in _channels.Values)
+                if (playback.IsPlaying)
+                    yield return (playback.Channel, playback.Source, playback.Activation);
+        }
         private bool RejectAnimation(GameplayAnimationDefinition definition,GameplayContext context,string reason)
         {
             LastAnimationRejection=$"{reason}; source={context?.EffectiveSourceId}; channel={definition.Channel}; priority={definition.Priority}";
@@ -80689,7 +81187,7 @@ namespace FRFrame.Gameplay.Unity
             _channels[definition.Channel]=playback;
             PhysicalPlayers.Add(playback);
             if(!Actor.Abilities.TryOwnLifetime(grant,playback)){playback.Dispose();return RejectAnimation(definition,context,"GrantLifetimeEnded");}
-            try {player.Seek(0);PromoteQueue(definition.Channel);return true;}catch{playback.Dispose();throw;}
+            try {player.Seek(0);playback.Sampled=true;PromoteQueue(definition.Channel);return true;}catch{playback.Dispose();throw;}
         }
         public void Advance(float amount)
         {
@@ -80731,6 +81229,11 @@ namespace FRFrame.Gameplay.Unity
             internal string Channel=>_channel;
             internal GameplayUnityAnimationController Owner=>_owner;
             internal GameplayAnimationWriteTarget[] Writes {get;}
+            internal bool Sampled { get; set; }
+            internal bool IsPlaying => Sampled && !_disposed && !_player.IsInterrupted;
+            internal string Source => (_player as IGameplayAnimationPlaybackSource)?.PlaybackSource ??
+                (Writes.Length > 0 ? Writes[0].Domain + " · " + Writes[0].Target.name : "后端未报告资源");
+            internal GameplaySourceId Activation => _context.ActivationSourceId;
             internal Playback(GameplayUnityAnimationController owner,string channel,int priority,GameplayContext context,GameplayAbilityHandle grant,IGameplayAnimationPlayer player,float speed,GameplayAnimationWriteTarget[] writes)
             {_owner=owner;_channel=channel;Priority=priority;_context=context;_grant=grant;_player=player;_speed=speed;Writes=writes;_player.AnimationEvent+=OnEvent;}
             private void OnEvent(string name)
@@ -80929,17 +81432,10 @@ namespace FRFrame.Gameplay.Unity
                     var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
-                    var offset=definition.Offset;var scale=definition.Scale*intensity;
-                    var rotation=Quaternion.identity;
-                    if (end.HasValue)
-                    {
-                        var direction=end.Value-point;
-                        point+=direction*.5f;
-                        scale.x=definition.Scale.x*direction.magnitude;
-                        rotation=Quaternion.FromToRotation(Vector3.right,direction);
-                    }
-                    else if(definition.MirrorFacing&&mirror){offset.x=-offset.x;scale.x=-scale.x;}
-                    view.transform.SetParent(definition.Follow?parent:null,false);view.transform.position=point+offset;view.transform.localScale=scale;view.transform.rotation=rotation;
+                    var pose = ResolveCueGeometry(point, end, definition.Offset, definition.Scale, definition.MirrorFacing && mirror, intensity);
+                    view.transform.SetParent(definition.Follow ? parent : null, false);
+                    view.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
+                    view.transform.localScale = pose.Scale;
                     cue.Particles=view.GetComponentsInChildren<ParticleSystem>();
                     foreach(var particles in cue.Particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);particles.Pause(false);}
                 }
@@ -80956,6 +81452,22 @@ namespace FRFrame.Gameplay.Unity
                 return true;
             }
             catch{cue.Dispose();throw;}
+        }
+
+        /// <summary>World placement shared by the runtime player and the editor's simulated anchors.
+        /// A segment uses distance for X; intensity affects its transverse scale only.</summary>
+        public static (Vector3 Position, Quaternion Rotation, Vector3 Scale) ResolveCueGeometry(
+            Vector3 origin, Vector3? end, Vector3 offset, Vector3 scale, bool mirror, float intensity)
+        {
+            var scaled = scale * intensity;
+            if (end.HasValue)
+            {
+                var direction = end.Value - origin;
+                scaled.x = scale.x * direction.magnitude;
+                return (origin + direction * .5f + offset, Quaternion.FromToRotation(Vector3.right, direction), scaled);
+            }
+            if (mirror) { offset.x = -offset.x; scaled.x = -scaled.x; }
+            return (origin + offset, Quaternion.identity, scaled);
         }
         private sealed class CueLease:IDisposable
         {
@@ -83972,6 +84484,7 @@ namespace FRFrame.Gameplay.Standard
         private readonly bool _includeSelf;
         private readonly bool _excludePrimaryTarget, _repeatFromResult;
         private readonly float _repeatMultiplier;
+        private readonly float _hopIntervalSeconds;
         /// <summary>Per-result multiplier in a repeated search. The first result receives 1.</summary>
         public static readonly GameplayTag SearchMultiplierKey = new GameplayTag("Data.Standard.Search.Multiplier");
         private readonly IReadOnlyList<GameplayPoint> _cells;
@@ -83985,7 +84498,7 @@ namespace FRFrame.Gameplay.Standard
             GameplaySearchDirection direction = GameplaySearchDirection.OwnerFacing,
             IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default,
             bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1,
-            IEnumerable<IGameplaySkillAction> onBegin = null)
+            IEnumerable<IGameplaySkillAction> onBegin = null, float hopIntervalSeconds = 0)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane) ||
                 !Enum.IsDefined(typeof(GameplaySearchOrigin), origin)) throw new ArgumentOutOfRangeException(nameof(shape));
@@ -84003,6 +84516,10 @@ namespace FRFrame.Gameplay.Standard
             _excludePrimaryTarget = excludePrimaryTarget;
             _repeatFromResult = repeatFromResult;
             _repeatMultiplier = repeatMultiplier;
+            if (!float.IsFinite(hopIntervalSeconds) || hopIntervalSeconds < 0 ||
+                (hopIntervalSeconds > 0 && (!repeatFromResult || shape != GameplaySearchShape.Circle)))
+                throw new ArgumentOutOfRangeException(nameof(hopIntervalSeconds), "A positive hop interval requires repeated circle search.");
+            _hopIntervalSeconds = hopIntervalSeconds;
             _each = Copy(each); _completed = Copy(completed); _empty = Copy(empty);
             _onBegin = Copy(onBegin);
             _cells = new List<GameplayPoint>(cells ?? Array.Empty<GameplayPoint>()).AsReadOnly(); _cellSize = cellSize;
@@ -84018,10 +84535,20 @@ namespace FRFrame.Gameplay.Standard
         {
             if (!(host is GameplayStandardActor actor) || actor.IsDisposed) throw new InvalidOperationException("Search requires the official standard actor/world host.");
             if (!TryCreateRequest(context, actor, out var request)) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+            GameplayAbilityHandle grant = default;
+            if (_hopIntervalSeconds > 0 && (!actor.IsTargetable || !GameplayStandardActivation.TryFindGrant(actor, context, out grant)))
+                return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
             if (_onBegin.Count > 0)
             {
                 var begin = actor.RunPresentationCallback(_onBegin, context, triggerEvent, canContinue);
                 if (begin.Result == GameplaySkillActionResult.Rejected) return begin;
+            }
+            if (_hopIntervalSeconds > 0)
+            {
+                if (canContinue?.Invoke() == false || !actor.IsTargetable || actor.World.IsDisposed)
+                    return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+                var search = actor.World.RegisterSpatial(new TimedSearch(this, actor, context, triggerEvent, grant, request, canContinue), grant);
+                return new GameplaySkillActionExecution(search?.InitialResult ?? GameplaySkillActionResult.Rejected, context);
             }
             GameplayTargetData targets;
             if (_repeatFromResult)
@@ -84038,9 +84565,7 @@ namespace FRFrame.Gameplay.Standard
                     var point = target.Position;
                     selected.Add(id);
                     visited.Add(id);
-                    var single = context.WithTarget(new GameplayTargetData(id, point, null, new[] { id }))
-                        .WithValues(context.Values.WithValue(SearchMultiplierKey, multiplier));
-                    var result = actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, request.Geometry.Origin);
+                    var result = RunHop(actor, context, triggerEvent, canContinue, request.Geometry.Origin, id, point, multiplier);
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                     multiplier *= _repeatMultiplier;
                     if (step + 1 < _maxTargets && !actor.IsDisposed)
@@ -84060,13 +84585,124 @@ namespace FRFrame.Gameplay.Standard
                     if (result.Result == GameplaySkillActionResult.Rejected) return result;
                 }
             }
+            return RunCompletion(actor, context, targets, triggerEvent, canContinue);
+        }
+        private GameplaySkillActionExecution RunHop(GameplayStandardActor actor, GameplayContext context,
+            GameplayEventData triggerEvent, Func<bool> canContinue, GameplayPoint origin, GameplaySourceId id,
+            GameplayPoint point, float multiplier)
+        {
+            var single = context.WithTarget(new GameplayTargetData(id, point, null, new[] { id }))
+                .WithValues(context.Values.WithValue(SearchMultiplierKey, multiplier));
+            return actor.RunPresentationCallback(_each, single, triggerEvent, canContinue, origin);
+        }
+        private GameplaySkillActionExecution RunCompletion(GameplayStandardActor actor, GameplayContext context,
+            GameplayTargetData targets, GameplayEventData triggerEvent, Func<bool> canContinue, Action beforeCompleted = null)
+        {
             var resultContext = context.WithTarget(targets);
             if (targets.Targets.Count == 0)
             {
-                var result = GameplaySkillActionRunner.Execute(_empty, resultContext, triggerEvent, host, canContinue);
+                var result = GameplaySkillActionRunner.Execute(_empty, resultContext, triggerEvent, actor, canContinue);
                 if (result.Result == GameplaySkillActionResult.Rejected) return result;
             }
+            beforeCompleted?.Invoke();
             return actor.RunPresentationCallback(_completed, resultContext, triggerEvent, canContinue);
+        }
+
+        private sealed class TimedSearch : GameplaySpatialOperation
+        {
+            private readonly GameplaySearchTargetAction _action;
+            private readonly GameplayContext _cast;
+            private readonly GameplayEventData _trigger;
+            private readonly GameplayAbilityHandle _grant;
+            private readonly GameplayPoint _origin;
+            private readonly List<GameplaySourceId> _selected = new List<GameplaySourceId>();
+            private readonly HashSet<GameplaySourceId> _visited = new HashSet<GameplaySourceId>();
+            private GameplaySpatialSearchRequest _initialRequest;
+            private Func<bool> _initialGuard;
+            private double _elapsed;
+            private float _multiplier = 1;
+            private bool _completing;
+            internal GameplaySkillActionResult InitialResult { get; private set; }
+
+            internal TimedSearch(GameplaySearchTargetAction action, GameplayStandardActor actor, GameplayContext cast,
+                GameplayEventData trigger, GameplayAbilityHandle grant, GameplaySpatialSearchRequest request, Func<bool> initialGuard)
+                : base(actor, cast, grant, null)
+            {
+                _action = action;
+                _cast = cast;
+                _trigger = trigger;
+                _grant = grant;
+                _initialRequest = request;
+                _initialGuard = initialGuard;
+                _origin = Position = request.Geometry.Origin;
+            }
+
+            // The Sequence guard applies during the marker. Later hops belong to the Ability,
+            // even when the launching Sequence has finished naturally.
+            private bool CanContinue() => Owner.IsTargetable && !Owner.World.IsDisposed &&
+                (_completing ? Owner.Abilities.IsActive(_grant) : !IsDisposed) && _initialGuard?.Invoke() != false;
+
+            protected override void OnStart()
+            {
+                Owner.CombatChanged += ObserveCombat;
+                InitialResult = Hop(_initialRequest);
+                _initialRequest = null;
+                _initialGuard = null;
+            }
+
+            private void ObserveCombat(GameplayCombatOutcome outcome)
+            {
+                if (!Owner.IsTargetable) StopForDeath();
+            }
+
+            private void StopForDeath()
+            {
+                Finish(GameplaySpatialEndReason.Died);
+                Owner.Abilities.Cancel(_grant);
+            }
+
+            protected override void OnFinished(GameplaySpatialEndReason reason) => Owner.CombatChanged -= ObserveCombat;
+
+            internal override void Advance(float delta)
+            {
+                if (!Owner.IsTargetable) { StopForDeath(); return; }
+                _elapsed += delta;
+                // Match the Sequence clock's float authoring boundary without rounding accumulated time.
+                while (!IsDisposed && (float)_elapsed >= (float)(_selected.Count * (double)_action._hopIntervalSeconds))
+                {
+                    _action.TryCreateRequest(_cast, Owner, out var request, Position, _visited);
+                    Hop(request);
+                }
+            }
+
+            private GameplaySkillActionResult Hop(GameplaySpatialSearchRequest request)
+            {
+                var id = Owner.World.Spatial.Query(request).PrimaryTargetId;
+                if (_selected.Count < _action._maxTargets && id.IsValid && Owner.World.TryGetActor(id, out var target))
+                {
+                    var segmentStart = Position;
+                    Position = target.Position;
+                    _selected.Add(id);
+                    _visited.Add(id);
+                    var hit = _action.RunHop(Owner, _cast, _trigger, CanContinue, segmentStart, id, Position, _multiplier);
+                    if (hit.Result == GameplaySkillActionResult.Rejected || !CanContinue())
+                    {
+                        Finish(GameplaySpatialEndReason.Cancelled);
+                        return hit.Result;
+                    }
+                    _multiplier *= _action._repeatMultiplier;
+                    if (_selected.Count < _action._maxTargets) return hit.Result;
+                }
+                var targets = new GameplayTargetData(_selected.Count > 0 ? _selected[0] : default, _origin, null, _selected);
+                var result = _action.RunCompletion(Owner, _cast, targets, _trigger, CanContinue, () =>
+                {
+                    if (!CanContinue()) return;
+                    _completing = true;
+                    Finish(GameplaySpatialEndReason.Completed);
+                });
+                if (!IsDisposed) Finish(GameplaySpatialEndReason.Cancelled);
+                return result.Result;
+            }
         }
         /// <summary>Side-effect-free canonical request used by both runtime query and Editor preview.
         /// Only dimensions used by the selected shape evaluate their AST; inactive fields are retained
@@ -91731,6 +92367,130 @@ namespace FRFrame.Tests.Gameplay
         }
 
         private sealed class ShieldPresentation : IGameplayEffectPresentationDefinition { }
+        [TestCase(0f, false, false)]
+        [TestCase(.2f, false, false)]
+        [TestCase(.2f, true, false)]
+        [TestCase(.2f, false, true)]
+        public void RepeatedSearchCommitsDamageAtWorldBoundariesAndRequeriesEachHop(float interval, bool catchUp, bool avoid)
+        {
+            using var world = new GameplayStandardWorld();
+            var caster = world.CreateActor(default, 1);
+            var immune = new GameplayTag("State.Test.SearchImmune");
+            var dodge = new GameplayAttributeId("Dodge");
+            var targets = new List<GameplayStandardActor>();
+            for (int x = 1; x <= 5; x++)
+            {
+                var target = world.CreateActor(new GameplayPoint(x, 0), 2);
+                Configure(target);
+                target.Attributes.SetBaseValue(Shield, 0);
+                target.Attributes.Register(dodge, avoid && x == 3 ? 1 : 0);
+                targets.Add(target);
+            }
+            if (avoid) targets[0].Tags.AddTag(immune, world.Sources.Allocate());
+            var damage = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Instant, 0,
+                Array.Empty<GameplayEffectAttributeModifierDefinition>(), Array.Empty<GameplayTag>(), executions: new[]
+                {
+                    new GameplayDamageExecution(GameplayFormula.Compile("100 * Context.Data.Standard.Search.Multiplier"),
+                        new[] { new GameplayDamageStage(GameplayDamageStageKind.Immunity), new GameplayDamageStage(GameplayDamageStageKind.Miss) },
+                        new GameplayTagQuery(new[] { immune }, Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>()))
+                });
+            int frame = 0, completed = 0;
+            var hits = new List<(int Frame, GameplaySourceId Target, float Amount, GameplaySourceId Source)>();
+            var result = new List<GameplaySourceId>();
+            world.Events.Subscribe(GameplayCombatEvents.Damage, e => hits.Add((frame, e.Context.TargetData.PrimaryTargetId, e.Magnitude, e.Context.EffectiveSourceId)));
+            var skill = InstallRepeatedSearch(caster, interval,
+                new IGameplaySkillAction[]
+                {
+                    new GameplayCaptureValueAction(GameplayDamageExecution.MissKey, new GameplayAttributeFloatValue(GameplayValueAttributeSource.Target, dodge)),
+                    new GameplayApplyToTargetsAction(damage, false)
+                },
+                c => { completed++; result.AddRange(c.TargetData.Targets); });
+
+            Assert.That(skill.TryCast(), Is.True);
+            for (frame = 1; frame <= 3; frame++) world.Advance(1f / 30);
+            Assert.That(hits.Count, Is.EqualTo(interval == 0 ? 4 : 1));
+            if (interval > 0)
+            {
+                targets[1].Attributes.SetBaseValue(Health, 0);
+                targets[0].Position = new GameplayPoint(3, 0); // Already visited, despite moving onto the next candidate.
+                if (catchUp) { frame = 21; world.Advance(.6f); }
+                else for (frame = 4; frame <= 21; frame++) world.Advance(1f / 30);
+            }
+            var expected = interval == 0 ? new[] { targets[0].Id, targets[1].Id, targets[2].Id, targets[3].Id } :
+                new[] { targets[0].Id, targets[2].Id, targets[3].Id, targets[4].Id };
+            Assert.That(result, Is.EqualTo(expected));
+            Assert.That(hits.ConvertAll(h => h.Target), Is.EqualTo(expected));
+            Assert.That(hits.ConvertAll(h => h.Frame), Is.EqualTo(interval == 0 ? new[] { 3, 3, 3, 3 } :
+                catchUp ? new[] { 3, 21, 21, 21 } : new[] { 3, 9, 15, 21 }));
+            Assert.That(hits.ConvertAll(h => h.Amount), Is.EqualTo(avoid ? new[] { 0f, 0f, 49f, 34.3f } : new[] { 100f, 70f, 49f, 34.3f }).Within(.0001f));
+            if (avoid)
+            {
+                Assert.That(targets[0].LastCombatOutcome.Value.Damage.IsImmune, Is.True);
+                Assert.That(targets[2].LastCombatOutcome.Value.Damage.IsMiss, Is.True);
+            }
+            Assert.That(hits.TrueForAll(h => h.Source == skill.LastCastContext.EffectiveSourceId), Is.True);
+            Assert.That(completed, Is.EqualTo(1));
+            Assert.That(skill.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+            Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+        }
+
+        [TestCase("cancel")]
+        [TestCase("end")]
+        [TestCase("death")]
+        [TestCase("stun")]
+        [TestCase("dispose")]
+        public void RepeatedSearchLifetimesAreIndependentAndEarlyExitNeverCompletes(string stop)
+        {
+            using var world = new GameplayStandardWorld();
+            var first = world.CreateActor(default, 1);
+            var second = world.CreateActor(default, 1);
+            Configure(first);
+            var target = world.CreateActor(new GameplayPoint(1, 0), 2);
+            var visited = new List<GameplaySourceId>();
+            var signals = new List<string>();
+            var each = new[] { new ObserveAction(c => visited.Add(c.InstigatorId)) };
+            var a = InstallRepeatedSearch(first, .2f, each, _ => signals.Add("first completed"));
+            var b = InstallRepeatedSearch(second, .2f, each, _ => signals.Add("second completed"),
+                _ => signals.Add("second empty"));
+            Assert.That(a.TryCast() && b.TryCast(), Is.True);
+            world.Advance(.1f);
+            Assert.That(visited, Is.EqualTo(new[] { first.Id, second.Id }));
+            target.Position = new GameplayPoint(15, 0);
+            if (stop == "cancel") a.Cancel();
+            else if (stop == "end") first.Abilities.End(a.Grant);
+            else if (stop == "death") first.Attributes.SetBaseValue(Health, 0);
+            else if (stop == "stun") first.Tags.AddTag(new GameplayTag("State.Stunned"), world.Sources.Allocate());
+            else world.Dispose();
+            world.Advance(.2f);
+            Assert.That(visited.Count, Is.EqualTo(2));
+            Assert.That(signals, Is.EqualTo(stop == "dispose" ? Array.Empty<string>() : new[] { "second completed" }));
+            Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+            if (stop == "dispose") return;
+            Assert.That(a.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+            Assert.That(b.TryCast(), Is.True);
+            world.Advance(.1f);
+            Assert.That(signals, Is.EqualTo(new[] { "second completed", "second empty", "second completed" }));
+            Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+        }
+
+        private static GameplayInstalledSkill InstallRepeatedSearch(GameplayStandardActor actor, float interval,
+            IGameplaySkillAction[] each, Action<GameplayContext> completed, Action<GameplayContext> empty = null)
+        {
+            var signal = new GameplayTag("Event.Standard.Test.TimedSearch");
+            var search = new GameplaySearchTargetAction(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.Owner,
+                Number(2), Number(120), Number(1), Number(1), Number(1), GameplayFactionFilter.Enemies, null, -1, 4,
+                GameplayTargetOrder.Nearest, false, each, new IGameplaySkillAction[] { new ObserveAction(completed), new GameplayEndAbilityAction() },
+                empty == null ? null : new[] { new ObserveAction(empty) }, repeatFromResult: true, repeatMultiplier: .7f, hopIntervalSeconds: interval);
+            var marker = new GameplaySequenceSkillStepMarkerDefinition(.1f, Array.Empty<IGameplaySkillCondition>(),
+                new GameplaySkillSelfTarget(), new[] { search });
+            // The short launching Sequence ends before the second hop; the Ability owns the remaining search.
+            var rules = new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal), Array.Empty<IGameplaySkillCondition>(),
+                new GameplaySkillSelfTarget(), new[] { new GameplayOwnedSequenceAction(new GameplaySequenceDefinition(.1f, new[] { marker })) }, false);
+            var ability = new GameplayAbilityDefinition(Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>(),
+                ongoingBlockedTags: new[] { new GameplayTag("State.Stunned") });
+            return actor.InstallDocument(new GameplaySkillDocumentDefinition(4207, ability, rules, signal));
+        }
+
         private static IGameplayFloatValue Number(float value) => new GameplayConstantFloatValue(value);
         private sealed class ObserveAction : IGameplaySkillAction
         {

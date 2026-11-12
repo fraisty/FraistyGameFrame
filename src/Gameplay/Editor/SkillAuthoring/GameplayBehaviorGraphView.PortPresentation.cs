@@ -43,11 +43,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     port.portName=cue?"开始播放后继续":starts?"启动后继续":"继续主链";
                     port.tooltip=cue?"成功启动特效或音频后立即执行下游，不等待播放结束。":starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
                 }
-                if(action is GameplaySearchTargetActionAuthoring){
-                    if(socket?.Port=="Completed"){port.portName="完成 · 结果集";port.tooltip="搜索后调用一次，包含完整结果集；也可能为空，不能假定存在目标。";}
-                    if(socket?.Port=="EachTarget")port.tooltip="对每个有效目标分别执行；下游接收该目标和采样地点。";
-                    if(socket?.Port=="NoTargets"){port.portName="未找到目标";port.tooltip="没有有效目标时调用；只有搜索中心地点，不提供 Actor。";}
-                }
                 port.style.minHeight=22;port.style.fontSize=12;port.style.flexShrink=0;
                 var connector=port.Q("connector");if(connector!=null){connector.style.width=12;connector.style.height=12;connector.style.minWidth=12;connector.style.flexShrink=0;}
                 if(port.portType==typeof(GameplayEffectDefinitionAsset)){
@@ -56,6 +51,64 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
             }
             var contract=new Label{name="ContextContract"};contract.style.whiteSpace=WhiteSpace.Normal;contract.style.color=new Color(1,.75f,.38f);contract.style.fontSize=11;contract.style.marginLeft=10;contract.style.marginRight=10;contract.style.marginBottom=6;contract.style.display=DisplayStyle.None;card.extensionContainer.Add(contract);
+        }
+        private static void GroupSearchPorts(VisualElement outputs)
+        {
+            outputs.style.width = 132;
+            var ports = outputs.Children().OfType<Port>().ToDictionary(p => ((Socket)p.userData).Port);
+            outputs.Clear();
+            AddSection("查询开始", "OnBegin");
+            AddSection("单个目标", "EachTarget");
+            AddSection("搜索结束", "Completed", "NoTargets");
+            if (ports.TryGetValue("Then", out var continuation)) outputs.Add(continuation);
+
+            void AddSection(string title, params string[] keys)
+            {
+                var heading = new Label(title) { pickingMode = PickingMode.Ignore };
+                heading.style.fontSize = 10;
+                heading.style.color = new Color(.72f, .79f, .84f);
+                heading.style.unityTextAlign = TextAnchor.MiddleRight;
+                heading.style.paddingRight = 13;
+                heading.style.borderTopWidth = 1;
+                heading.style.borderTopColor = new Color(.36f, .4f, .44f);
+                outputs.Add(heading);
+                foreach (var key in keys) outputs.Add(ports[key]);
+            }
+        }
+
+        private void RefreshSearchPorts(string id, GameplaySearchTargetActionAuthoring search, bool refreshConnections)
+        {
+            if (_outputs.TryGetValue(Key(id, "Then"), out var next))
+            {
+                next.portName = search.HopIntervalSeconds > 0 ? "启动后继续" : "继续主链";
+                next.tooltip = search.HopIntervalSeconds > 0
+                    ? "首跳处理后沿原输入继续。最终结果与结束施放请接搜索完成。"
+                    : "搜索与分支完成后继续，接收实际输出上下文。";
+            }
+            if (!refreshConnections) return;
+            Set("OnBegin", "开始", "查询前调用一次，保留原始输入。");
+            Set("EachTarget", "每个目标", "每次选到目标时调用，提供单个 Actor、采样地点及逐次重选倍率。");
+            Set("Completed", "完成 · 结果集", "正常结束时调用一次，提供最终结果集。零结果时在无目标回调之后调用。");
+            Set("NoTargets", "未找到目标", "整次查询零结果时先调用，提供查询中心。之后仍会正常调用完成。");
+
+            void Set(string key, string label, string description)
+            {
+                if (!_outputs.TryGetValue(Key(id, key), out var port)) return;
+                var graph = _document.AuthoringGraph;
+                var edges = graph.Connections.Where(e => e.FromNodeId == id && e.OutputPortKey == key).OrderBy(e => e.Order).ToArray();
+                var types = edges.Select(e => Record(e.ToNodeId)).Where(node => (node?.Payload as GameplayActionNodePayload)?.Action != null)
+                    .Select(node =>
+                    {
+                        var action = ((GameplayActionNodePayload)node.Payload).Action;
+                        return GameplaySkillFieldSchema.ValueNodeTypeName(GameplaySkillNodeDisplay.BoundValues(node, graph))
+                            ?? GameplaySkillNodeDescriptors.Get(action.GetType()).DisplayName;
+                    }).GroupBy(type => type);
+                string summary = string.Join(" / ", types.Select(group => group.Key + " ×" + group.Count()));
+                port.portName = label + " [" + edges.Length + "]";
+                port.tooltip = description + (summary.Length == 0 ? "" : "\n直接连接  " + summary);
+                foreach (var edge in port.connections)
+                    edge.tooltip = "搜索目标 · " + label + " → " + edge.input.node.title + "\n" + description;
+            }
         }
         private static void Heading(VisualElement side,string text,bool right)
         {

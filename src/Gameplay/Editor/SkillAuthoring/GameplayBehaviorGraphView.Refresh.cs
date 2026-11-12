@@ -76,11 +76,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     Set("ExecutionStatus",(active.Contains(id)?"正式执行":data.Payload is GameplayRuleNodePayload?"未启用 · 不参与执行":"未接入执行流程 · 不参与执行")+(data.Payload.Definitions.Any(b=>b.External)?" · 共享来源":" · 本地"));
                     var editors=node.extensionContainer.Query<GameplaySkillCardEditor>().ToList();foreach(var editor in editors)editor.Refresh();
                     Set("BusinessSummary",GameplaySkillNodeDisplay.CardSummary(data,_document.AuthoringGraph,editors.Any(e=>e.HasFields)));
+                    if ((data.Payload as GameplayActionNodePayload)?.Action is GameplaySearchTargetActionAuthoring search)
+                        RefreshSearchPorts(id, search, full);
                     RefreshEffectLifecycleRows(node);
                     if(data.Payload is GameplayAbilityNodePayload)Set("AbilitySummary",_document.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Active?"主动技能":"被动技能");
                     foreach(var binding in data.Payload.Definitions){var definition=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);if(definition!=null)Set("Definition-"+definition.Id,DefinitionSummary(definition));}
                     foreach(var label in node.extensionContainer.Query<Label>(className:"animation-source").ToList()){var animation=Record((string)label.userData);if(animation==null)continue;object values=GameplaySkillNodeDisplay.BoundValues(animation,_document.AuthoringGraph);string text=IsTimelineInline(animation.Id)?(values==null?"动画资源未配置":GameplaySkillFieldSchema.Name(values.GetType()))+" · "+(animation.Payload.Definitions.Any(b=>b.External)?"共享，只读":"本地"):GameplaySkillNodeDisplay.EventLabel(animation,_document.AuthoringGraph)+" · 参数在独立动画卡";if(label.text!=text)label.text=text;}
                     foreach(var timeline in _document.AuthoringGraph.Timelines.Where(t=>data.Payload.Definitions.Any(b=>b.LocalId==t.Id))){var entries=timeline.Events.Where(e=>!IsTimelineInline(e.EntryNodeId)).OrderBy(e=>e.TimeSeconds).ThenBy(e=>e.Order).ToArray();for(int i=0;i<entries.Length;i++)if(_outputs.TryGetValue(Key(entries[i].Id,"Schedule"),out var port)){string caption="#"+(i+1)+" "+(entries[i].TimeSeconds*timeline.FramesPerSecond).ToString("0.#")+"f";if(port.portName!=caption){port.tooltip="◇ 真实时间调度 · "+caption+"\n事件 "+entries[i].Id+"\n单击编号定位；Order、目标与条件见该事件。";}}}
+                    var authoredTimeline = _document.AuthoringGraph.Timelines.Find(t => data.Payload.Definitions.Any(b => b.LocalId == t.Id));
+                    if (authoredTimeline != null) Set("MainAnimationProvenance", MainAnimationSource(authoredTimeline));
                     foreach(var timelineView in node.Query<GameplaySkillTimeline>().ToList())timelineView.InvalidatePresentation();
                     node.MarkDirtyRepaint();
                     void Set(string name,string value){var label=node.extensionContainer.Q<Label>(name);if(label!=null){if(label.text!=value)label.text=value;label.style.display=string.IsNullOrEmpty(value)?DisplayStyle.None:DisplayStyle.Flex;}}

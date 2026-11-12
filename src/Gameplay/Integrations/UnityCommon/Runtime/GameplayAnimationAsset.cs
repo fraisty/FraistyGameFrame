@@ -76,4 +76,10 @@ namespace FRFrame.Gameplay.Unity
         void Seek(float seconds);
         event Action<string> AnimationEvent;
     }
+
+    /// <summary>Optional diagnostic label for the actual backend resource selected by a player.</summary>
+    public interface IGameplayAnimationPlaybackSource
+    {
+        string PlaybackSource { get; }
+    }
 }

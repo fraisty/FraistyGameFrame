@@ -42,8 +42,9 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if (payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(port))
                 return new Inputs(true, input.Point, "Effect 生命周期使用该组的实际目标。", optionalPoint: !input.Point);
             if(payload is GameplayEffectDefinitionData&&GameplayGraphEffectCallbacks.IsPort(payload,port))return input.With(true,input.Point,"Effect 续接到同一有效目标",false,input.OptionalPoint);
-            if(payload is GameplaySearchTargetActionAuthoring){
+            if(payload is GameplaySearchTargetActionAuthoring search){
                 if(port=="EachTarget")return input.With(true,true,"搜索的有效逐目标 Actor/Point");
+                if(port=="Then"&&search.HopIntervalSeconds>0)return input;
                 if(port=="NoTargets"||port=="Completed"||port=="Then")return input.With(false,true,"搜索完成/无目标不保证 Actor；先以地点重新搜索");
             }
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");

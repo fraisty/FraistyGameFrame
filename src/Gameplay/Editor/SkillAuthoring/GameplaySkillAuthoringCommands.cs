@@ -94,7 +94,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
         /// <summary>Reference viewing is a workbench mode, never a second skill runtime source.</summary>
         internal static GameplaySkillDocumentAsset ReadOnlyDocument;
-        internal static bool IsReadOnly(GameplaySkillDocumentAsset document)=>document&&document==ReadOnlyDocument;
+        /// <summary>Whether the current Workbench presents this document as a read-only reference.</summary>
+        public static bool IsReadOnly(GameplaySkillDocumentAsset document)=>document&&document==ReadOnlyDocument;
         private static GameplayAuthoringGraph CopyGraph(GameplaySkillDocumentAsset source,GameplaySkillDocumentAsset destination)
         {
             var original=source.AuthoringGraph;

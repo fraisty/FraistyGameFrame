@@ -126,6 +126,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     input = Merge(RunOutput(id, "TrueActions", input), RunOutput(id, "FalseActions", input));
                 else if (payload.Action is GameplaySearchTargetActionAuthoring search)
                 {
+                    RunOutput(id, "OnBegin", input);
                     var each = input;
                     if (search.RepeatFromResult)
                     {
@@ -136,7 +137,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     }
                     RunOutput(id, "EachTarget", each);
                     RunOutput(id, "NoTargets", input);
-                    input = RunOutput(id, "Completed", input);
+                    var completed = RunOutput(id, "Completed", input);
+                    if (search.HopIntervalSeconds == 0) input = completed;
                 }
                 else
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload.Action))

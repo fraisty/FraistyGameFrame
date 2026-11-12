@@ -487,6 +487,130 @@ namespace FRFrame.Tests.Gameplay
         }
 
         private sealed class ShieldPresentation : IGameplayEffectPresentationDefinition { }
+        [TestCase(0f, false, false)]
+        [TestCase(.2f, false, false)]
+        [TestCase(.2f, true, false)]
+        [TestCase(.2f, false, true)]
+        public void RepeatedSearchCommitsDamageAtWorldBoundariesAndRequeriesEachHop(float interval, bool catchUp, bool avoid)
+        {
+            using var world = new GameplayStandardWorld();
+            var caster = world.CreateActor(default, 1);
+            var immune = new GameplayTag("State.Test.SearchImmune");
+            var dodge = new GameplayAttributeId("Dodge");
+            var targets = new List<GameplayStandardActor>();
+            for (int x = 1; x <= 5; x++)
+            {
+                var target = world.CreateActor(new GameplayPoint(x, 0), 2);
+                Configure(target);
+                target.Attributes.SetBaseValue(Shield, 0);
+                target.Attributes.Register(dodge, avoid && x == 3 ? 1 : 0);
+                targets.Add(target);
+            }
+            if (avoid) targets[0].Tags.AddTag(immune, world.Sources.Allocate());
+            var damage = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Instant, 0,
+                Array.Empty<GameplayEffectAttributeModifierDefinition>(), Array.Empty<GameplayTag>(), executions: new[]
+                {
+                    new GameplayDamageExecution(GameplayFormula.Compile("100 * Context.Data.Standard.Search.Multiplier"),
+                        new[] { new GameplayDamageStage(GameplayDamageStageKind.Immunity), new GameplayDamageStage(GameplayDamageStageKind.Miss) },
+                        new GameplayTagQuery(new[] { immune }, Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>()))
+                });
+            int frame = 0, completed = 0;
+            var hits = new List<(int Frame, GameplaySourceId Target, float Amount, GameplaySourceId Source)>();
+            var result = new List<GameplaySourceId>();
+            world.Events.Subscribe(GameplayCombatEvents.Damage, e => hits.Add((frame, e.Context.TargetData.PrimaryTargetId, e.Magnitude, e.Context.EffectiveSourceId)));
+            var skill = InstallRepeatedSearch(caster, interval,
+                new IGameplaySkillAction[]
+                {
+                    new GameplayCaptureValueAction(GameplayDamageExecution.MissKey, new GameplayAttributeFloatValue(GameplayValueAttributeSource.Target, dodge)),
+                    new GameplayApplyToTargetsAction(damage, false)
+                },
+                c => { completed++; result.AddRange(c.TargetData.Targets); });
+
+            Assert.That(skill.TryCast(), Is.True);
+            for (frame = 1; frame <= 3; frame++) world.Advance(1f / 30);
+            Assert.That(hits.Count, Is.EqualTo(interval == 0 ? 4 : 1));
+            if (interval > 0)
+            {
+                targets[1].Attributes.SetBaseValue(Health, 0);
+                targets[0].Position = new GameplayPoint(3, 0); // Already visited, despite moving onto the next candidate.
+                if (catchUp) { frame = 21; world.Advance(.6f); }
+                else for (frame = 4; frame <= 21; frame++) world.Advance(1f / 30);
+            }
+            var expected = interval == 0 ? new[] { targets[0].Id, targets[1].Id, targets[2].Id, targets[3].Id } :
+                new[] { targets[0].Id, targets[2].Id, targets[3].Id, targets[4].Id };
+            Assert.That(result, Is.EqualTo(expected));
+            Assert.That(hits.ConvertAll(h => h.Target), Is.EqualTo(expected));
+            Assert.That(hits.ConvertAll(h => h.Frame), Is.EqualTo(interval == 0 ? new[] { 3, 3, 3, 3 } :
+                catchUp ? new[] { 3, 21, 21, 21 } : new[] { 3, 9, 15, 21 }));
+            Assert.That(hits.ConvertAll(h => h.Amount), Is.EqualTo(avoid ? new[] { 0f, 0f, 49f, 34.3f } : new[] { 100f, 70f, 49f, 34.3f }).Within(.0001f));
+            if (avoid)
+            {
+                Assert.That(targets[0].LastCombatOutcome.Value.Damage.IsImmune, Is.True);
+                Assert.That(targets[2].LastCombatOutcome.Value.Damage.IsMiss, Is.True);
+            }
+            Assert.That(hits.TrueForAll(h => h.Source == skill.LastCastContext.EffectiveSourceId), Is.True);
+            Assert.That(completed, Is.EqualTo(1));
+            Assert.That(skill.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+            Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+        }
+
+        [TestCase("cancel")]
+        [TestCase("end")]
+        [TestCase("death")]
+        [TestCase("stun")]
+        [TestCase("dispose")]
+        public void RepeatedSearchLifetimesAreIndependentAndEarlyExitNeverCompletes(string stop)
+        {
+            using var world = new GameplayStandardWorld();
+            var first = world.CreateActor(default, 1);
+            var second = world.CreateActor(default, 1);
+            Configure(first);
+            var target = world.CreateActor(new GameplayPoint(1, 0), 2);
+            var visited = new List<GameplaySourceId>();
+            var signals = new List<string>();
+            var each = new[] { new ObserveAction(c => visited.Add(c.InstigatorId)) };
+            var a = InstallRepeatedSearch(first, .2f, each, _ => signals.Add("first completed"));
+            var b = InstallRepeatedSearch(second, .2f, each, _ => signals.Add("second completed"),
+                _ => signals.Add("second empty"));
+            Assert.That(a.TryCast() && b.TryCast(), Is.True);
+            world.Advance(.1f);
+            Assert.That(visited, Is.EqualTo(new[] { first.Id, second.Id }));
+            target.Position = new GameplayPoint(15, 0);
+            if (stop == "cancel") a.Cancel();
+            else if (stop == "end") first.Abilities.End(a.Grant);
+            else if (stop == "death") first.Attributes.SetBaseValue(Health, 0);
+            else if (stop == "stun") first.Tags.AddTag(new GameplayTag("State.Stunned"), world.Sources.Allocate());
+            else world.Dispose();
+            world.Advance(.2f);
+            Assert.That(visited.Count, Is.EqualTo(2));
+            Assert.That(signals, Is.EqualTo(stop == "dispose" ? Array.Empty<string>() : new[] { "second completed" }));
+            Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+            if (stop == "dispose") return;
+            Assert.That(a.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+            Assert.That(b.TryCast(), Is.True);
+            world.Advance(.1f);
+            Assert.That(signals, Is.EqualTo(new[] { "second completed", "second empty", "second completed" }));
+            Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+        }
+
+        private static GameplayInstalledSkill InstallRepeatedSearch(GameplayStandardActor actor, float interval,
+            IGameplaySkillAction[] each, Action<GameplayContext> completed, Action<GameplayContext> empty = null)
+        {
+            var signal = new GameplayTag("Event.Standard.Test.TimedSearch");
+            var search = new GameplaySearchTargetAction(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.Owner,
+                Number(2), Number(120), Number(1), Number(1), Number(1), GameplayFactionFilter.Enemies, null, -1, 4,
+                GameplayTargetOrder.Nearest, false, each, new IGameplaySkillAction[] { new ObserveAction(completed), new GameplayEndAbilityAction() },
+                empty == null ? null : new[] { new ObserveAction(empty) }, repeatFromResult: true, repeatMultiplier: .7f, hopIntervalSeconds: interval);
+            var marker = new GameplaySequenceSkillStepMarkerDefinition(.1f, Array.Empty<IGameplaySkillCondition>(),
+                new GameplaySkillSelfTarget(), new[] { search });
+            // The short launching Sequence ends before the second hop; the Ability owns the remaining search.
+            var rules = new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal), Array.Empty<IGameplaySkillCondition>(),
+                new GameplaySkillSelfTarget(), new[] { new GameplayOwnedSequenceAction(new GameplaySequenceDefinition(.1f, new[] { marker })) }, false);
+            var ability = new GameplayAbilityDefinition(Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>(),
+                ongoingBlockedTags: new[] { new GameplayTag("State.Stunned") });
+            return actor.InstallDocument(new GameplaySkillDocumentDefinition(4207, ability, rules, signal));
+        }
+
         private static IGameplayFloatValue Number(float value) => new GameplayConstantFloatValue(value);
         private sealed class ObserveAction : IGameplaySkillAction
         {

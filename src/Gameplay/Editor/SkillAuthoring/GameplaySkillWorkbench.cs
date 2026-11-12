@@ -150,7 +150,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             layoutMenu.menu.AppendAction("预览整理（不写入）",_=>Canvas.PreviewLayout(),_=>Canvas.BusinessReading?DropdownMenuAction.Status.Disabled:DropdownMenuAction.Status.Normal);
             layoutMenu.menu.AppendAction("应用预览（一次 Undo）",_=>Canvas.ApplyLayoutPreview(),_=>Canvas.BusinessReading?DropdownMenuAction.Status.Disabled:DropdownMenuAction.Status.Normal);
             layoutMenu.menu.AppendAction("取消预览",_=>Canvas.CancelLayoutPreview());tools.Add(layoutMenu);
-            tools.Add(new ToolbarButton(() => { _inspectorOpen=!_inspectorOpen;ApplyPaneWidths();SavePanePreferences(); }) { text = "详情 / 预览 / 试装" });
+            tools.Add(new ToolbarButton(() => { _inspectorOpen=!_inspectorOpen;if(!_inspectorOpen)DisposeDetailsPreview();ApplyPaneWidths();SavePanePreferences(); }) { text = "详情 / 预览 / 试装" });
             tools.Add(new ToolbarButton(()=>EditorWindow.GetWindow<FRFrame.Gameplay.Editor.RuntimeDebugger.GameplayRuntimeDebuggerWindow>().Show()){text="Runtime 调试"});
             rootVisualElement.Add(new IMGUIContainer(DrawSourceBar){style={height=27,flexShrink=0}});
             var workspace=new VisualElement{style={flexDirection=FlexDirection.Row,flexGrow=1,minHeight=0}};
@@ -256,6 +256,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if (_inspector.style.backgroundColor.value != panelColor) _inspector.style.backgroundColor = panelColor;
             using var pane = new GameplayInspectorIMGUI.Pane(_inspector.resolvedStyle.width);
             _detailTab=GUILayout.Toolbar(_detailTab,new[]{"业务参数","预览 / 范围","Scene / 调试","校验"});
+            if (_detailTab != 1) DisposeDetailsPreview();
             using var scroll = new EditorGUILayout.ScrollViewScope(_inspectorScroll);
             _inspectorScroll = scroll.scrollPosition;
             if (!string.IsNullOrEmpty(_feedback)) EditorGUILayout.HelpBox(_feedback, MessageType.Info);
@@ -288,6 +289,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(reason!=null)EditorGUILayout.HelpBox(reason,MessageType.Info);
             using(new EditorGUI.DisabledScope(reason!=null))if(GUILayout.Button(_installation==null?"安装当前正式技能":"释放并重装"))Attempt(()=>{DisposeInstallation();_installation=host.Install(_document);});
             _installation?.Draw();if(_installation!=null&&GUILayout.Button("结束本窗口试装"))DisposeInstallation();
+        }
+        private void OnInspectorUpdate()
+        {
+            if (EditorApplication.isPlaying && _inspectorOpen && _detailTab == 2) _details?.MarkDirtyRepaint();
         }
 
         public static void DrawTimelineFields(GameplaySkillDocumentAsset document, string nodeId,string selectedEventId=null)

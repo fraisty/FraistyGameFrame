@@ -67,6 +67,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if(node.Payload is GameplayAbilityNodePayload)return null;
             var action=(node.Payload as GameplayActionNodePayload)?.Action;
+            if (action is GameplaySearchTargetActionAuthoring search && search.RepeatFromResult)
+                return search.HopIntervalSeconds > 0 ? $"逐跳 · {search.HopIntervalSeconds:0.00#} 秒" : "同步重选 · 同一规则帧";
             if(action is GameplayOwnedSequenceActionAuthoring||action is GameplaySkillPlaySequenceActionAuthoring)return null;
             if(action is GameplayApplyToTargetsActionAuthoring||action is GameplaySkillApplyEffectActionAuthoring){
                 var binding=node.Payload.Definitions.FirstOrDefault(b=>b.PropertyPath=="Effect");

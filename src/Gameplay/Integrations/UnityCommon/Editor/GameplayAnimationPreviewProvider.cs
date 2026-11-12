@@ -1,5 +1,6 @@
 using System;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
@@ -26,12 +27,21 @@ namespace FRFrame.Gameplay.Unity.Editor
         public bool CanPreview(GameplaySkillDefinitionAsset skill)=>!EditorApplication.isPlayingOrWillChangePlaymode;
         public IGameplaySkillPreviewSession CreateSession(GameplaySkillDefinitionAsset skill)=>new GameplayAnimationPreviewSession();
     }
-    public sealed partial class GameplayAnimationPreviewSession:IGameplaySkillPreviewSession,IGameplaySkillPreviewDiagnostics
+    public sealed partial class GameplayAnimationPreviewSession:IGameplaySkillPreviewSession,IGameplaySkillPreviewDiagnostics,IGameplaySkillPreviewSource
     {
         private GameplayAnimationAsset _source;
         private GameplayPresentationCueAsset _cueSource;
         private GameplayFloatingTextAsset _textSource;
         private GameplayUnityCuePreview _cuePreview;
+        private GameplaySourceHandle _previewSource;
+        private bool _sharedPreviewSource;
+        public void BindSource(GameplaySourceHandle source, bool shared)
+        {
+            _previewSource = source;
+            _sharedPreviewSource = shared;
+            _cuePreview?.BindSource(source, shared);
+        }
+        public void CancelInteraction() => _cuePreview?.CancelInteraction();
         private float _presentationStart;
         private GameObject _subject;
         private IGameplayAnimationPlayer _player;
@@ -105,7 +115,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             _error=null;
             try
             {
-                if(_source==null&&_values==null){_speed=1;if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());return;}
+                if(_source==null&&_values==null){_speed=1;if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());_cuePreview?.BindSource(_previewSource,_sharedPreviewSource);return;}
                 _subject=(_values??_source.CaptureGraphValues() as GameplayAnimationData).CreatePreviewSubject();_subject.hideFlags=HideFlags.HideAndDontSave;
                 _preview=new PreviewRenderUtility();_preview.AddSingleGO(_subject);
                 (_values??_source.CaptureGraphValues() as GameplayAnimationData).ConfigurePreviewCamera(_preview.camera);
