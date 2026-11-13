@@ -214,7 +214,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if (value is GameplayMoveTargetsActionAuthoring)
             { yield return new GameplaySkillCardField("Mode", "位移方式"); yield return new GameplaySkillCardField("Distance", "距离", true); yield return new GameplaySkillCardField("Speed", "速度", true); }
             if (value is GameplayGrantTimedShieldActionAuthoring)
-            { yield return new GameplaySkillCardField("Amount", "护盾数值", true); yield return new GameplaySkillCardField("Duration", "持续秒数", true); }
+            {
+                yield return new GameplaySkillCardField("ReapplicationPolicy", "重新施加策略");
+                yield return new GameplaySkillCardField("Amount", "护盾数值", true);
+                yield return new GameplaySkillCardField("Duration", "持续秒数", true);
+            }
             if (value is GameplayRotateToPointActionAuthoring) yield return new GameplaySkillCardField("RotateOwner", "转向自身");
             if(value is GameplayCooldownActionAuthoring cooldown){yield return new GameplaySkillCardField("SkillId","技能 ID（0当前）");yield return new GameplaySkillCardField("Operation","冷却操作");if(cooldown.Operation!=Standard.GameplayCooldownOperation.Restart)yield return new GameplaySkillCardField("Value","变化数值",true);}
             if(value is GameplayCaptureCombatRollActionAuthoring){yield return new GameplaySkillCardField("CriticalChance","暴击概率",true);yield return new GameplaySkillCardField("MissChance","未命中概率",true);}

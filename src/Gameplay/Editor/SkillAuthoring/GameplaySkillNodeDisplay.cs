@@ -124,7 +124,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(action is GameplaySkillSetContextValueActionAuthoring set)return set.Key.Name+" = "+set.Value;
             if(action is GameplayCaptureValueActionAuthoring capture)return "捕获 "+capture.Key.Name+" · "+Value(capture.Value);
             if(action is GameplayMoveTargetsActionAuthoring move)return move.Mode+" · 距离 "+Value(move.Distance)+" · 速度 "+Value(move.Speed);
-            if(action is GameplayGrantTimedShieldActionAuthoring shield)return "护盾 "+Value(shield.Amount)+" · "+Value(shield.Duration)+"s";
+            if(action is GameplayGrantTimedShieldActionAuthoring shield)
+                return GameplaySkillBusinessLabels.Display(shield.ReapplicationPolicy.ToString())+" · "+Value(shield.Amount)+" 盾 · "+Value(shield.Duration)+"s";
             if(action is GameplayRotateToPointActionAuthoring rotate)return rotate.RotateOwner?"自身朝向当前地点":"逐目标朝向当前地点";
             if(action is GameplayDispelEffectsActionAuthoring dispel)return "驱散分类 · "+string.Join(" / ",(dispel.EffectTags?.All??Array.Empty<GameplayTagReference>()).Concat(dispel.EffectTags?.Any??Array.Empty<GameplayTagReference>()).Select(t=>t.Name));
             if(action is GameplaySearchTargetActionAuthoring search)return search.Shape+" · "+search.Plane+" · "+search.Faction+"\n半径 "+Value(search.Radius)+" · 目标上限 "+search.MaxTargets;

@@ -32,6 +32,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"NeverReset","不重置周期"},{"ResetOnSuccessfulApplication","成功施加时重置周期"},
             {"AfterFirstPeriod","首次间隔后"},{"ExecuteOnApplication","应用时立即结算"},{"Immediately","立即"},
             {"Reject","拒绝新增"},{"RefreshExistingAtLimit","到上限时刷新"},{"ExecuteOverflow","执行溢出效果"},
+            {"IndependentContributions","独立贡献"},{"RefreshSingleCapacityAndDuration","单层刷新容量与时长"},
+            {"AccumulateSingleCapacityAndExtendDuration","累积容量并延长剩余时长"},
             {"Immunity","免疫"},{"Miss","未命中"},{"Defense","防御减伤"},{"Critical","暴击"},{"Shield","护盾吸收"},{"Minimum","最小伤害"},{"Scale","倍率"}
         };
         internal static string Display(string name)=>Labels.TryGetValue(name,out var label)?label:name;

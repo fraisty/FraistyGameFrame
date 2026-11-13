@@ -43,7 +43,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(values.OfType<GameplayEffectDefinitionData>().Any(e=>e.Stacking!=null))mechanisms.Add("效果与叠层 Stack 溢出");
                 if(values.OfType<GameplaySearchTargetActionAuthoring>().Any(search=>search.RepeatFromResult))mechanisms.Add("连锁 · 最近未访问目标 · 每跳倍率");
                 if(values.OfType<GameplayDamageExecutionAuthoring>().Any(damage=>damage.HealInstigatorAmount!=null))mechanisms.Add("吸血 · 实际净 HP 伤害 · 治疗施法者");
-                if(values.OfType<GameplayGrantTimedShieldActionAuthoring>().Any(shield=>graph.Connections.Any(e=>e.OutputPortKey=="OnBroken"||e.OutputPortKey=="OnExpired")))mechanisms.Add("盾破反击 · 自然到期");
+                var shields = values.OfType<GameplayGrantTimedShieldActionAuthoring>().ToArray();
+                foreach(var shield in shields)
+                    if(graph.Connections.Any(e=>e.OutputPortKey=="OnBroken"||e.OutputPortKey=="OnExpired"))
+                        mechanisms.Add("盾破反击 · 自然到期 · "+GameplaySkillBusinessLabels.Display(shield.ReapplicationPolicy.ToString()));
                 if(values.OfType<GameplaySpawnProjectileActionAuthoring>().Any(projectile=>projectile.LaunchFromTriggerPoint))mechanisms.Add("分裂弹 · 从命中点发射子弹");
                 if(doc.Mode==FRFrame.Gameplay.Standard.GameplayStandardActivationMode.Passive||graph.AdditionalRuleNodeIds.Count>0)mechanisms.Add("被动与条件 事件监听");
                 string mechanismIndex=string.Join(" · ",mechanisms.Distinct());
@@ -68,7 +71,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(u7){
                     host="FRFrameGameplaySkillLab / 共用练习场";
                     route+=" 进入共用练习场，或用 Scene / 调试 → 安装当前正式技能。";
-                    route+=doc.SkillId==4201?" 剧毒爆发从零步骤见 U7 Task 第 10 节。":
+                    route+=shields.Length>0?" 三种定时护盾的策略配置和同场对照见 U7-HR-P5 第 4 节。":
+                        doc.SkillId==4201?" 剧毒爆发从零步骤见 U7 Task 第 10 节。":
                         " 连锁闪电从零创作、其余案例复制修改和正式表现资源定位见 U7-HR-P3 第 6 节。目录外副本需勾选「共用练习场试装」。";
                 }
                 var ability=graph.Nodes.Find(n=>n.Id==graph.AbilityNodeId)?.Payload as GameplayAbilityNodePayload;var settings=ability?.Settings as GameplayAbilityDefinitionData;

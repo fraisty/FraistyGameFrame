@@ -5,12 +5,15 @@ using UnityEngine.Scripting;
 
 namespace FRFrame.Gameplay.Authoring
 {
-    /// <summary>Separate timed consumable shield. Duration uses the existing target Effect clock.</summary>
+    /// <summary>Timed consumable shield. Duration uses the target's existing Effect clock.</summary>
     [Serializable,Preserve]
     public sealed class GameplayGrantTimedShieldActionAuthoring : GameplaySkillActionAuthoring
     {
         [SerializeReference] public GameplayFloatValueAuthoring Amount=new GameplayConstantFloatValueAuthoring{Value=100};
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=5};
+        [Tooltip("独立贡献：每次新建一份。单层刷新：恢复至本次数值、重设剩余时长。蓄能延时：在当前余量和剩余时长上累加。")]
+        public GameplayShieldReapplicationPolicy ReapplicationPolicy;
+        [Tooltip("启用时护盾跟随当前施放清理，统一策略只在该次活动施放内重用。")]
         public bool OwnedByAbility;
         [SerializeReference] public GameplayEffectPresentationAuthoring Presentation;
         [SerializeReference] public GameplaySkillActionAuthoring[] OnAbsorbed = Array.Empty<GameplaySkillActionAuthoring>();
@@ -23,6 +26,7 @@ namespace FRFrame.Gameplay.Authoring
         {
             if(Amount==null)validation.Error(path+".Amount","Shield amount required.");else Amount.Validate(validation,path+".Amount");
             if(Duration==null)validation.Error(path+".Duration","Shield duration required.");else Duration.Validate(validation,path+".Duration");
+            validation.Enum(ReapplicationPolicy,path+".ReapplicationPolicy");
             GameplaySpatialAuthoringUtility.Validate(OnBroken, validation, path + ".OnBroken");
             GameplaySpatialAuthoringUtility.Validate(OnExpired, validation, path + ".OnExpired");
             GameplaySpatialAuthoringUtility.Validate(OnRemoved, validation, path + ".OnRemoved");
@@ -33,6 +37,6 @@ namespace FRFrame.Gameplay.Authoring
             Amount.Build(), Duration.Build(), OwnedByAbility, GameplaySpatialAuthoringUtility.Build(OnBroken, context),
             GameplaySpatialAuthoringUtility.Build(OnExpired, context), Presentation?.Build(),
             GameplaySpatialAuthoringUtility.Build(OnAbsorbed, context),
-            GameplaySpatialAuthoringUtility.Build(OnRemoved, context));
+            GameplaySpatialAuthoringUtility.Build(OnRemoved, context), ReapplicationPolicy);
     }
 }

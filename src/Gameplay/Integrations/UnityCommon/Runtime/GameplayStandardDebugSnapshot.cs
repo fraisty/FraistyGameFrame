@@ -23,6 +23,11 @@ namespace FRFrame.Gameplay.Unity
                 var tags=actor.Tags.GetContributionsSnapshot().Select(t=>t.ExactTag+" / SourceIds="+string.Join(",",t.SourceIds));
                 var effects=actor.Effects.GetActiveEntriesSnapshot().Select(e=>"Handle="+e.Handle.LocalSequence+" SourceId="+e.SourceId+" Root="+(e.ApplicationContext?.OriginSourceId.ToString()??"None")+" Level="+(e.ApplicationContext?.AbilityLevel.ToString()??"None")+
                     " Stack="+e.StackCount+" Remaining="+(e.Remaining?.ToString("0.###")??"Infinite")+" Period="+(e.PeriodRemaining?.ToString("0.###")??"None")+" Tags="+string.Join(",",e.Definition.GrantedTags));
+                var shields = new List<string>();
+                foreach (var shield in actor.Shields.Snapshot())
+                    if (actor.Effects.TryGetRemainingDuration(shield.EffectHandle, out float remaining))
+                        shields.Add($"Handle={shield.EffectHandle.LocalSequence} Instigator={shield.Context.InstigatorId} " +
+                            $"Activation={shield.Context.ActivationSourceId} Capacity={shield.Remaining:0.##} Remaining={remaining:0.###}s");
                 var abilities=actor.Abilities.GetGrantedEntriesSnapshot().Select(a=>"Grant="+a.Handle.LocalSequence+" Level="+a.Level+" Phase="+a.Status.Phase+" CD="+a.Status.CooldownRemaining+" Charge="+a.Status.CurrentCharges+" Recharge="+a.Status.RechargeRemaining+" OwnedEffects="+a.OwnedEffectsCount+" Layers="+a.OwnedLayersCount+" Lifetimes="+a.OwnedLifetimesCount);
                 var sequences=actor.Sequences.GetActiveEntriesSnapshot().Select(s=>"Handle="+s.Handle.LocalSequence+" SourceId="+s.Context.EffectiveSourceId+" Elapsed="+s.Elapsed+" Next="+s.NextMarkerIndex+" / Time="+s.NextMarkerTime);
                 var operations=new List<string>();foreach(var operation in spatial)if(ReferenceEquals(operation.Owner,actor)){
@@ -35,7 +40,7 @@ namespace FRFrame.Gameplay.Unity
                     (t.record.Context==null?"":" SourceId="+t.record.Context.EffectiveSourceId+" Root="+t.record.Context.OriginSourceId+" Activation="+t.record.Context.ActivationSourceId+" Level="+t.record.Context.AbilityLevel)+
                     (t.record.Source.IsValid?" SourceAsset="+Uri.EscapeDataString(t.record.Source.DefinitionId)+" NodeId="+t.record.Source.NodeId+" SourceDocument="+Uri.EscapeDataString(t.record.Source.DocumentId??""):"")+" "+t.record.Detail);
                 result.Add(new GameplayDebugUnitSnapshot(actor.Id,group+" / Actor "+actor.Id,group,new[]{
-                    new GameplayDebugSection("Attributes",attributes),new GameplayDebugSection("Resources",resources),new GameplayDebugSection("Skills",skills),new GameplayDebugSection("Tags / Sources",tags),new GameplayDebugSection("Effects",effects),new GameplayDebugSection("Abilities",abilities),
+                    new GameplayDebugSection("Attributes",attributes),new GameplayDebugSection("Resources",resources),new GameplayDebugSection("Skills",skills),new GameplayDebugSection("Tags / Sources",tags),new GameplayDebugSection("Effects",effects),new GameplayDebugSection("Shield Contributions",shields),new GameplayDebugSection("Abilities",abilities),
                     new GameplayDebugSection("Sequences",sequences),new GameplayDebugSection("Spatial / Aura",operations),new GameplayDebugSection("Skill Trace"+(actor.SkillTrace.Enabled?"":" (disabled)"),trace),
                     new GameplayDebugSection("Combat",new[]{actor.LastCombatOutcome.HasValue?actor.LastCombatOutcome.Value.Kind+" applied="+actor.LastCombatOutcome.Value.Applied:"No committed result"})}));
             }

@@ -71,6 +71,22 @@ namespace FRFrame.Gameplay
         /// <summary>Evaluates and freezes incoming timing before mutation. Execution exceptions propagate after commit.</summary>
         public GameplayEffectApplicationResult Apply(GameplayEffectDefinition definition, GameplayEffectApplicationContext application)
             => ApplyPersistent(definition, application, false);
+
+        /// <summary>Creates an unstacked timed Effect and commits a companion resource before publishing
+        /// its application. The companion must be synchronous, atomic on failure and must not mutate
+        /// this container. A failed commit leaves no Effect or lifecycle notification.</summary>
+        public GameplayEffectApplicationResult ApplyUnstackedDuration(GameplayEffectDefinition definition,
+            GameplayEffectApplicationContext application, Action<GameplayEffectApplicationResult> commit)
+        {
+            if (definition.DurationPolicy != GameplayEffectDurationPolicy.Duration || definition.Stacking != null || definition.Period != 0)
+                throw new ArgumentException("A companion commit requires an unstacked, non-periodic timed Effect.", nameof(definition));
+            var result = ApplyPersistent(definition, application, true);
+            if (result.Outcome != GameplayEffectApplicationOutcome.NewActiveEffect) return result;
+            try { commit(result); }
+            catch { AbortActivation(result.ActiveHandle); throw; }
+            CommitActivationInitial(result.ActiveHandle);
+            return result;
+        }
         /// <summary>Ability commit stages only reversible contributions. Initial executions remain
         /// pending until the grant's cost/state transaction has succeeded.</summary>
         internal GameplayEffectApplicationResult StageActivation(GameplayEffectDefinition definition, GameplayEffectApplicationContext application)
@@ -360,6 +376,25 @@ namespace FRFrame.Gameplay
         /// leases use this to reapply an expired/dispelled contribution without duplicating surviving layers.</summary>
         public bool IsLayerActive(GameplayEffectLayerHandle handle) =>
             _entries.TryGetValue(handle.EffectHandle, out var entry) && entry.Layers.Exists(layer => layer.Handle == handle);
+
+        /// <summary>Changes an exact, non-periodic unstacked Effect deadline in place. The companion
+        /// commit must be synchronous, atomic on failure, and must not mutate the Effect container.
+        /// If validation or the companion commit fails, this operation leaves the clock untouched.</summary>
+        public bool TryUpdateUnstackedDuration(GameplayEffectHandle handle, float duration, bool extend, Action commit)
+        {
+            if (!_entries.TryGetValue(handle, out var entry) || !entry.Finite || entry.Definition.Stacking != null ||
+                entry.Period != 0) return false;
+            if (!float.IsFinite(duration) || duration <= 0) throw new ArgumentOutOfRangeException(nameof(duration));
+            double start = extend ? Math.Max(entry.ExpiresAt, entry.Elapsed) : entry.Elapsed;
+            double expiry = start + duration;
+            if (start > (double)float.MaxValue - duration || expiry <= start ||
+                (extend && (float)(expiry - entry.Elapsed) <= entry.Remaining))
+                throw new ArithmeticException("The requested Effect duration cannot be represented.");
+            commit();
+            entry.ExpiresAt = expiry;
+            return true;
+        }
+
         // Ability normal cooldown edits preserve this container's sole timeline authority.
         internal bool TrySetSimpleDurationRemaining(GameplayEffectHandle handle, float remaining)
         {
