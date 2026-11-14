@@ -18,7 +18,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool pending=graph.Nodes.Any(n=>(n.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring&&!active.Contains(n.Id));
             var binding=node.Payload.Definitions.SingleOrDefault(b=>b.PropertyPath=="Projectile"||b.PropertyPath=="Area"||b.PropertyPath=="Summon");
             var resource=graph.LocalDefinitions.SingleOrDefault(d=>d.Id==binding?.LocalId)?.Payload;
-            string ownership=binding==null?"尚未配置真实空间资源。":binding.External?"生命周期归属由共享资源配置；共享来源只读。":resource is GameplayProjectileDefinitionData projectile&&!projectile.CancelOnAbilityEnd?"当前弹体由世界托管；结束或取消技能不会清理弹体。":"当前对象随施放结束 / 取消清理。";
+            string ownership=binding==null?"尚未配置真实空间资源。":binding.External?"生命周期归属由共享资源配置；共享来源只读。":resource switch
+            {
+                GameplayProjectileDefinitionData { CancelOnAbilityEnd: false } => "当前弹体由世界托管。",
+                GameplayAreaDefinitionData { CancelOnAbilityEnd: false } => "当前区域由世界托管，按自身存续和成员规则清理。",
+                _ => "当前对象随施放结束 / 取消清理。"
+            };
             var endIds=graph.Nodes.Where(n=>(n.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring).Select(n=>n.Id).ToHashSet();
             var current=graph.Connections.Where(e=>endIds.Contains(e.ToNodeId)&&(e.FromNodeId==node.Id&&e.OutputPortKey=="Then"||binding!=null&&e.FromNodeId==binding.LocalId)).Select(e=>e.OutputPortKey+" → "+GameplaySkillNodeDisplay.Name(graph.Nodes.Single(n=>n.Id==e.ToNodeId),graph)).ToArray();
             var label=new Label((pending?"结束策略待决 · 原结束节点保留，尚未接入执行流程\n":"")+"启动后继续立即返回，不等待对象结束。"+ownership+(current.Length>0?"\n直接结束关联："+string.Join("；",current):"")){
@@ -49,11 +54,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         if(reason!=null)menu.AddDisabledItem(content);
                         else menu.AddItem(content,false,()=>ReplaceSpatialEnd(nodeId,endId,port,false));
                     }
-                    if(local.Payload is GameplayProjectileDefinitionData)menu.AddItem(new GUIContent("世界托管（结束或取消不清理弹体） / "+title),false,()=>ReplaceSpatialEnd(nodeId,endId,"Then",true));
+                    if(local.Payload is GameplayProjectileDefinitionData || local.Payload is GameplayAreaDefinitionData)
+                        menu.AddItem(new GUIContent("世界托管（由对象自身规则清理） / "+title),false,()=>ReplaceSpatialEnd(nodeId,endId,"Then",true));
                 }
                 menu.AddDisabledItem(new GUIContent("超时：从启动后继续创建真实时间编排，安排原结束节点"));
                 if(local.Payload is GameplayProjectileDefinitionData)menu.AddDisabledItem(new GUIContent("弹体没有统一寿命结束回调；命中、到达与射程是不同事件"));
-                else menu.AddDisabledItem(new GUIContent("区域 / 召唤暂不支持脱离施放的世界托管"));
+                else if(local.Payload is GameplaySummonDefinitionData)menu.AddDisabledItem(new GUIContent("召唤暂不支持脱离施放的世界托管"));
             });
         }
 

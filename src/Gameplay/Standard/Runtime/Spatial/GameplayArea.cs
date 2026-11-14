@@ -22,6 +22,8 @@ namespace FRFrame.Gameplay.Standard
         public bool TickOnEnter {get;}
         public bool FollowOwner {get;}
         public bool EndOnOwnerDeath { get; }
+        /// <summary>Whether ending or cancelling the creating cast also removes this area.</summary>
+        public bool CancelOnAbilityEnd { get; }
         public IGameplayFloatValue ArmingDelay {get;}
         /// <summary>0 means unlimited entries. A positive limit finishes after that many successful
         /// enter callbacks, using the same cleanup path as expiry/cancel (trap placement semantics).</summary>
@@ -44,7 +46,7 @@ namespace FRFrame.Gameplay.Standard
             IEnumerable<GameplayEffectDefinition> aura=null,IEnumerable<IGameplaySkillAction> onEnter=null,IEnumerable<IGameplaySkillAction> onTick=null,
             IEnumerable<IGameplaySkillAction> onExit=null,IEnumerable<IGameplaySkillAction> onEnd=null,IEnumerable<GameplayPoint> cells=null,float cellSize=1,IGameplaySpatialViewFactory view=null,IEnumerable<IGameplaySkillAction> onStay=null,
             IGameplayFloatValue armingDelay=null,int triggerLimit=0,GameplayPoint originOffset=default,
-            bool endOnOwnerDeath=false)
+            bool endOnOwnerDeath=false,bool cancelOnAbilityEnd=true)
         {
             if(shape!=GameplaySearchShape.Circle&&shape!=GameplaySearchShape.Sector&&shape!=GameplaySearchShape.Box&&shape!=GameplaySearchShape.GridCells)throw new ArgumentOutOfRangeException(nameof(shape));
             if(!Enum.IsDefined(typeof(GameplaySpatialPlane),plane)||!Enum.IsDefined(typeof(GameplaySearchOrigin),origin)||!Enum.IsDefined(typeof(GameplayFactionFilter),faction))throw new ArgumentOutOfRangeException(nameof(plane));
@@ -54,6 +56,7 @@ namespace FRFrame.Gameplay.Standard
             Duration=duration??throw new ArgumentNullException(nameof(duration));TickInterval=tickInterval??throw new ArgumentNullException(nameof(tickInterval));
             TickOnEnter=tickOnEnter;FollowOwner=followOwner;Faction=faction;Tags=tags??GameplayTagQuery.Empty;LayerMask=layerMask;
             EndOnOwnerDeath = endOnOwnerDeath;
+            CancelOnAbilityEnd = cancelOnAbilityEnd;
             if(triggerLimit<0)throw new ArgumentOutOfRangeException(nameof(triggerLimit));TriggerLimit=triggerLimit;ArmingDelay=armingDelay??new GameplayConstantFloatValue(0);
             var effects=new List<GameplayEffectDefinition>(aura??Array.Empty<GameplayEffectDefinition>());
             if(effects.Exists(e=>e==null||e.DurationPolicy==GameplayEffectDurationPolicy.Instant))throw new ArgumentException("Aura requires persistent effect contributions.");
@@ -63,8 +66,8 @@ namespace FRFrame.Gameplay.Standard
             if(!float.IsFinite(cellSize)||cellSize<=0)throw new ArgumentOutOfRangeException(nameof(cellSize));
         }
     }
-    /// <summary>World-owned persistent region. One query supplies enter/exit/tick membership each step.
-    /// An aura contribution cleans up on exit, region end, cast cancellation and owner cleanup;
+    /// <summary>Persistent region advanced by the world. One query supplies enter/exit/tick membership each step.
+    /// Aura is cleaned up on exit or region end. Only ability-owned regions end with the cast;
     /// overlapping sources and shared stack layers are never removed by a definition scan.</summary>
     public sealed class GameplayAreaOperation:GameplaySpatialOperation
     {
@@ -79,7 +82,7 @@ namespace FRFrame.Gameplay.Standard
         public bool IsArmed=>!IsDisposed&&_age>=_arming;
         public int TriggerCount {get;private set;}
         internal GameplayAreaOperation(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,GameplayAreaDefinition definition)
-            :base(owner,context,grant,definition.View)
+            :base(owner,context,grant,definition.View,definition.CancelOnAbilityEnd)
         {
             _definition=definition;
             _radius=definition.Shape==GameplaySearchShape.Circle||definition.Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(definition.Radius,owner,context,"Area radius"):1;
@@ -205,6 +208,6 @@ namespace FRFrame.Gameplay.Standard
         public GameplayAreaDefinition Definition {get;}
         public GameplaySpawnAreaAction(GameplayAreaDefinition definition)=>Definition=definition??throw new ArgumentNullException(nameof(definition));
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
-        {if(!(host is GameplayStandardActor actor)||!GameplayStandardActivation.TryFindGrant(actor,context,out var grant))return GameplaySkillActionResult.Rejected;return actor.World.SpawnArea(actor,context,Definition)!=null?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;}
+        {if(!(host is GameplayStandardActor actor)||!GameplayStandardActivation.TryFindGrant(actor,context,out _))return GameplaySkillActionResult.Rejected;return actor.World.SpawnArea(actor,context,Definition)!=null?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;}
     }
 }

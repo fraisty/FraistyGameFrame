@@ -34,6 +34,12 @@ namespace FRFrame.Gameplay.Authoring
 
         public bool TickOnEnter=true,FollowOwner;
 
+        [Tooltip("开启时技能结束或取消即移除区域。关闭时区域由世界托管，继续执行区域回调。")]
+        public bool CancelOnAbilityEnd = true;
+
+        [Tooltip("施法者失去战斗资格时结束区域并释放全部 Aura 贡献。")]
+        public bool EndOnOwnerDeath;
+
         public GameplayFactionFilter Faction=GameplayFactionFilter.Enemies;
 
         public GameplayTagQueryAuthoring Tags=new GameplayTagQueryAuthoring();
@@ -62,7 +68,23 @@ namespace FRFrame.Gameplay.Authoring
 
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        protected virtual GameplayAreaDefinitionData CaptureValues() => new GameplayAreaDefinitionData { Shape = Shape, Plane = Plane, Origin = Origin, OriginOffset = OriginOffset, Radius = Radius, Angle = Angle, Length = Length, Width = Width, Height = Height, Duration = Duration, TickInterval = TickInterval, TickOnEnter = TickOnEnter, FollowOwner = FollowOwner, Faction = Faction, Tags = Tags, LayerMask = LayerMask, Cells = Cells, CellSize = CellSize, Aura = Aura, OnEnter = OnEnter, OnStay = OnStay, OnTick = OnTick, OnExit = OnExit, OnEnd = OnEnd, ArmingDelay = ArmingDelay, TriggerLimit = TriggerLimit };
+        protected virtual GameplayAreaDefinitionData CaptureValues()
+        {
+            var values = new GameplayAreaDefinitionData();
+            CopyValuesTo(values);
+            return values;
+        }
+        /// <summary>Copies the common Area fields for both logical and Unity presentation definitions.</summary>
+        protected void CopyValuesTo(GameplayAreaDefinitionData values)
+        {
+            values.Shape = Shape; values.Plane = Plane; values.Origin = Origin; values.OriginOffset = OriginOffset;
+            values.Radius = Radius; values.Angle = Angle; values.Length = Length; values.Width = Width; values.Height = Height;
+            values.Duration = Duration; values.TickInterval = TickInterval; values.TickOnEnter = TickOnEnter;
+            values.FollowOwner = FollowOwner; values.CancelOnAbilityEnd = CancelOnAbilityEnd; values.EndOnOwnerDeath = EndOnOwnerDeath;
+            values.Faction = Faction; values.Tags = Tags; values.LayerMask = LayerMask; values.Cells = Cells; values.CellSize = CellSize;
+            values.Aura = Aura; values.OnEnter = OnEnter; values.OnStay = OnStay; values.OnTick = OnTick;
+            values.OnExit = OnExit; values.OnEnd = OnEnd; values.ArmingDelay = ArmingDelay; values.TriggerLimit = TriggerLimit;
+        }
         public FRFrame.Gameplay.Standard.GameplayAreaDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => CaptureValues().Build(context));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 

@@ -25,6 +25,8 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=4};
         [SerializeReference] public GameplayFloatValueAuthoring TickInterval=new GameplayConstantFloatValueAuthoring{Value=.5f};
         public bool TickOnEnter=true,FollowOwner;
+        [Tooltip("开启时技能结束或取消即移除区域。关闭时区域由世界托管，继续执行区域回调。")]
+        public bool CancelOnAbilityEnd = true;
         [Tooltip("施法者失去战斗资格时结束区域并释放全部 Aura 贡献。")]
         public bool EndOnOwnerDeath;
         public GameplayFactionFilter Faction=GameplayFactionFilter.Enemies;
@@ -45,7 +47,7 @@ namespace FRFrame.Gameplay.Authoring
             Shape==GameplayAreaAuthoringShape.Cells?GameplaySearchShape.GridCells:Shape==GameplayAreaAuthoringShape.Box?GameplaySearchShape.Box:Shape==GameplayAreaAuthoringShape.Sector?GameplaySearchShape.Sector:GameplaySearchShape.Circle,
             Plane,Origin,Radius.Build(),Angle.Build(),Length.Build(),Width.Build(),Height.Build(),Duration.Build(),TickInterval.Build(),TickOnEnter,FollowOwner,Faction,Tags?.Build(),LayerMask,
             Enumerable.Range(0, Aura.Length).Select(i => context.ResolveDefinition(Aura[i], this, "Aura.Array.data[" + i + "]", () => Aura[i].Build(context))).ToArray(),GameplaySpatialAuthoringUtility.Build(OnEnter,context),GameplaySpatialAuthoringUtility.Build(OnTick,context),
-            GameplaySpatialAuthoringUtility.Build(OnExit,context),GameplaySpatialAuthoringUtility.Build(OnEnd,context),Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,CreateView(context),GameplaySpatialAuthoringUtility.Build(OnStay,context),ArmingDelay.Build(),TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),EndOnOwnerDeath));
+            GameplaySpatialAuthoringUtility.Build(OnExit,context),GameplaySpatialAuthoringUtility.Build(OnEnd,context),Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,CreateView(context),GameplaySpatialAuthoringUtility.Build(OnStay,context),ArmingDelay.Build(),TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),EndOnOwnerDeath,CancelOnAbilityEnd));
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {

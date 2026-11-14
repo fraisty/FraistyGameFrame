@@ -34,7 +34,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public IEnumerable<GameplayBusinessInspectorGroup> Groups(GameplayAuthoringLocation node)
         {
             string prefix=node.Path.Length==0?"":node.Path+".";
-            foreach(var group in Describe(Value(node)))yield return new GameplayBusinessInspectorGroup(node.Source,group.Title,group.Note,group.Paths.Select(p=>prefix+p).ToArray()){Advanced=group.Advanced};
+            foreach(var group in Describe(Value(node)))
+            {
+                var bound = new GameplayBusinessInspectorGroup(node.Source,group.Title,group.Note,group.Paths.Select(p=>prefix+p).ToArray()){Advanced=group.Advanced};
+                foreach (var label in group.Labels) bound.Labels.Add(prefix + label.Key, label.Value);
+                yield return bound;
+            }
         }
         /// <summary>Shared business sections for both persisted V1 library resources and embedded
         /// V2 values. Metadata contains relative field names only, with no graph or SO proxy.</summary>
@@ -127,8 +132,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if((value is GameplayAreaDefinitionAsset || value is GameplayAreaDefinitionData))
             {
-                yield return Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize","CancelOnAbilityEnd");
-                yield return Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura在进入时应用，离开或区域结束时只移除本区域贡献。","Duration","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","EndOnOwnerDeath","Faction","Tags","LayerMask","Aura");
+                yield return Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize");
+                var lifetime = Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura在进入时应用，离开或区域结束时只移除本区域贡献。","Duration","CancelOnAbilityEnd","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","EndOnOwnerDeath","Faction","Tags","LayerMask","Aura");
+                lifetime.Labels["CancelOnAbilityEnd"] = "技能结束时清理区域";
+                yield return lifetime;
                 yield return Group("进入 / 停留 / 周期 / 离开 / 结束","Stay 每步执行，Tick 按间隔执行；所有回调保留 cast Level/Root。","OnEnter","OnStay","OnTick","OnExit","OnEnd","Prefab");
             }
             else if(value is GameplaySpawnProjectileActionAuthoring)yield return Group("发射正式弹体","直接引用唯一弹体 Source；Logic/Physics2D/3D复用同一规则。","Projectile","LaunchFromTriggerPoint");

@@ -305,7 +305,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             (p.Action is GameplaySpawnProjectileActionAuthoring||p.Action is GameplaySpawnAreaActionAuthoring||p.Action is GameplaySpawnSummonActionAuthoring);
 
         /// <summary>Author-selected ending for an actual spatial callback, or an explicitly
-        /// world-owned local projectile. Replaces direct End associations from this start/its
+        /// world-owned local projectile or area. Replaces direct End associations from this start/its
         /// local resource in one Undo; other callback chains keep their authored behavior.
         /// Callers must review those retained paths or reused local consumers before replacement.
         /// No wait port, persisted policy mirror or shared SO write is introduced.</summary>
@@ -317,10 +317,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var binding=node.Payload.Definitions.Single(b=>b.PropertyPath=="Projectile"||b.PropertyPath=="Area"||b.PropertyPath=="Summon");
                 if(binding.External)throw new InvalidOperationException("共享来源只读；先明确转为本地配置再选择结束策略。");
                 var local=graph.LocalDefinitions.Single(d=>d.Id==binding.LocalId);
-                if(worldOwned&&!(local.Payload is GameplayProjectileDefinitionData))throw new InvalidOperationException("当前只有弹体支持脱离施放的世界托管。");
+                if(worldOwned&&!(local.Payload is GameplayProjectileDefinitionData || local.Payload is GameplayAreaDefinitionData))
+                    throw new InvalidOperationException("当前仅弹体和区域支持脱离施放的世界托管。");
                 if(!worldOwned&&!GameplayGraphFields.ActionArrays(local.Payload).Any(s=>s.Path==port))throw new ArgumentException("此资源没有所选生命周期出口。");
                 if(!reviewedRelatedPaths&&SpatialEndReview(graph,nodeId)!=null)throw new InvalidOperationException("此行为还有手工回调或复用关系；请在结束策略菜单审核将保留和替换的连接。");
                 if(local.Payload is GameplayProjectileDefinitionData projectile)projectile.CancelOnAbilityEnd=!worldOwned;
+                if(local.Payload is GameplayAreaDefinitionData area)area.CancelOnAbilityEnd=!worldOwned;
                 var ends=graph.Nodes.Where(n=>(n.Payload as GameplayActionNodePayload)?.Action is GameplayEndAbilityActionAuthoring).Select(n=>n.Id).ToHashSet();
                 graph.Connections.RemoveAll(e=>ends.Contains(e.ToNodeId)&&(e.FromNodeId==nodeId&&e.OutputPortKey=="Then"||e.FromNodeId==local.Id));
                 ConnectInGraph(graph,worldOwned?nodeId:local.Id,worldOwned?"Then":port,endId);

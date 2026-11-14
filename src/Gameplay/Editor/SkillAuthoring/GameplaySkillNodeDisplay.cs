@@ -139,7 +139,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(values is GameplayEffectDefinitionData effect)return Effect(effect,definition.Name);
                 if(binding.External is GameplayEffectDefinitionAsset shared)return Effect((GameplayEffectDefinitionData)shared.CaptureGraphValues(),shared.name)+" · 共享";
                 if(values is GameplayProjectileDefinitionData projectile)return projectile.Motion+" · "+projectile.Plane+"\n速度 "+Value(projectile.Speed)+" · 存续 "+Value(projectile.Duration)+"s · 命中上限 "+projectile.MaxHits;
-                if(values is GameplayAreaDefinitionData area)return area.Shape+" · "+area.Plane+"\n存续 "+Value(area.Duration)+"s · 周期 "+Value(area.TickInterval)+"s";
+                if(values is GameplayAreaDefinitionData area)return area.Shape+" · "+area.Plane+"\n存续 "+Value(area.Duration)+"s · 周期 "+Value(area.TickInterval)+"s · "+(area.CancelOnAbilityEnd?"随施放清理":"世界托管");
                 return values==null?(binding.External?binding.External.name+" · 共享":null):GameplaySkillFieldSchema.ValueSummary(values)??definition.Name;
             }).Where(s=>!string.IsNullOrEmpty(s)).ToArray();
             return summaries.Length==0?GameplaySkillNodeDescriptors.Get(action?.GetType()).Summary:string.Join("\n",summaries);

@@ -39,7 +39,7 @@ namespace FRFrame.Gameplay.Editor
             if(value is GameplayProjectileDefinitionAsset projectile)
                 return projectile.Motion+(projectile.Motion==GameplayProjectileMotionKind.Straight?" / "+projectile.StraightDestination:"")+" · "+projectile.Plane+"\n速度 "+Number(projectile.Speed)+" · 射程 "+Number(projectile.MaxRange)+" · 命中上限 "+projectile.MaxHits;
             if(value is GameplayAreaDefinitionAsset area)
-                return area.Shape+" · "+area.Plane+" · 持续 "+Number(area.Duration)+"s\n周期 "+Number(area.TickInterval)+"s · Aura "+(area.Aura?.Length??0)+" 项";
+                return area.Shape+" · "+area.Plane+" · 持续 "+Number(area.Duration)+"s\n周期 "+Number(area.TickInterval)+"s · Aura "+(area.Aura?.Length??0)+" 项 · "+(area.CancelOnAbilityEnd?"随施放清理":"世界托管");
             if(value is GameplayDamageExecutionAuthoring damage)return damage.DamageType+" · "+Number(damage.Amount)+"\n结算阶段 "+(damage.Stages?.Length??0)+" 项";
             if(value is GameplayHealExecutionAuthoring heal)return "治疗 · "+Number(heal.Amount);
             if(value is GameplayShieldExecutionAuthoring shield)return "护盾 · "+Number(shield.Amount);

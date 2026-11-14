@@ -122,6 +122,58 @@ namespace FRFrame.Tests.Gameplay
                 world.Advance(.2f);Assert.That(tick,Is.EqualTo(3));area.Dispose();Assert.That(exit,Is.EqualTo(2));
             }
         }
+        [TestCase(true)]
+        [TestCase(false)]
+        public void AreaOwnershipKeepsExactAuraAndCallbackProvenance(bool cancelCast)
+        {
+            using var world = new GameplayStandardWorld();
+            var actor = world.CreateActor(default, 1);
+            var target = world.CreateActor(new GameplayPoint(1, 0), 2);
+            var tag = new GameplayTag("State.Test.Area");
+            var aura = new GameplayEffectDefinition(GameplayEffectDurationPolicy.Infinite,0,
+                Array.Empty<GameplayEffectAttributeModifierDefinition>(),new[]{tag});
+            var skill = Install(actor, new Observe(_=>{}));
+            Assert.That(skill.TryCast(), Is.True);
+            var cast = skill.LastCastContext;
+            var ticks = new List<GameplayContext>();
+            var exits = new List<GameplayContext>();
+            var ends = new List<GameplayContext>();
+            var managed = new GameplayAreaDefinition(GameplaySearchShape.Circle,GameplaySpatialPlane.XY,GameplaySearchOrigin.Owner,
+                N(3),N(120),N(1),N(1),N(1),N(3),N(.5f),tickOnEnter:false,aura:new[]{aura},
+                onTick:new[]{new Observe(ticks.Add)},onExit:new[]{new Observe(exits.Add)},onEnd:new[]{new Observe(ends.Add)},
+                cancelOnAbilityEnd:false);
+            var legacy = new GameplayAreaDefinition(GameplaySearchShape.Circle,GameplaySpatialPlane.XY,GameplaySearchOrigin.Owner,
+                N(3),N(120),N(1),N(1),N(1),N(3),N(.5f),tickOnEnter:false,aura:new[]{aura});
+            var area = world.SpawnArea(actor,cast,managed);
+            var old = world.SpawnArea(actor,cast,legacy);
+            if (cancelCast) skill.Cancel();
+            else actor.Abilities.End(skill.Grant);
+            Assert.That(old.EndReason, Is.EqualTo(cancelCast ? GameplaySpatialEndReason.Cancelled : GameplaySpatialEndReason.Completed));
+            Assert.That(area.IsDisposed, Is.False);
+            Assert.That(target.Effects.GetActiveEntriesSnapshot().Count, Is.EqualTo(1));
+            Assert.That(GameplayStandardActivation.TryFindGrant(actor,cast,out _), Is.False);
+            Assert.That(new GameplaySpawnAreaAction(managed).Execute(cast,default,actor), Is.EqualTo(GameplaySkillActionResult.Rejected));
+
+            world.Advance(1);
+            Assert.That(skill.TryCast(), Is.True);
+            var second = world.SpawnArea(actor,skill.LastCastContext,managed);
+            world.Advance(2);
+            Assert.That(area.EndReason, Is.EqualTo(GameplaySpatialEndReason.Completed));
+            Assert.That(second.IsDisposed, Is.False);
+            Assert.That(target.Effects.GetActiveEntriesSnapshot().Count, Is.EqualTo(1));
+            Assert.That(target.Tags.HasTag(tag), Is.True);
+            Assert.That(ticks.FindAll(ctx=>ctx.EffectiveSourceId==area.Id).Count, Is.EqualTo(6));
+            foreach (var ctx in ticks.FindAll(ctx=>ctx.EffectiveSourceId==area.Id))
+                Assert.That(ctx.ActivationSourceId, Is.EqualTo(cast.ActivationSourceId));
+            Assert.That(exits[0].TargetData.PrimaryTargetId, Is.EqualTo(target.Id));
+            Assert.That(ends[0].EffectiveSourceId, Is.EqualTo(area.Id));
+            world.Advance(1);
+            Assert.That(exits.Count, Is.EqualTo(2));
+            Assert.That(ends.Count, Is.EqualTo(2));
+            Assert.That(target.Tags.HasTag(tag), Is.False);
+            Assert.That(target.Effects.GetActiveEntriesSnapshot(), Is.Empty);
+        }
+
         private static GameplayInstalledSkill Install(GameplayStandardActor actor,IGameplaySkillAction action)
         {
             var signal=new GameplayTag("Event.Test.Spatial.Cast");
