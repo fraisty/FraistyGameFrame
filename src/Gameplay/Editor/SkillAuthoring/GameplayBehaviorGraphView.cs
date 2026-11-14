@@ -206,9 +206,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(data.Payload is GameplayAbilityNodePayload&&binding.PropertyPath=="CooldownEffect")continue;
                 var definition = _document.AuthoringGraph.LocalDefinitions.Find(d => d.Id == binding.LocalId);
                 
-                if(definition!=null&&_outputs.Values.Any(p=>((Socket)p.userData).Owner==definition.Id)){var shared=new Label("复用局部配置 · 后续端口位于首个消费者卡片");shared.style.whiteSpace=WhiteSpace.Normal;shared.style.paddingLeft=10;card.extensionContainer.Add(shared);definition=null;}
                 if (definition?.Payload is GameplayEffectDefinitionData effect) AddEffectLifecycle(card, definition, effect);
-                else if (definition != null) foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
+                else if (definition != null)
+                {
+                    if (_outputs.Values.Any(p => ((Socket)p.userData).Owner == definition.Id))
+                        card.extensionContainer.Add(new Label("复用局部配置 · 后续端口位于首个消费者卡片")
+                            { style = { whiteSpace = WhiteSpace.Normal, paddingLeft = 10 } });
+                    else
+                        foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
+                    if (definition.Payload is GameplayAreaDefinitionData) AddAuraLifecycles(card, definition);
+                }
                 
             var timeline = _document.AuthoringGraph.Timelines.Find(t => t.Id == binding.LocalId);
                 if (timeline != null)
@@ -328,7 +335,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         ? DropdownMenuAction.Status.Disabled : DropdownMenuAction.Status.Normal;
                     evt.menu.AppendAction("添加并连接…", _ => ShowMenu(port.worldBound.center, source: socket), status);
                     evt.menu.AppendAction("连接已有行为…", _ => ShowExistingEffectActions(socket, port.worldBound.center), status);
-                    evt.menu.AppendAction("编辑生命周期配置", _ => { Selected?.Invoke(card.viewDataKey); ConfigurationOwner?.OpenDetails(); });
+                    evt.menu.AppendAction("编辑生命周期配置", _ => InspectEffectLifecycle(card, owner));
                     foreach (var edge in port.connections)
                     {
                         string id = edge.input.node.viewDataKey;

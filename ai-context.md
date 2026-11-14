@@ -68327,9 +68327,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(data.Payload is GameplayAbilityNodePayload&&binding.PropertyPath=="CooldownEffect")continue;
                 var definition = _document.AuthoringGraph.LocalDefinitions.Find(d => d.Id == binding.LocalId);
                 
-                if(definition!=null&&_outputs.Values.Any(p=>((Socket)p.userData).Owner==definition.Id)){var shared=new Label("复用局部配置 · 后续端口位于首个消费者卡片");shared.style.whiteSpace=WhiteSpace.Normal;shared.style.paddingLeft=10;card.extensionContainer.Add(shared);definition=null;}
                 if (definition?.Payload is GameplayEffectDefinitionData effect) AddEffectLifecycle(card, definition, effect);
-                else if (definition != null) foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
+                else if (definition != null)
+                {
+                    if (_outputs.Values.Any(p => ((Socket)p.userData).Owner == definition.Id))
+                        card.extensionContainer.Add(new Label("复用局部配置 · 后续端口位于首个消费者卡片")
+                            { style = { whiteSpace = WhiteSpace.Normal, paddingLeft = 10 } });
+                    else
+                        foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload)) ResourcePort(card,definition,binding,port.Path);
+                    if (definition.Payload is GameplayAreaDefinitionData) AddAuraLifecycles(card, definition);
+                }
                 
             var timeline = _document.AuthoringGraph.Timelines.Find(t => t.Id == binding.LocalId);
                 if (timeline != null)
@@ -68449,7 +68456,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         ? DropdownMenuAction.Status.Disabled : DropdownMenuAction.Status.Normal;
                     evt.menu.AppendAction("添加并连接…", _ => ShowMenu(port.worldBound.center, source: socket), status);
                     evt.menu.AppendAction("连接已有行为…", _ => ShowExistingEffectActions(socket, port.worldBound.center), status);
-                    evt.menu.AppendAction("编辑生命周期配置", _ => { Selected?.Invoke(card.viewDataKey); ConfigurationOwner?.OpenDetails(); });
+                    evt.menu.AppendAction("编辑生命周期配置", _ => InspectEffectLifecycle(card, owner));
                     foreach (var edge in port.connections)
                     {
                         string id = edge.input.node.viewDataKey;
@@ -68617,13 +68624,52 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 {
     public sealed partial class GameplayBehaviorGraphView
     {
-        private void AddEffectLifecycle(Node card, GameplayLocalDefinition definition, GameplayEffectDefinitionData effect)
+        private void AddAuraLifecycles(Node card, GameplayLocalDefinition area)
+        {
+            var graph = _document.AuthoringGraph;
+            foreach (var binding in area.Definitions)
+            {
+                const string prefix = "Aura.Array.data[";
+                if (!binding.PropertyPath.StartsWith(prefix, StringComparison.Ordinal) ||
+                    !int.TryParse(binding.PropertyPath.Substring(prefix.Length).TrimEnd(']'), out int index)) continue;
+                var definition = graph.LocalDefinitions.Find(d => d.Id == binding.LocalId);
+                if (definition?.Payload is GameplayEffectDefinitionData effect)
+                    AddEffectLifecycle(card, definition, effect, $"Aura {index + 1} · {definition.Name}");
+            }
+        }
+
+        private void InspectEffectLifecycle(Node card, string owner)
+        {
+            SelectNodeWithoutCamera(card.viewDataKey);
+            Selected?.Invoke(card.viewDataKey);
+            ConfigurationOwner?.InspectLocalDefinition(owner);
+        }
+
+        private void AddEffectLifecycle(Node card, GameplayLocalDefinition definition, GameplayEffectDefinitionData effect, string aura = null)
         {
             if (effect.DurationPolicy == GameplayEffectDurationPolicy.Instant) return;
             string owner = definition.Id;
+            string applied = Key(owner, GameplayGraphEffectCallbacks.Applied);
+            if (_outputs.ContainsKey(applied))
+            {
+                card.extensionContainer.Add(new Button(() =>
+                {
+                    if (_outputs.TryGetValue(applied, out var port))
+                    {
+                        FocusNode(port.node.viewDataKey);
+                        InspectEffectLifecycle(port.node, owner);
+                    }
+                })
+                    { text = (aura ?? definition.Name) + " · 定位共用生命周期" });
+                return;
+            }
             var section = new VisualElement { name = "EffectLifecycle", style = { marginLeft = 9, marginRight = 5, marginBottom = 5 } };
             card.extensionContainer.Add(section);
-            section.Add(new Label("生命周期") { style = { unityFontStyleAndWeight = FontStyle.Bold, marginTop = 4 } });
+            if (aura == null)
+                section.Add(new Label("生命周期") { style = { unityFontStyleAndWeight = FontStyle.Bold, marginTop = 4 } });
+            else
+                section.Add(new Button(() => InspectEffectLifecycle(card, owner))
+                    { text = aura, tooltip = "检查此 Aura 的真实 Effect 定义和后续行为" });
             Row("首次成功应用", GameplayGraphEffectCallbacks.Applied, "新的一组效果提交后执行。免疫或失败不会触发。");
             if (effect.Stacking != null)
             {
@@ -68691,7 +68737,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var port = AddPort(card, owner, key);
                 port.RemoveFromHierarchy();
                 port.portName = caption.Length == 0 && !_document.AuthoringGraph.Connections.Any(e => e.FromNodeId == owner && e.OutputPortKey == key) ? "+" : caption;
-                port.tooltip = hint;
+                port.tooltip = aura == null ? hint : aura + " · " + hint;
                 port.style.flexShrink = 0;
                 if (GameplayGraphEffectCallbacks.IsActionPort(key)) port.portColor = new Color(.35f, .83f, .81f);
                 row.Add(port);
@@ -74092,6 +74138,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static void ShowWorkbench() { var window = GetWindow<GameplaySkillWorkbench>(); window.Show();window.Focus(); }
         [MenuItem("Assets/Create/FRFrame Gameplay/正式技能")]
         private static void CreateAsset()=>GetWindow<GameplaySkillWorkbench>().NewDocument();
+        internal void InspectLocalDefinition(string definitionId)
+        {
+            _definition = definitionId;
+            OpenDetails();
+        }
+
         public static void Open(GameplaySkillDocumentAsset document, string nodeId = null)
         {
             var window = GetWindow<GameplaySkillWorkbench>();window.SelectDocument(document,nodeId);window.Show();window.Focus();if(nodeId!=null)window.Canvas.FocusNode(nodeId);
@@ -81299,16 +81351,29 @@ namespace FRFrame.Gameplay.Unity
                     return GameplaySkillActionResult.Succeeded;
                 }
                 var controller = actor.Presentation as GameplayUnityAnimationController;
-                if (!_definition.OwnedByAbility && actor.TryReadPresentationCallback(context, out var segment))
+                GameplayPoint? segment = null;
+                bool callback = !_definition.OwnedByAbility && actor.TryReadPresentationCallback(context, out segment);
+                string operation = callback ? "CallbackCue" : "PresentationCue";
+                string failure;
+                try
                 {
-                    if (controller == null || !controller.TryPlayCallbackCue(_definition,context,segment))
-                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id,context,default,
-                            GameplaySkillTraceStage.ActionRejected,"CallbackCue",detail:"缺少可用 Unity Cue 播放器，或回调位置无法解析。"));
-                    return GameplaySkillActionResult.Succeeded;
+                    if (controller == null) failure = "缺少可用 Unity Cue 播放器。";
+                    else if (callback ? controller.TryPlayCallbackCue(_definition, context, segment) : controller.TryPlayCue(_definition, context))
+                        return GameplaySkillActionResult.Succeeded;
+                    else failure = "Cue 播放未完成，请检查位置、授权或播放服务。";
                 }
-                if (controller != null && controller.TryPlayCue(_definition,context))
-                    return GameplaySkillActionResult.Succeeded;
-                return GameplaySkillActionResult.Rejected;
+                catch (Exception error)
+                {
+                    // This boundary applies only to playback of an already-built Cue.
+                    failure = error.GetType().Name + ": " + error.Message;
+                }
+                if (actor.SkillTrace.Enabled)
+                {
+                    actor.TryGetActionSource(this, context, out var source);
+                    actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id, context, triggerEvent.EventTag,
+                        GameplaySkillTraceStage.ActionRejected, operation, detail: failure, source: source));
+                }
+                return GameplaySkillActionResult.Succeeded;
             }
 
             private bool MeetsPresentationConditions(GameplayStandardActor actor, GameplayContext context)
@@ -94830,6 +94895,45 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
 {
     public sealed class GameplayAnimationOwnershipTests
     {
+        [Test]
+        public void OptionalCueWithoutPresenterDoesNotBlockEndOrTheNextAreaCast()
+        {
+            var prefab = new GameObject("Optional Cue prefab");
+            var cueAsset = ScriptableObject.CreateInstance<GameplayPresentationCueAsset>();
+            try
+            {
+                cueAsset.Prefab = prefab;
+                using (var serialized = new UnityEditor.SerializedObject(cueAsset))
+                {
+                    serialized.FindProperty("definitionId").stringValue = "Tests.OptionalCastCue";
+                    serialized.ApplyModifiedPropertiesWithoutUndo();
+                }
+                var cue = new GameplayPlayPresentationCueActionAuthoring { Cue = cueAsset }.Build(new GameplayAuthoringBuildContext());
+                var unit = new GameplayConstantFloatValue(1);
+                var area = new GameplayAreaDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.Owner,
+                    unit, unit, unit, unit, unit, unit, unit, cancelOnAbilityEnd: false);
+                var signal = new GameplayTag("Event.Tests.OptionalCastCue");
+                using var world = new GameplayStandardWorld();
+                var caster = world.CreateActor(default, 1);
+                var ability = new GameplayAbilityDefinition(Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>());
+                var rule = new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal), Array.Empty<IGameplaySkillCondition>(),
+                    new GameplaySkillSelfTarget(), new IGameplaySkillAction[] { new GameplaySpawnAreaAction(area), cue, new GameplayEndAbilityAction() }, false);
+                var skill = caster.InstallDocument(new GameplaySkillDocumentDefinition(1, ability, rule, signal));
+                Assert.That(skill.TryCast(), Is.True);
+                Assert.That(skill.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+                Assert.That(skill.TryCast(), Is.True);
+                Assert.That(skill.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+                Assert.That(world.GetSpatialSnapshot().Count, Is.EqualTo(2));
+                world.Advance(1);
+                Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cueAsset);
+                UnityEngine.Object.DestroyImmediate(prefab);
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void CommittedEffectCuesSurviveSameFrameRemovalWithoutCastOrReplayAuthority(bool selfDispel)

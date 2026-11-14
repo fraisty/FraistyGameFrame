@@ -11,6 +11,45 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
 {
     public sealed class GameplayAnimationOwnershipTests
     {
+        [Test]
+        public void OptionalCueWithoutPresenterDoesNotBlockEndOrTheNextAreaCast()
+        {
+            var prefab = new GameObject("Optional Cue prefab");
+            var cueAsset = ScriptableObject.CreateInstance<GameplayPresentationCueAsset>();
+            try
+            {
+                cueAsset.Prefab = prefab;
+                using (var serialized = new UnityEditor.SerializedObject(cueAsset))
+                {
+                    serialized.FindProperty("definitionId").stringValue = "Tests.OptionalCastCue";
+                    serialized.ApplyModifiedPropertiesWithoutUndo();
+                }
+                var cue = new GameplayPlayPresentationCueActionAuthoring { Cue = cueAsset }.Build(new GameplayAuthoringBuildContext());
+                var unit = new GameplayConstantFloatValue(1);
+                var area = new GameplayAreaDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.Owner,
+                    unit, unit, unit, unit, unit, unit, unit, cancelOnAbilityEnd: false);
+                var signal = new GameplayTag("Event.Tests.OptionalCastCue");
+                using var world = new GameplayStandardWorld();
+                var caster = world.CreateActor(default, 1);
+                var ability = new GameplayAbilityDefinition(Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>(), Array.Empty<GameplayTag>());
+                var rule = new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal), Array.Empty<IGameplaySkillCondition>(),
+                    new GameplaySkillSelfTarget(), new IGameplaySkillAction[] { new GameplaySpawnAreaAction(area), cue, new GameplayEndAbilityAction() }, false);
+                var skill = caster.InstallDocument(new GameplaySkillDocumentDefinition(1, ability, rule, signal));
+                Assert.That(skill.TryCast(), Is.True);
+                Assert.That(skill.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+                Assert.That(skill.TryCast(), Is.True);
+                Assert.That(skill.Status.Phase, Is.EqualTo(GameplayAbilityPhase.Inactive));
+                Assert.That(world.GetSpatialSnapshot().Count, Is.EqualTo(2));
+                world.Advance(1);
+                Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cueAsset);
+                UnityEngine.Object.DestroyImmediate(prefab);
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void CommittedEffectCuesSurviveSameFrameRemovalWithoutCastOrReplayAuthority(bool selfDispel)

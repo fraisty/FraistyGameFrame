@@ -31,16 +31,29 @@ namespace FRFrame.Gameplay.Unity
                     return GameplaySkillActionResult.Succeeded;
                 }
                 var controller = actor.Presentation as GameplayUnityAnimationController;
-                if (!_definition.OwnedByAbility && actor.TryReadPresentationCallback(context, out var segment))
+                GameplayPoint? segment = null;
+                bool callback = !_definition.OwnedByAbility && actor.TryReadPresentationCallback(context, out segment);
+                string operation = callback ? "CallbackCue" : "PresentationCue";
+                string failure;
+                try
                 {
-                    if (controller == null || !controller.TryPlayCallbackCue(_definition,context,segment))
-                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id,context,default,
-                            GameplaySkillTraceStage.ActionRejected,"CallbackCue",detail:"缺少可用 Unity Cue 播放器，或回调位置无法解析。"));
-                    return GameplaySkillActionResult.Succeeded;
+                    if (controller == null) failure = "缺少可用 Unity Cue 播放器。";
+                    else if (callback ? controller.TryPlayCallbackCue(_definition, context, segment) : controller.TryPlayCue(_definition, context))
+                        return GameplaySkillActionResult.Succeeded;
+                    else failure = "Cue 播放未完成，请检查位置、授权或播放服务。";
                 }
-                if (controller != null && controller.TryPlayCue(_definition,context))
-                    return GameplaySkillActionResult.Succeeded;
-                return GameplaySkillActionResult.Rejected;
+                catch (Exception error)
+                {
+                    // This boundary applies only to playback of an already-built Cue.
+                    failure = error.GetType().Name + ": " + error.Message;
+                }
+                if (actor.SkillTrace.Enabled)
+                {
+                    actor.TryGetActionSource(this, context, out var source);
+                    actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id, context, triggerEvent.EventTag,
+                        GameplaySkillTraceStage.ActionRejected, operation, detail: failure, source: source));
+                }
+                return GameplaySkillActionResult.Succeeded;
             }
 
             private bool MeetsPresentationConditions(GameplayStandardActor actor, GameplayContext context)

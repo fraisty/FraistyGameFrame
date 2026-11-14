@@ -64,6 +64,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static void ShowWorkbench() { var window = GetWindow<GameplaySkillWorkbench>(); window.Show();window.Focus(); }
         [MenuItem("Assets/Create/FRFrame Gameplay/正式技能")]
         private static void CreateAsset()=>GetWindow<GameplaySkillWorkbench>().NewDocument();
+        internal void InspectLocalDefinition(string definitionId)
+        {
+            _definition = definitionId;
+            OpenDetails();
+        }
+
         public static void Open(GameplaySkillDocumentAsset document, string nodeId = null)
         {
             var window = GetWindow<GameplaySkillWorkbench>();window.SelectDocument(document,nodeId);window.Show();window.Focus();if(nodeId!=null)window.Canvas.FocusNode(nodeId);

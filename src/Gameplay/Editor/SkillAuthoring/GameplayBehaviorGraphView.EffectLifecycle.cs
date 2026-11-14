@@ -12,13 +12,52 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 {
     public sealed partial class GameplayBehaviorGraphView
     {
-        private void AddEffectLifecycle(Node card, GameplayLocalDefinition definition, GameplayEffectDefinitionData effect)
+        private void AddAuraLifecycles(Node card, GameplayLocalDefinition area)
+        {
+            var graph = _document.AuthoringGraph;
+            foreach (var binding in area.Definitions)
+            {
+                const string prefix = "Aura.Array.data[";
+                if (!binding.PropertyPath.StartsWith(prefix, StringComparison.Ordinal) ||
+                    !int.TryParse(binding.PropertyPath.Substring(prefix.Length).TrimEnd(']'), out int index)) continue;
+                var definition = graph.LocalDefinitions.Find(d => d.Id == binding.LocalId);
+                if (definition?.Payload is GameplayEffectDefinitionData effect)
+                    AddEffectLifecycle(card, definition, effect, $"Aura {index + 1} · {definition.Name}");
+            }
+        }
+
+        private void InspectEffectLifecycle(Node card, string owner)
+        {
+            SelectNodeWithoutCamera(card.viewDataKey);
+            Selected?.Invoke(card.viewDataKey);
+            ConfigurationOwner?.InspectLocalDefinition(owner);
+        }
+
+        private void AddEffectLifecycle(Node card, GameplayLocalDefinition definition, GameplayEffectDefinitionData effect, string aura = null)
         {
             if (effect.DurationPolicy == GameplayEffectDurationPolicy.Instant) return;
             string owner = definition.Id;
+            string applied = Key(owner, GameplayGraphEffectCallbacks.Applied);
+            if (_outputs.ContainsKey(applied))
+            {
+                card.extensionContainer.Add(new Button(() =>
+                {
+                    if (_outputs.TryGetValue(applied, out var port))
+                    {
+                        FocusNode(port.node.viewDataKey);
+                        InspectEffectLifecycle(port.node, owner);
+                    }
+                })
+                    { text = (aura ?? definition.Name) + " · 定位共用生命周期" });
+                return;
+            }
             var section = new VisualElement { name = "EffectLifecycle", style = { marginLeft = 9, marginRight = 5, marginBottom = 5 } };
             card.extensionContainer.Add(section);
-            section.Add(new Label("生命周期") { style = { unityFontStyleAndWeight = FontStyle.Bold, marginTop = 4 } });
+            if (aura == null)
+                section.Add(new Label("生命周期") { style = { unityFontStyleAndWeight = FontStyle.Bold, marginTop = 4 } });
+            else
+                section.Add(new Button(() => InspectEffectLifecycle(card, owner))
+                    { text = aura, tooltip = "检查此 Aura 的真实 Effect 定义和后续行为" });
             Row("首次成功应用", GameplayGraphEffectCallbacks.Applied, "新的一组效果提交后执行。免疫或失败不会触发。");
             if (effect.Stacking != null)
             {
@@ -86,7 +125,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var port = AddPort(card, owner, key);
                 port.RemoveFromHierarchy();
                 port.portName = caption.Length == 0 && !_document.AuthoringGraph.Connections.Any(e => e.FromNodeId == owner && e.OutputPortKey == key) ? "+" : caption;
-                port.tooltip = hint;
+                port.tooltip = aura == null ? hint : aura + " · " + hint;
                 port.style.flexShrink = 0;
                 if (GameplayGraphEffectCallbacks.IsActionPort(key)) port.portColor = new Color(.35f, .83f, .81f);
                 row.Add(port);
