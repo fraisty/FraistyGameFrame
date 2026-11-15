@@ -76,10 +76,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if (node.Payload is GameplayAbilityNodePayload ability)
                 {
                     Add("DisplayName", "技能名称");
+                    if (document.Mode == Standard.GameplayStandardActivationMode.Active) Add("CastInput", "施放输入");
                     if (GameplayBehaviorGraphView.InlinePrimaryRule(document))
                     {
                         int ruleIndex=graph.Nodes.FindIndex(n=>n.Id==graph.PrimaryRuleNodeId);
-                        Add("authoringGraph.Nodes.Array.data["+ruleIndex+"].Payload.Target","施放目标");
+                        Add("authoringGraph.Nodes.Array.data["+ruleIndex+"].Payload.Target","规则目标来源");
                     }
                 }
                 else if (node.Payload is GameplayRuleNodePayload rule)

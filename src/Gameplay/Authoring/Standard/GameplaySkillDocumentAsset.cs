@@ -55,6 +55,8 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeField,HideInInspector] private GameplaySkillDefinitionAsset Rules;
         [SerializeField,HideInInspector] private GameplaySkillDefinitionAsset[] AdditionalRules = Array.Empty<GameplaySkillDefinitionAsset>();
         public GameplayStandardActivationMode Mode;
+        [Tooltip("玩家施放时提供的输入。规则目标来源与搜索、弹体、区域的实际命中各自配置。")]
+        public GameplaySkillCastInputKind CastInput;
         public bool RunRulesOnPassiveActivation;
         public GameplayStandardEventSubject Subject = GameplayStandardEventSubject.OwnerTarget;
         public GameplayTagReference CastEvent;
@@ -72,6 +74,7 @@ namespace FRFrame.Gameplay.Authoring
             if (authoringSchemaVersion == 2) Graph.GameplayGraphCompiler.ValidateStructure(authoringGraph, v, p + ".AuthoringGraph");
             else v.Error(p,"Unsupported authoring schema. Only the embedded behavior graph can build.");
             v.Enum(Mode, p + ".Mode"); v.Enum(Subject, p + ".Subject");
+            v.Enum(CastInput, p + ".CastInput");
             if(RunRulesOnPassiveActivation&&Mode!=GameplayStandardActivationMode.Passive)v.Error(p,"仅被动技能可配置启动规则。");
             if (Mode == GameplayStandardActivationMode.Active||RunRulesOnPassiveActivation)
             {

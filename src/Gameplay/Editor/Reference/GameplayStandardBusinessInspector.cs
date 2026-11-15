@@ -132,7 +132,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if((value is GameplayAreaDefinitionAsset || value is GameplayAreaDefinitionData))
             {
-                yield return Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize");
+                var geometry = Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize");
+                geometry.Labels["Origin"] = "区域中心";
+                yield return geometry;
                 var lifetime = Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura在进入时应用，离开或区域结束时只移除本区域贡献。","Duration","CancelOnAbilityEnd","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","EndOnOwnerDeath","Faction","Tags","LayerMask","Aura");
                 lifetime.Labels["CancelOnAbilityEnd"] = "技能结束时清理区域";
                 yield return lifetime;

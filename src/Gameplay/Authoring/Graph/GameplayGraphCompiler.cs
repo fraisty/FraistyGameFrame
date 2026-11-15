@@ -216,7 +216,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
                     _document.Mode == GameplayStandardActivationMode.Active || _document.RunRulesOnPassiveActivation ? _document.CastEvent.Build() : default,
                     _document.Mode, _document.Subject, new GameplayContextValues(values), additional,
                     Array.ConvertAll(_document.LearningRequirements, r => r.Build()), _context.GetActionSourcesSnapshot(), _document.DefinitionId,
-                    _document.RunRulesOnPassiveActivation);
+                    _document.RunRulesOnPassiveActivation, _document.CastInput);
             }
             finally { _context.GraphDefinitionResolver = previousResolver; _context.GraphBindingExists = previousExists; }
         }

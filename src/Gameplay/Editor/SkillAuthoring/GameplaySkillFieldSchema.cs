@@ -55,7 +55,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private sealed class EditState { internal bool Structural; internal readonly HashSet<string> Paths=new HashSet<string>(); }
         private static HashSet<string> _fieldChanges;
         private sealed class FieldCapture:IDisposable { private readonly HashSet<string> _previous;internal FieldCapture(EditState edit){_previous=_fieldChanges;_fieldChanges=edit.Paths;}public void Dispose(){_fieldChanges=_previous;} }
-        private static void Field(SerializedProperty property,GUIContent caption=null){if(property==null||CardSummary(property))return;EditorGUI.BeginChangeCheck();if(property.propertyType==SerializedPropertyType.Enum){var options=GameplaySkillBusinessLabels.Options(property).Select((label,i)=>new GUIContent(label,property.enumNames[i])).ToArray();property.enumValueIndex=EditorGUILayout.Popup(caption??GameplayAuthoringInspector.Label(property),property.enumValueIndex,options);}else GameplayAuthoringInspector.Field(property,caption??GameplayAuthoringInspector.Label(property));if(EditorGUI.EndChangeCheck())_fieldChanges?.Add(property.propertyPath);}
+        private static void Field(SerializedProperty property, GUIContent caption = null, bool alsoOnCard = false)
+        {
+            if (property == null || (!alsoOnCard && CardSummary(property))) return;
+            EditorGUI.BeginChangeCheck();
+            if (property.propertyType == SerializedPropertyType.Enum)
+            {
+                var options = GameplaySkillBusinessLabels.Options(property).Select((label, i) => new GUIContent(label, property.enumNames[i])).ToArray();
+                property.enumValueIndex = EditorGUILayout.Popup(caption ?? GameplayAuthoringInspector.Label(property), property.enumValueIndex, options);
+            }
+            else GameplayAuthoringInspector.Field(property, caption ?? GameplayAuthoringInspector.Label(property));
+            if (EditorGUI.EndChangeCheck()) _fieldChanges?.Add(property.propertyPath);
+        }
         private static readonly HashSet<string> Open = new HashSet<string>();
         private static readonly HashSet<string> ClosedSections = new HashSet<string>();
         private static readonly Dictionary<int,string> RevealPaths = new Dictionary<int,string>();
@@ -252,6 +263,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         string identityKey="Identity:"+document.GetInstanceID();
                         if(!cardFields)DrawIdentity(serialized);
                         else{bool open=EditorGUILayout.Foldout(Open.Contains(identityKey),"技能身份 / 事件 / 默认输入",true);if(open){Open.Add(identityKey);DrawIdentity(serialized);}else Open.Remove(identityKey);}
+                        if (document.Mode == Standard.GameplayStandardActivationMode.Active)
+                            Field(serialized.FindProperty("CastInput"),
+                                new GUIContent("施放输入", "决定宿主采集单位或地面位置。规则目标来源在下方独立配置。"),
+                                alsoOnCard: true);
                     }
                     if (i >= 0)
                     {
@@ -266,7 +281,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                                 int ruleIndex=document.AuthoringGraph.Nodes.FindIndex(n=>n.Id==document.AuthoringGraph.PrimaryRuleNodeId);var rule=document.AuthoringGraph.Nodes[ruleIndex];
                                 string key="PrimaryRule:"+document.GetInstanceID();
                                 string caption=((GameplayRuleNodePayload)rule.Payload).Target is GameplaySkillPointTargetAuthoring
-                                    ?"施放触发 / 固定地点坐标":"施放触发 / 目标（高级）";
+                                    ?"规则目标来源 / 固定地点坐标":"施放触发 / 规则目标来源";
                                 bool open=EditorGUILayout.Foldout(Open.Contains(key),caption,true);
                                 if(open){Open.Add(key);DrawValue(document,serialized,serialized.FindProperty("authoringGraph.Nodes").GetArrayElementAtIndex(ruleIndex).FindPropertyRelative("Payload"),rule.Id,rule.Payload.Definitions,"",new HashSet<string>(),edit);}else Open.Remove(key);
                             }

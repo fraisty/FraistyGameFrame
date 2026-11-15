@@ -5,6 +5,8 @@ namespace FRFrame.Gameplay.Standard
 {
     public enum GameplayStandardActivationMode { Active, Passive }
     public enum GameplayStandardEventSubject { OwnerInstigator, OwnerTarget, OwnerEither, Any }
+    /// <summary>Player input a host collects before casting. Rule targets and hit selection remain authored separately.</summary>
+    public enum GameplaySkillCastInputKind { Unspecified = 0, Self, Auto, Unit, GroundPoint }
     /// <summary>One skill entry referencing the existing immutable Ability and Skill Definitions.
     /// No duplicate cost, animation, target or timeline fields are stored here.</summary>
     public sealed class GameplaySkillDocumentDefinition
@@ -15,6 +17,8 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySkillDefinition Rules { get; }
         public GameplayTag CastEvent { get; }
         public GameplayStandardActivationMode Mode { get; }
+        /// <summary>The host input contract for this skill. Unspecified leaves input selection to legacy hosts.</summary>
+        public GameplaySkillCastInputKind CastInput { get; }
         /// <summary>Explicitly dispatches the primary CastEvent after passive binding. This allows
         /// a gated startup rule to wait for a persistent suppression cooldown without refusing activation.</summary>
         public bool RunRulesOnPassiveActivation {get;}
@@ -28,7 +32,8 @@ namespace FRFrame.Gameplay.Standard
             GameplayTag castEvent, GameplayStandardActivationMode mode = GameplayStandardActivationMode.Active,
             GameplayStandardEventSubject subject = GameplayStandardEventSubject.OwnerTarget, GameplayContextValues defaults = null,
             IEnumerable<GameplaySkillDefinition> additionalRules = null,IEnumerable<GameplaySkillLearningRequirement> learningRequirements=null,
-            IReadOnlyDictionary<IGameplaySkillAction,GameplaySkillTraceSource> actionSources=null,string diagnosticDocumentId=null,bool runRulesOnPassiveActivation=false)
+            IReadOnlyDictionary<IGameplaySkillAction,GameplaySkillTraceSource> actionSources=null,string diagnosticDocumentId=null,bool runRulesOnPassiveActivation=false,
+            GameplaySkillCastInputKind castInput=GameplaySkillCastInputKind.Unspecified)
         {
             if (skillId <= 0) throw new ArgumentOutOfRangeException(nameof(skillId));
             SkillId = skillId; Ability = ability ?? throw new ArgumentNullException(nameof(ability));
@@ -36,10 +41,13 @@ namespace FRFrame.Gameplay.Standard
             Rules = rules ?? throw new ArgumentNullException(nameof(rules));
             if (!Enum.IsDefined(typeof(GameplayStandardActivationMode), mode) || !Enum.IsDefined(typeof(GameplayStandardEventSubject), subject))
                 throw new ArgumentOutOfRangeException(nameof(mode));
+            if (!Enum.IsDefined(typeof(GameplaySkillCastInputKind), castInput))
+                throw new ArgumentOutOfRangeException(nameof(castInput));
             if ((mode == GameplayStandardActivationMode.Active||runRulesOnPassiveActivation) && (!(rules.Trigger is GameplaySkillEventTriggerDefinition trigger) ||
                 !castEvent.IsValid || trigger.EventTag != castEvent || rules.Once))
                 throw new ArgumentException("Active skill requires its real CastEvent trigger and repeatable rules.");
             CastEvent = castEvent; Mode = mode; Subject = subject; Defaults = defaults ?? GameplayContextValues.Empty;
+            CastInput = castInput;
             if(runRulesOnPassiveActivation&&mode!=GameplayStandardActivationMode.Passive)throw new ArgumentException("Passive startup applies only to passive skills.");
             RunRulesOnPassiveActivation=runRulesOnPassiveActivation;
             var supplemental = new List<GameplaySkillDefinition>(additionalRules ?? Array.Empty<GameplaySkillDefinition>());

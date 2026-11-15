@@ -60621,7 +60621,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
                     _document.Mode == GameplayStandardActivationMode.Active || _document.RunRulesOnPassiveActivation ? _document.CastEvent.Build() : default,
                     _document.Mode, _document.Subject, new GameplayContextValues(values), additional,
                     Array.ConvertAll(_document.LearningRequirements, r => r.Build()), _context.GetActionSourcesSnapshot(), _document.DefinitionId,
-                    _document.RunRulesOnPassiveActivation);
+                    _document.RunRulesOnPassiveActivation, _document.CastInput);
             }
             finally { _context.GraphDefinitionResolver = previousResolver; _context.GraphBindingExists = previousExists; }
         }
@@ -62394,6 +62394,8 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeField,HideInInspector] private GameplaySkillDefinitionAsset Rules;
         [SerializeField,HideInInspector] private GameplaySkillDefinitionAsset[] AdditionalRules = Array.Empty<GameplaySkillDefinitionAsset>();
         public GameplayStandardActivationMode Mode;
+        [Tooltip("玩家施放时提供的输入。规则目标来源与搜索、弹体、区域的实际命中各自配置。")]
+        public GameplaySkillCastInputKind CastInput;
         public bool RunRulesOnPassiveActivation;
         public GameplayStandardEventSubject Subject = GameplayStandardEventSubject.OwnerTarget;
         public GameplayTagReference CastEvent;
@@ -62411,6 +62413,7 @@ namespace FRFrame.Gameplay.Authoring
             if (authoringSchemaVersion == 2) Graph.GameplayGraphCompiler.ValidateStructure(authoringGraph, v, p + ".AuthoringGraph");
             else v.Error(p,"Unsupported authoring schema. Only the embedded behavior graph can build.");
             v.Enum(Mode, p + ".Mode"); v.Enum(Subject, p + ".Subject");
+            v.Enum(CastInput, p + ".CastInput");
             if(RunRulesOnPassiveActivation&&Mode!=GameplayStandardActivationMode.Passive)v.Error(p,"仅被动技能可配置启动规则。");
             if (Mode == GameplayStandardActivationMode.Active||RunRulesOnPassiveActivation)
             {
@@ -67207,7 +67210,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if((value is GameplayAreaDefinitionAsset || value is GameplayAreaDefinitionData))
             {
-                yield return Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize");
+                var geometry = Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize");
+                geometry.Labels["Origin"] = "区域中心";
+                yield return geometry;
                 var lifetime = Group("存续 / 陷阱 / 筛选 / 光环","布防前不查询；触发上限0不限。Aura在进入时应用，离开或区域结束时只移除本区域贡献。","Duration","CancelOnAbilityEnd","ArmingDelay","TriggerLimit","TickInterval","TickOnEnter","FollowOwner","EndOnOwnerDeath","Faction","Tags","LayerMask","Aura");
                 lifetime.Labels["CancelOnAbilityEnd"] = "技能结束时清理区域";
                 yield return lifetime;
@@ -71041,6 +71046,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Line","线形"},{"Ray","射线"},{"Single","单体"},{"ToPrimaryTarget","指向主目标"},{"ToContextPoint","指向上下文地点"},{"AbsoluteAngle","绝对角度"},
             {"Circle","圆形"},{"Sector","扇形"},{"Box","矩形"},{"Sphere","球形"},{"Capsule","胶囊"},{"GridCells","格子集合"},{"Cells","格子集合"},
             {"Enemies","敌方"},{"Allies","友方"},{"Any","任意"},{"All","全部"},{"Self","自身"},{"None","无"},
+            {"Unspecified","未选择施放输入"},{"Auto","自动寻敌（无需指定目标）"},{"Unit","选中单位"},{"GroundPoint","指定地面位置"},
             {"Physical","物理伤害"},{"Magical","魔法伤害"},{"Magic","魔法伤害"},{"True","真实伤害"},
             {"Owner","施法者"},{"Target","当前目标"},{"Context","调用上下文"},{"OwnerFacing","施法者朝向"},{"TargetDirection","目标方向"},
             {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},{"CallbackSegment","回调起点 → 命中地点"},
@@ -71154,10 +71160,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if (node.Payload is GameplayAbilityNodePayload ability)
                 {
                     Add("DisplayName", "技能名称");
+                    if (document.Mode == Standard.GameplayStandardActivationMode.Active) Add("CastInput", "施放输入");
                     if (GameplayBehaviorGraphView.InlinePrimaryRule(document))
                     {
                         int ruleIndex=graph.Nodes.FindIndex(n=>n.Id==graph.PrimaryRuleNodeId);
-                        Add("authoringGraph.Nodes.Array.data["+ruleIndex+"].Payload.Target","施放目标");
+                        Add("authoringGraph.Nodes.Array.data["+ruleIndex+"].Payload.Target","规则目标来源");
                     }
                 }
                 else if (node.Payload is GameplayRuleNodePayload rule)
@@ -72408,7 +72415,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private sealed class EditState { internal bool Structural; internal readonly HashSet<string> Paths=new HashSet<string>(); }
         private static HashSet<string> _fieldChanges;
         private sealed class FieldCapture:IDisposable { private readonly HashSet<string> _previous;internal FieldCapture(EditState edit){_previous=_fieldChanges;_fieldChanges=edit.Paths;}public void Dispose(){_fieldChanges=_previous;} }
-        private static void Field(SerializedProperty property,GUIContent caption=null){if(property==null||CardSummary(property))return;EditorGUI.BeginChangeCheck();if(property.propertyType==SerializedPropertyType.Enum){var options=GameplaySkillBusinessLabels.Options(property).Select((label,i)=>new GUIContent(label,property.enumNames[i])).ToArray();property.enumValueIndex=EditorGUILayout.Popup(caption??GameplayAuthoringInspector.Label(property),property.enumValueIndex,options);}else GameplayAuthoringInspector.Field(property,caption??GameplayAuthoringInspector.Label(property));if(EditorGUI.EndChangeCheck())_fieldChanges?.Add(property.propertyPath);}
+        private static void Field(SerializedProperty property, GUIContent caption = null, bool alsoOnCard = false)
+        {
+            if (property == null || (!alsoOnCard && CardSummary(property))) return;
+            EditorGUI.BeginChangeCheck();
+            if (property.propertyType == SerializedPropertyType.Enum)
+            {
+                var options = GameplaySkillBusinessLabels.Options(property).Select((label, i) => new GUIContent(label, property.enumNames[i])).ToArray();
+                property.enumValueIndex = EditorGUILayout.Popup(caption ?? GameplayAuthoringInspector.Label(property), property.enumValueIndex, options);
+            }
+            else GameplayAuthoringInspector.Field(property, caption ?? GameplayAuthoringInspector.Label(property));
+            if (EditorGUI.EndChangeCheck()) _fieldChanges?.Add(property.propertyPath);
+        }
         private static readonly HashSet<string> Open = new HashSet<string>();
         private static readonly HashSet<string> ClosedSections = new HashSet<string>();
         private static readonly Dictionary<int,string> RevealPaths = new Dictionary<int,string>();
@@ -72605,6 +72623,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         string identityKey="Identity:"+document.GetInstanceID();
                         if(!cardFields)DrawIdentity(serialized);
                         else{bool open=EditorGUILayout.Foldout(Open.Contains(identityKey),"技能身份 / 事件 / 默认输入",true);if(open){Open.Add(identityKey);DrawIdentity(serialized);}else Open.Remove(identityKey);}
+                        if (document.Mode == Standard.GameplayStandardActivationMode.Active)
+                            Field(serialized.FindProperty("CastInput"),
+                                new GUIContent("施放输入", "决定宿主采集单位或地面位置。规则目标来源在下方独立配置。"),
+                                alsoOnCard: true);
                     }
                     if (i >= 0)
                     {
@@ -72619,7 +72641,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                                 int ruleIndex=document.AuthoringGraph.Nodes.FindIndex(n=>n.Id==document.AuthoringGraph.PrimaryRuleNodeId);var rule=document.AuthoringGraph.Nodes[ruleIndex];
                                 string key="PrimaryRule:"+document.GetInstanceID();
                                 string caption=((GameplayRuleNodePayload)rule.Payload).Target is GameplaySkillPointTargetAuthoring
-                                    ?"施放触发 / 固定地点坐标":"施放触发 / 目标（高级）";
+                                    ?"规则目标来源 / 固定地点坐标":"施放触发 / 规则目标来源";
                                 bool open=EditorGUILayout.Foldout(Open.Contains(key),caption,true);
                                 if(open){Open.Add(key);DrawValue(document,serialized,serialized.FindProperty("authoringGraph.Nodes").GetArrayElementAtIndex(ruleIndex).FindPropertyRelative("Payload"),rule.Id,rule.Payload.Definitions,"",new HashSet<string>(),edit);}else Open.Remove(key);
                             }
@@ -86360,6 +86382,8 @@ namespace FRFrame.Gameplay.Standard
 {
     public enum GameplayStandardActivationMode { Active, Passive }
     public enum GameplayStandardEventSubject { OwnerInstigator, OwnerTarget, OwnerEither, Any }
+    /// <summary>Player input a host collects before casting. Rule targets and hit selection remain authored separately.</summary>
+    public enum GameplaySkillCastInputKind { Unspecified = 0, Self, Auto, Unit, GroundPoint }
     /// <summary>One skill entry referencing the existing immutable Ability and Skill Definitions.
     /// No duplicate cost, animation, target or timeline fields are stored here.</summary>
     public sealed class GameplaySkillDocumentDefinition
@@ -86370,6 +86394,8 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySkillDefinition Rules { get; }
         public GameplayTag CastEvent { get; }
         public GameplayStandardActivationMode Mode { get; }
+        /// <summary>The host input contract for this skill. Unspecified leaves input selection to legacy hosts.</summary>
+        public GameplaySkillCastInputKind CastInput { get; }
         /// <summary>Explicitly dispatches the primary CastEvent after passive binding. This allows
         /// a gated startup rule to wait for a persistent suppression cooldown without refusing activation.</summary>
         public bool RunRulesOnPassiveActivation {get;}
@@ -86383,7 +86409,8 @@ namespace FRFrame.Gameplay.Standard
             GameplayTag castEvent, GameplayStandardActivationMode mode = GameplayStandardActivationMode.Active,
             GameplayStandardEventSubject subject = GameplayStandardEventSubject.OwnerTarget, GameplayContextValues defaults = null,
             IEnumerable<GameplaySkillDefinition> additionalRules = null,IEnumerable<GameplaySkillLearningRequirement> learningRequirements=null,
-            IReadOnlyDictionary<IGameplaySkillAction,GameplaySkillTraceSource> actionSources=null,string diagnosticDocumentId=null,bool runRulesOnPassiveActivation=false)
+            IReadOnlyDictionary<IGameplaySkillAction,GameplaySkillTraceSource> actionSources=null,string diagnosticDocumentId=null,bool runRulesOnPassiveActivation=false,
+            GameplaySkillCastInputKind castInput=GameplaySkillCastInputKind.Unspecified)
         {
             if (skillId <= 0) throw new ArgumentOutOfRangeException(nameof(skillId));
             SkillId = skillId; Ability = ability ?? throw new ArgumentNullException(nameof(ability));
@@ -86391,10 +86418,13 @@ namespace FRFrame.Gameplay.Standard
             Rules = rules ?? throw new ArgumentNullException(nameof(rules));
             if (!Enum.IsDefined(typeof(GameplayStandardActivationMode), mode) || !Enum.IsDefined(typeof(GameplayStandardEventSubject), subject))
                 throw new ArgumentOutOfRangeException(nameof(mode));
+            if (!Enum.IsDefined(typeof(GameplaySkillCastInputKind), castInput))
+                throw new ArgumentOutOfRangeException(nameof(castInput));
             if ((mode == GameplayStandardActivationMode.Active||runRulesOnPassiveActivation) && (!(rules.Trigger is GameplaySkillEventTriggerDefinition trigger) ||
                 !castEvent.IsValid || trigger.EventTag != castEvent || rules.Once))
                 throw new ArgumentException("Active skill requires its real CastEvent trigger and repeatable rules.");
             CastEvent = castEvent; Mode = mode; Subject = subject; Defaults = defaults ?? GameplayContextValues.Empty;
+            CastInput = castInput;
             if(runRulesOnPassiveActivation&&mode!=GameplayStandardActivationMode.Passive)throw new ArgumentException("Passive startup applies only to passive skills.");
             RunRulesOnPassiveActivation=runRulesOnPassiveActivation;
             var supplemental = new List<GameplaySkillDefinition>(additionalRules ?? Array.Empty<GameplaySkillDefinition>());
