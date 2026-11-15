@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Standard;
 using UnityEditor;
 using UnityEngine;
 
@@ -35,6 +36,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             _name=EditorGUILayout.TextField("显示名称",_name);_id=EditorGUILayout.IntField("技能 ID",_id);
             using(new EditorGUI.DisabledScope(_template))_start=EditorGUILayout.Popup("创作起点",_start,new[]{"空白技能（施放 → 结束）","即时伤害（搜索 → 伤害 → 结束）","时间编排技能（可不设动画）"});
             EditorGUILayout.HelpBox(_template?"沿用源范例的真实行为、时间与FPS；此处不会另加起点节点。":_start==0?"只创建施放和结束。下一步从施放执行端口拖向空白选择行为。":_start==1?"创建可编辑的敌方搜索、即时伤害与结束；请配置数值和真实目标。":"明确创建 1 秒时间编排和结束；主动画可选，逻辑时长独立。",MessageType.Info);using(new EditorGUI.DisabledScope(_template))_fps=Mathf.Max(1,EditorGUILayout.IntField("创作显示 / 吸附 FPS",_fps));
+            if(!_template||_template.Mode==GameplayStandardActivationMode.Active&&_template.CastInput==GameplaySkillCastInputKind.Unspecified)
+                EditorGUILayout.HelpBox("创建后请在「技能施放」主卡配置「施放输入」，共用练习场将按该字段采集输入。",MessageType.Info);
             _profile=(GameplayActorProfileAsset)EditorGUILayout.ObjectField("预览属性（可选）",_profile,typeof(GameplayActorProfileAsset),false);
             bool logical=_scopes[_scope]=="LogicGrid"||_scopes[_scope]=="TurnBased";
             using(new EditorGUI.DisabledScope(!logical))_turns=EditorGUILayout.Toggle("试装使用 Lab 手动回合",_turns&&logical);
