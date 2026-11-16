@@ -21,7 +21,7 @@ namespace FRFrame.Gameplay.Standard
                 kind == GameplayHitAnchorKind.SpineBone && string.IsNullOrWhiteSpace(bone))
                 throw new ArgumentException("A Transform path or Spine bone name is required for the selected anchor.", nameof(kind));
             Kind = kind;
-            Path = path;
+            Path = string.IsNullOrWhiteSpace(path) ? null : path;
             Bone = bone;
         }
     }
@@ -31,9 +31,13 @@ namespace FRFrame.Gameplay.Standard
     {
         public GameplayPoint Position { get; }
         public GameplayDirection Forward { get; }
+        /// <summary>Model up in world space. An omitted axis uses the standard world-up basis in 3D.</summary>
+        public GameplayDirection Up { get; }
         public long Revision { get; }
         public GameplayHitPose(GameplayPoint position, GameplayDirection forward, long revision = 0)
-        { Position = position; Forward = forward; Revision = revision; }
+            : this(position, forward, default, revision) { }
+        public GameplayHitPose(GameplayPoint position, GameplayDirection forward, GameplayDirection up, long revision = 0)
+        { Position = position; Forward = forward; Up = up; Revision = revision; }
     }
 
     /// <summary>Reads evaluated pose at the supplied World sample time without advancing animation.</summary>
@@ -59,6 +63,7 @@ namespace FRFrame.Gameplay.Standard
     /// <summary>Immutable hit geometry, tracking and callbacks shared by each independently opened window.</summary>
     public sealed class GameplayHitWindowDefinition
     {
+        private const int MaxRehitsPerTarget = 256;
         public GameplaySearchShape Shape { get; }
         public GameplaySpatialPlane Plane { get; }
         public GameplayHitAnchor Anchor { get; }
@@ -82,6 +87,7 @@ namespace FRFrame.Gameplay.Standard
         public GameplayTag StopTag { get; }
         public GameplayHitSweepPolicy SweepPolicy { get; }
         public int SamplingBudget { get; }
+        /// <summary>Maximum translation and rotation per advancement probe on a rotating sweep, never a teleport threshold.</summary>
         public float MaxSweepDistance { get; }
         public float MaxSweepAngle { get; }
         public IReadOnlyList<IGameplaySkillAction> OnHit { get; }
@@ -109,11 +115,12 @@ namespace FRFrame.Gameplay.Standard
             foreach (float value in new[] { radius, length, width, height, duration, maxSweepDistance })
                 if (!float.IsFinite(value) || value <= 0) throw new ArgumentException("Hit window dimensions, duration and sweep distance must be positive.");
             if (!float.IsFinite(angle) || angle <= 0 || angle > 180 || !float.IsFinite(directionAngle) ||
-                !float.IsFinite(maxSweepAngle) || maxSweepAngle <= 0 || maxSweepAngle >= 180)
-                throw new ArgumentException("Hit sectors support 0 < Angle ≤ 180; sweep cuts require 0 < MaxSweepAngle < 180.");
+                !float.IsFinite(maxSweepAngle) || maxSweepAngle <= 0 || maxSweepAngle > 180)
+                throw new ArgumentException("Hit sectors and angular sweep steps support angles in (0, 180].");
             if (maxDistinctTargets < 1 || maxHitsPerTarget < 1 || !float.IsFinite(rehitInterval) ||
-                rehitInterval < 0 || maxHitsPerTarget > 1 && rehitInterval == 0 || samplingBudget < 8 || samplingBudget > 256)
-                throw new ArgumentException("Hit limits must be positive, repeated hits need a positive interval, and sweep budget must be 8–256.");
+                rehitInterval < 0 || maxHitsPerTarget > MaxRehitsPerTarget ||
+                maxHitsPerTarget > 1 && rehitInterval == 0 || samplingBudget < 8 || samplingBudget > 256)
+                throw new ArgumentException("Target limits must be positive, hits per target 1–256, repeated hits need a positive interval, and sweep budget must be 8–256.");
 
             Shape = shape; Plane = plane; Anchor = anchor; Duration = duration;
             Radius = radius; Angle = angle; Length = length; Width = width; Height = height;
@@ -130,12 +137,8 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Builds canonical search geometry from the same evaluated anchor used by runtime and preview.</summary>
         public GameplaySearchGeometry Geometry(GameplayHitPose pose)
         {
-            var forward = pose.Forward;
-            if (Plane == GameplaySpatialPlane.XY && (forward.X != 0 || forward.Y != 0))
-                forward = new GameplayDirection(forward.X, forward.Y);
-            else if (Plane == GameplaySpatialPlane.XZ && (forward.X != 0 || forward.Z != 0))
-                forward = new GameplayDirection(forward.X, 0, forward.Z);
-            GameplayHitContact.Basis(Plane, forward, out var right, out var up);
+            var forward = GameplayHitContact.ProjectForward(Plane, pose.Forward);
+            GameplayHitContact.Basis(Plane, forward, pose.Up, out var right, out var up);
             var origin = GameplaySpatialMath.Offset(GameplaySpatialMath.Offset(
                 GameplaySpatialMath.Offset(pose.Position, forward, Offset.X), right, Offset.Y), up, Offset.Z);
             if (DirectionAngle != 0)
@@ -144,10 +147,12 @@ namespace FRFrame.Gameplay.Standard
                 float cos = MathF.Cos(angle), sin = MathF.Sin(angle);
                 forward = new GameplayDirection(forward.X * cos + right.X * sin, forward.Y * cos + right.Y * sin, forward.Z * cos + right.Z * sin);
             }
-            return new GameplaySearchGeometry(Shape, Plane, origin, forward, Radius, Angle, Length, Width, Height);
+            return new GameplaySearchGeometry(Shape, Plane, origin, forward, Radius, Angle, Length, Width, Height,
+                orientationUp: Plane == GameplaySpatialPlane.ThreeDimensional ? up : default);
         }
 
-        internal bool Accepts(GameplayHitPose pose) => pose.Forward.IsValid &&
+        /// <summary>Whether the evaluated anchor has a usable forward in this volume's plane.</summary>
+        public bool AcceptsPose(GameplayHitPose pose) => pose.Forward.IsValid &&
             (Plane == GameplaySpatialPlane.ThreeDimensional || (Plane == GameplaySpatialPlane.XY
                 ? pose.Forward.X != 0 || pose.Forward.Y != 0
                 : pose.Forward.X != 0 || pose.Forward.Z != 0));
@@ -163,8 +168,16 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Optional game/SDK override. Presentation providers are used when no override is bound.</summary>
         public IGameplayHitAnchorProvider HitAnchors { get; set; }
         internal long HitPoseRevision { get; private set; }
-        /// <summary>Call at an authoritative teleport or view cut so neither weapon nor hurtbox sweeps across the jump.</summary>
+        /// <summary>Mark an instantaneous facing, pose or model cut at the movement authority.</summary>
         public void MarkHitPoseDiscontinuous() => HitPoseRevision++;
+
+        /// <summary>Instantly places this actor without sweeping its attack or hurtbox between positions.
+        /// Ordinary movement, including a dash or push, writes Position continuously instead.</summary>
+        public void TeleportTo(GameplayPoint position)
+        {
+            MarkHitPoseDiscontinuous();
+            Position = position;
+        }
 
         public bool TrySampleHitAnchor(GameplayHitAnchor anchor, double worldTime, out GameplayHitPose pose)
         {

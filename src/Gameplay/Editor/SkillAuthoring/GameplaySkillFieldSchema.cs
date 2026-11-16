@@ -184,7 +184,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static bool TryDuration(GameplayAuthoringGraph graph,string nodeId,out string localId,out string path,out float seconds){
             localId=null;path=null;seconds=0;var node=graph.Nodes.Find(n=>n.Id==nodeId);if(node==null)return false;
             foreach(var binding in node.Payload.Definitions){var local=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);object values=local?.Payload;if(values==null&&binding.External){try{values=binding.External.CaptureGraphValues();}catch(NotSupportedException){}}if(values==null)continue;
-                if(values is GameplayHitWindowData window){localId=local?.Id;path=nameof(window.Duration);seconds=window.Duration;return seconds>0;}
+                if(values is GameplayHitWindowData window){localId=local?.Id;path=local==null?null:nameof(window.Duration);seconds=window.Duration;return seconds>0;}
                 foreach(var provider in Providers.OfType<IGameplaySkillValueDuration>())if(provider.TryReadDuration(values,out path,out seconds)){localId=local?.Id;return seconds>0;}}
             return false;
         }

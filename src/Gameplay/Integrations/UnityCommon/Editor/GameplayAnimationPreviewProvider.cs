@@ -44,6 +44,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         public void CancelInteraction() => _cuePreview?.CancelInteraction();
         private float _presentationStart;
         private GameObject _subject;
+        private readonly GameplayUnityHitAnchors.Session _hitAnchors = new();
         private IGameplayAnimationPlayer _player;
         private PreviewRenderUtility _preview;
         private Bounds _initialBounds,_frameBounds;
@@ -76,7 +77,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         /// <summary>Temporary subject for actual SDK diagnostics/preview export; owned by this session.</summary>
         public GameObject PreviewSubject=>_cuePreview?.Subject??_subject;
         public bool TryReadHitPose(Standard.GameplayHitAnchor anchor,out Standard.GameplayHitPose pose) =>
-            GameplayUnityHitAnchors.TrySample(_subject ? _subject.transform : null, anchor, out pose);
+            _hitAnchors.TrySample(_subject ? _subject.transform : null, anchor, out pose);
         /// <summary>Preview-only level selection shared by the controls and export/diagnostics.
         /// A formal document's actual Ability MaxLevel remains the upper bound.</summary>
         public void SetLevel(int level)
@@ -198,6 +199,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         private void Release()
         {
             _captureVariantRoll=false;
+            _hitAnchors.Clear();
             _cuePreview?.Dispose();_cuePreview=null;
             _player?.Dispose();_player=null;
             _preview?.Cleanup();_preview=null;

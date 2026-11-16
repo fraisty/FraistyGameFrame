@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using FRFrame.Gameplay.Extensions;
 
 namespace FRFrame.Gameplay.Standard
@@ -8,7 +9,12 @@ namespace FRFrame.Gameplay.Standard
     {
         private const float Tolerance = .00005f;
 
-        internal static void Basis(GameplaySpatialPlane plane, GameplayDirection forward, out GameplayDirection right, out GameplayDirection up)
+        internal static GameplayDirection ProjectForward(GameplaySpatialPlane plane, GameplayDirection forward) =>
+            plane == GameplaySpatialPlane.XY ? new GameplayDirection(forward.X, forward.Y) :
+            plane == GameplaySpatialPlane.XZ ? new GameplayDirection(forward.X, 0, forward.Z) : forward;
+
+        internal static void Basis(GameplaySpatialPlane plane, GameplayDirection forward, GameplayDirection anchorUp,
+            out GameplayDirection right, out GameplayDirection up)
         {
             if (plane == GameplaySpatialPlane.XY)
             {
@@ -22,33 +28,84 @@ namespace FRFrame.Gameplay.Standard
             }
             else
             {
-                right = Math.Abs(forward.Y) > .999f
-                    ? new GameplayDirection(-forward.Y, forward.X, 0)
-                    : new GameplayDirection(forward.Z, 0, -forward.X);
-                up = new GameplayDirection(forward.Y * right.Z - forward.Z * right.Y,
-                    forward.Z * right.X - forward.X * right.Z, forward.X * right.Y - forward.Y * right.X);
+                var axis = Vector(forward);
+                var side = anchorUp.IsValid ? Vector3.Cross(Vector(anchorUp), axis) : Vector3.Zero;
+                if (side.LengthSquared() < 1e-10f)
+                    side = Vector3.Cross(Math.Abs(forward.Y) > .999f ? Vector3.UnitZ : Vector3.UnitY, axis);
+                side = Vector3.Normalize(side);
+                right = Direction(side);
+                up = Direction(Vector3.Cross(axis, side));
             }
         }
 
-        internal static float Dot(GameplayDirection a, GameplayDirection b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+        private static Vector3 Vector(GameplayDirection value) => new Vector3(value.X, value.Y, value.Z);
+        private static GameplayDirection Direction(Vector3 value) => new GameplayDirection(value.X, value.Y, value.Z);
 
-        internal static float Rotation(GameplayHitPose a, GameplayHitPose b) =>
-            a.Forward.X == b.Forward.X && a.Forward.Y == b.Forward.Y && a.Forward.Z == b.Forward.Z
-                ? 0 : MathF.Acos(Math.Clamp(Dot(a.Forward, b.Forward), -1, 1));
-
-        internal static GameplayHitPose Interpolate(GameplayHitPose a, GameplayHitPose b, float t, float radians)
+        /// <summary>Linear translation and shortest continuous rotation between evaluated endpoint poses.</summary>
+        internal readonly struct Motion
         {
-            if (radians < .001f) return new GameplayHitPose(GameplaySpatialMath.Lerp(a.Position, b.Position, t), b.Forward, b.Revision);
-            var weight = MathF.Sin(radians);
-            float from = MathF.Sin((1 - t) * radians) / weight, to = MathF.Sin(t * radians) / weight;
-            var forward = new GameplayDirection(a.Forward.X * from + b.Forward.X * to,
-                a.Forward.Y * from + b.Forward.Y * to, a.Forward.Z * from + b.Forward.Z * to);
-            return new GameplayHitPose(GameplaySpatialMath.Lerp(a.Position, b.Position, t), forward, b.Revision);
+            private readonly GameplaySpatialPlane _plane;
+            private readonly GameplayHitPose _from, _to;
+            private readonly GameplayDirection _forward;
+            private readonly float _turn;
+            private readonly Quaternion _start, _end;
+            internal float Radians { get; }
+
+            internal Motion(GameplaySpatialPlane plane, GameplayHitPose from, GameplayHitPose to)
+            {
+                _plane = plane;
+                _from = from;
+                _to = to;
+                _forward = ProjectForward(plane, from.Forward);
+                var end = ProjectForward(plane, to.Forward);
+                _start = _end = Quaternion.Identity;
+                _turn = 0;
+                if (plane == GameplaySpatialPlane.ThreeDimensional)
+                {
+                    _start = Orientation(_forward, from.Up);
+                    _end = Orientation(end, to.Up);
+                    var delta = Quaternion.Conjugate(_start) * _end;
+                    Radians = 2 * MathF.Atan2(new Vector3(delta.X, delta.Y, delta.Z).Length(), Math.Abs(delta.W));
+                }
+                else
+                {
+                    float a = plane == GameplaySpatialPlane.XY ? _forward.Y : _forward.Z;
+                    float b = plane == GameplaySpatialPlane.XY ? end.Y : end.Z;
+                    _turn = MathF.Atan2(_forward.X * b - a * end.X, _forward.X * end.X + a * b);
+                    Radians = Math.Abs(_turn);
+                }
+            }
+
+            internal GameplayHitPose At(float t)
+            {
+                if (t == 0) return _from;
+                if (t == 1) return _to;
+                var position = GameplaySpatialMath.Lerp(_from.Position, _to.Position, t);
+                if (_plane == GameplaySpatialPlane.ThreeDimensional)
+                {
+                    var rotation = Quaternion.Slerp(_start, _end, t);
+                    return new GameplayHitPose(position, Direction(Vector3.Transform(Vector3.UnitX, rotation)),
+                        Direction(Vector3.Transform(Vector3.UnitZ, rotation)), _to.Revision);
+                }
+                float sin = MathF.Sin(_turn * t), cos = MathF.Cos(_turn * t);
+                float side = _plane == GameplaySpatialPlane.XY ? _forward.Y : _forward.Z;
+                float x = _forward.X * cos - side * sin, y = _forward.X * sin + side * cos;
+                return new GameplayHitPose(position, _plane == GameplaySpatialPlane.XY
+                    ? new GameplayDirection(x, y) : new GameplayDirection(x, 0, y), _to.Revision);
+            }
+
+            private static Quaternion Orientation(GameplayDirection forward, GameplayDirection anchorUp)
+            {
+                Basis(GameplaySpatialPlane.ThreeDimensional, forward, anchorUp, out var side, out var up);
+                return Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(new Matrix4x4(
+                    forward.X, forward.Y, forward.Z, 0, side.X, side.Y, side.Z, 0,
+                    up.X, up.Y, up.Z, 0, 0, 0, 0, 1)));
+            }
         }
 
         internal static float Separation(GameplaySearchGeometry geometry, GameplayPoint center, out GameplayPoint contact)
         {
-            Basis(geometry.Plane, geometry.Direction, out var right, out var up);
+            Basis(geometry.Plane, geometry.Direction, geometry.OrientationUp, out var right, out var up);
             float x = center.X - geometry.Origin.X, y = center.Y - geometry.Origin.Y, z = center.Z - geometry.Origin.Z;
             var forward = geometry.Direction;
             float a = x * forward.X + y * forward.Y + z * forward.Z;
@@ -90,7 +147,7 @@ namespace FRFrame.Gameplay.Standard
         }
 
         internal static bool TryFind(GameplayHitWindowDefinition definition, GameplayHitPose from, GameplayHitPose to,
-            GameplayPoint start, GameplayPoint end, float radius, float rotation, bool sweep,
+            GameplayPoint start, GameplayPoint end, float radius, bool sweep,
             out float time, out GameplayPoint contact, out bool budgetExhausted)
         {
             time = 1;
@@ -99,10 +156,12 @@ namespace FRFrame.Gameplay.Standard
             float lastGap = Separation(last, end, out contact) - radius;
             if (!sweep) return lastGap <= Tolerance;
 
+            var motion = new Motion(definition.Plane, from, to);
+            float rotation = motion.Radians;
             var first = definition.Geometry(from);
             float Sample(float at, out GameplayPoint point)
             {
-                var geometry = rotation == 0 ? first : definition.Geometry(Interpolate(from, to, at, rotation));
+                var geometry = rotation == 0 ? first : definition.Geometry(motion.At(at));
                 var center = GameplaySpatialMath.Lerp(start, end, at);
                 // With a fixed orientation, move into the first volume's relative frame.
                 var dx = (last.Origin.X - first.Origin.X) * at;
@@ -120,7 +179,8 @@ namespace FRFrame.Gameplay.Standard
             // travelled by the farthest point on the volume (including its anchor offset).
             var relativeEnd = new GameplayPoint(end.X - (to.Position.X - from.Position.X),
                 end.Y - (to.Position.Y - from.Position.Y), end.Z - (to.Position.Z - from.Position.Z));
-            float bound = GameplaySpatialMath.Distance(start, relativeEnd) +
+            float travel = GameplaySpatialMath.Distance(start, relativeEnd);
+            float bound = travel +
                 rotation * (first.BoundsRadius + GameplaySpatialMath.Distance(default, definition.Offset));
             if (gapAtStart > bound + Tolerance) return false;
 
@@ -160,10 +220,12 @@ namespace FRFrame.Gameplay.Standard
 
             // Conservative advancement over rotating geometry: each step is bounded by
             // the current verified clearance. An exhausted interval never invents a hit.
+            float maxStep = Math.Min(definition.MaxSweepAngle * ((float)Math.PI / 180) / rotation,
+                definition.MaxSweepDistance / travel);
             float t = 0, gap = gapAtStart;
             for (int i = 0; i < definition.SamplingBudget; i++)
             {
-                t += gap / bound;
+                t += Math.Min(gap / bound, maxStep);
                 if (t >= 1) return lastGap <= Tolerance;
                 gap = Sample(t, out var point);
                 if (gap <= Tolerance) { time = t; contact = point; return true; }
@@ -175,7 +237,7 @@ namespace FRFrame.Gameplay.Standard
         private static bool TryFixedRoundVolume(GameplaySearchGeometry geometry, GameplayPoint start, GameplayPoint end,
             float radius, out float time, out bool applicable)
         {
-            Basis(geometry.Plane, geometry.Direction, out var side, out var up);
+            Basis(geometry.Plane, geometry.Direction, geometry.OrientationUp, out var side, out var up);
             var origin = geometry.Origin;
             float Project(GameplayPoint p, GameplayDirection axis) =>
                 (p.X - origin.X) * axis.X + (p.Y - origin.Y) * axis.Y + (p.Z - origin.Z) * axis.Z;

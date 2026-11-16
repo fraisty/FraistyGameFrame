@@ -787,6 +787,7 @@ Tests/
       FRFrame.Gameplay.Editor.Tests.asmdef
       GameplayAbilityAuthoringTests.cs
       GameplayEffectCompletionAuthoringTests.cs
+      GameplayHitWindowAuthoringTests.cs
       GameplayReferenceEditorTests.cs
       GameplaySequenceSkillStepEditorTests.cs
       GameplaySequenceTimelineEditorTests.cs
@@ -60607,7 +60608,10 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(port=="NoTargets"||port=="Completed"||port=="Then")return input.With(false,true,"搜索完成/无目标不保证 Actor；先以地点重新搜索");
             }
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
-            if(payload is GameplayHitWindowData)return input.With(port=="OnHit",true,"命中窗口仅实际接触提供目标 Actor");
+            if(payload is GameplayHitWindowData)
+                return port == nameof(GameplayHitWindowData.OnHit)
+                    ? new Inputs(true, true, "实际接触提供命中对象和触点")
+                    : new Inputs(false, true, "窗口结束或中断提供窗口位置");
             if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnBroken")
                 return input.With(true, true, "护盾耗尽后提供破盾者与地点");
             if (payload is GameplayGrantTimedShieldActionAuthoring && (port == "OnExpired" || port == "OnAbsorbed" || port == "OnRemoved"))
@@ -61853,6 +61857,8 @@ namespace FRFrame.Gameplay.Authoring
     public sealed class GameplayHitWindowDefinitionAsset : GameplayDefinitionAsset
     {
         [SerializeField] private GameplayHitWindowData values = new GameplayHitWindowData();
+        /// <summary>Space required by this shared definition when choosing a workbench host.</summary>
+        public GameplaySpatialPlane Plane => values.Plane;
         public GameplayHitWindowDefinition Build(GameplayAuthoringBuildContext context) => values.Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => (GameplayHitWindowData)GameplayGraphFields.Clone(values);
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
@@ -66912,8 +66918,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var anchor=Group("姿态锚点","Root 读取角色朝向。Socket 与 Bone 读取已求值的模型。","AnchorKind","AnchorPath","AnchorBone","Offset","DirectionAngle","FollowAnchor");
                 anchor.Labels["AnchorKind"]="锚点类型";anchor.Labels["AnchorPath"]="模型相对路径";anchor.Labels["AnchorBone"]="Spine 骨骼";anchor.Labels["Offset"]="局部偏移（前 / 侧 / 深）";anchor.Labels["FollowAnchor"]="跟随锚点";
                 yield return anchor;
-                var timing=Group("有效帧与扫掠","超过距离或角度门槛时断开扫掠轨迹。","Duration","SweepPolicy","SamplingBudget","MaxSweepDistance","MaxSweepAngle","OwnedByAbility","StopTag");
-                timing.Labels["Duration"]="有效秒数";timing.Labels["SweepPolicy"]="采样方式";timing.Labels["SamplingBudget"]="扫掠预算";timing.Labels["MaxSweepDistance"]="断轨距离";timing.Labels["MaxSweepAngle"]="断轨角度";timing.Labels["OwnedByAbility"]="随施放结束回收";timing.Labels["StopTag"]="中断标签";
+                var timing=Group("有效帧与扫掠","连续扫掠在相邻姿态间做最短旋转插值。由传送和动画切换显式断轨。","Duration","SweepPolicy","SamplingBudget","MaxSweepDistance","MaxSweepAngle","OwnedByAbility","StopTag");
+                timing.Labels["Duration"]="有效秒数";timing.Labels["SweepPolicy"]="采样方式";timing.Labels["SamplingBudget"]="扫掠预算";timing.Labels["MaxSweepDistance"]="旋转扫掠步进距离";timing.Labels["MaxSweepAngle"]="扫掠步进角度";timing.Labels["OwnedByAbility"]="随施放结束回收";timing.Labels["StopTag"]="中断标签";
                 yield return timing;
                 var filter=Group("筛选与去重","每个窗口独立计数。无显式 Hurtbox 的目标以角色逻辑点检测。","Faction","Tags","LayerMask","Order","MaxDistinctTargets","MaxHitsPerTarget","RehitInterval");
                 filter.Labels["MaxDistinctTargets"]="不同目标上限";filter.Labels["MaxHitsPerTarget"]="同目标次数";filter.Labels["RehitInterval"]="同目标重击间隔";
@@ -67808,10 +67814,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 var definition=window.PreviewDefinition();
                 if(definition.Anchor.Kind!=GameplayHitAnchorKind.OwnerRoot&&!context.HitPose.HasValue)
-                    throw new InvalidOperationException("锚点未采样。请选择包含真实模型或骨骼的动画预览并移动编排光标。");
+                    throw new InvalidOperationException("当前姿态缺少所选挂点或骨骼。请选择匹配的动画模型并移动编排光标。");
                 var pose=context.HitPose??new GameplayHitPose(default,new Extensions.GameplayDirection(1,0));
+                if (!definition.AcceptsPose(pose))
+                    throw new InvalidOperationException("所选锚点的前向无法投影到窗口平面。");
                 var hit=definition.Geometry(pose);
-                string label=context.HitPose.HasValue?"当前模型锚点":"角色根节点静态姿态";
+                string label=context.HitPose.HasValue?"光标处模型姿态 · 单帧体积":"角色根节点 · 静态体积";
                 return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,
                     $"有效窗 {definition.Duration:0.###}s · {label} · {hit.Plane}", geometry:hit);
             }
@@ -69028,7 +69036,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     bool cue=action!=null&&GameplaySkillNodeDescriptors.Get(action.GetType()).IsPresentationCue;
                     bool starts=action is GameplayOwnedSequenceActionAuthoring||action is GameplaySkillPlaySequenceActionAuthoring||action is GameplaySpawnProjectileActionAuthoring||action is GameplaySpawnAreaActionAuthoring||action is GameplaySpawnSummonActionAuthoring||action is GameplayOpenHitWindowActionAuthoring;
                     port.portName=cue?"开始播放后继续":starts?"启动后继续":"继续主链";
-                    port.tooltip=cue?"成功启动特效或音频后立即执行下游，不等待播放结束。":starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
+                    port.tooltip=cue?"成功启动特效或音频后立即执行下游，不等待播放结束。":action is GameplayOpenHitWindowActionAuthoring?"开启判定窗口后立即继续。命中、自然结束和中断走窗口各自的出口。":starts?"启动编排、弹体、区域或召唤后立即继续；不等待其结束。结束回调请使用对应生命周期出口。":"此行为及其分支完成后继续主链；保留它输出的实际上下文。";
                 }
                 port.style.minHeight=22;port.style.fontSize=12;port.style.flexShrink=0;
                 var connector=port.Q("connector");if(connector!=null){connector.style.width=12;connector.style.height=12;connector.style.minWidth=12;connector.style.flexShrink=0;}
@@ -71389,7 +71397,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     bool spatial = payload is GameplayAreaDefinitionData || payload is GameplayProjectileDefinitionData ||
                         payload is GameplaySummonDefinitionData;
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload))
-                        RunOutput(id, GameplayGraphEffectCallbacks.ActionKey(slot), spatial || payload is GameplayEffectDefinitionData ? input : Empty);
+                    {
+                        string port = GameplayGraphEffectCallbacks.ActionKey(slot);
+                        // All three callbacks keep the captured scalars. GraphContextPolicy
+                        // separately limits guaranteed target Actor to the actual contact port.
+                        bool keepsValues = payload is GameplayHitWindowData &&
+                            (port == nameof(GameplayHitWindowData.OnHit) || port == nameof(GameplayHitWindowData.OnWindowFinished) ||
+                             port == nameof(GameplayHitWindowData.OnCancelled));
+                        RunOutput(id, port, keepsValues || spatial || payload is GameplayEffectDefinitionData ? input : Empty);
+                    }
                     foreach (var slot in GameplayGraphEffectCallbacks.Slots(payload))
                         foreach (var edge in edges[(id, slot.Key)])
                             VisitDefinition(GameplayGraphEffectCallbacks.EffectBinding(nodes[edge.ToNodeId].node)?.LocalId, input);
@@ -72243,7 +72259,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static bool TryDuration(GameplayAuthoringGraph graph,string nodeId,out string localId,out string path,out float seconds){
             localId=null;path=null;seconds=0;var node=graph.Nodes.Find(n=>n.Id==nodeId);if(node==null)return false;
             foreach(var binding in node.Payload.Definitions){var local=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);object values=local?.Payload;if(values==null&&binding.External){try{values=binding.External.CaptureGraphValues();}catch(NotSupportedException){}}if(values==null)continue;
-                if(values is GameplayHitWindowData window){localId=local?.Id;path=nameof(window.Duration);seconds=window.Duration;return seconds>0;}
+                if(values is GameplayHitWindowData window){localId=local?.Id;path=local==null?null:nameof(window.Duration);seconds=window.Duration;return seconds>0;}
                 foreach(var provider in Providers.OfType<IGameplaySkillValueDuration>())if(provider.TryReadDuration(values,out path,out seconds)){localId=local?.Id;return seconds>0;}}
             return false;
         }
@@ -72881,6 +72897,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach(var value in document.AuthoringGraph.Nodes.SelectMany(n=>n.Payload.Definitions).Concat(document.AuthoringGraph.LocalDefinitions.SelectMany(d=>d.Definitions)).Select(b=>b.External)){
                 if(value is GameplayProjectileDefinitionAsset projectile)yield return projectile.Plane;
                 if(value is GameplayAreaDefinitionAsset area)yield return area.Plane;
+                if(value is GameplayHitWindowDefinitionAsset window)yield return window.Plane;
             }
         }
         public static string Physics2DReason(GameplaySkillDocumentAsset document)=>Planes(document).Any(p=>p!=GameplaySpatialPlane.XY)?"此技能使用 XZ / 3D 范围；Physics2D 仅支持 XY，请选择 Logical / Physics3D Host。":null;
@@ -79019,6 +79036,7 @@ namespace FRFrame.Gameplay.Spine
 using System.Runtime.CompilerServices;
 using FRFrame.Gameplay.Standard;
 using FRFrame.Gameplay.Unity;
+using global::Spine;
 using Spine.Unity;
 using UnityEngine;
 
@@ -79028,31 +79046,49 @@ namespace FRFrame.Gameplay.Spine
     public static class GameplaySpineHitAnchors
     {
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        public static void Register() => GameplayUnityHitAnchors.SpineSampler = TrySample;
+        public static void Register() => GameplayUnityHitAnchors.ResolveSpine = Resolve;
 
-        public static bool TrySample(Transform subject, GameplayHitAnchor anchor, out GameplayHitPose pose)
+        private static GameplayUnityHitAnchors.SdkSampler Resolve(Transform container, string boneName)
         {
-            pose = default;
-            var container = string.IsNullOrWhiteSpace(anchor.Path) ? subject : subject.Find(anchor.Path);
-            if (!container) return false;
-            var renderer = container.GetComponent<SkeletonAnimation>();
-            if (!renderer)
+            SkeletonAnimation renderer = null;
+            Skeleton skeleton = null;
+            Bone bone = null;
+            return Sample;
+
+            bool Sample(out GameplayHitPose pose)
             {
-                var skeletons = container.GetComponentsInChildren<SkeletonAnimation>(true);
-                if (skeletons.Length != 1) return false;
-                renderer = skeletons[0];
+                pose = default;
+                if (!renderer || renderer.transform != container && !renderer.transform.IsChildOf(container))
+                {
+                    renderer = container.GetComponent<SkeletonAnimation>();
+                    if (!renderer)
+                    {
+                        var candidates = container.GetComponentsInChildren<SkeletonAnimation>(true);
+                        if (candidates.Length != 1) return false;
+                        renderer = candidates[0];
+                    }
+                }
+                var current = renderer.Skeleton;
+                if (!ReferenceEquals(skeleton, current))
+                {
+                    skeleton = current;
+                    bone = skeleton?.FindBone(boneName);
+                }
+                if (bone == null || !bone.Active) return false;
+                var transform = renderer.transform;
+                var position = transform.TransformPoint(new Vector3(bone.WorldX, bone.WorldY, 0));
+                var forward = transform.TransformVector(new Vector3(bone.A, bone.C, 0));
+                var up = transform.TransformVector(new Vector3(bone.B, bone.D, 0));
+                int revision = System.HashCode.Combine(renderer.GetInstanceID(), RuntimeHelpers.GetHashCode(skeleton));
+                var tracks = renderer.AnimationState?.Tracks;
+                if (tracks != null)
+                    for (int i = 0; i < tracks.Count; i++)
+                    {
+                        var track = tracks.Items[i];
+                        if (track != null) revision = System.HashCode.Combine(revision, RuntimeHelpers.GetHashCode(track), track.Animation);
+                    }
+                return GameplayUnityHitAnchors.FromWorld(position, forward, up, revision, out pose);
             }
-            var skeleton = renderer ? renderer.Skeleton : null;
-            var bone = skeleton?.FindBone(anchor.Bone);
-            if (bone == null || !bone.Active) return false;
-            var transform = renderer.transform;
-            var position = transform.TransformPoint(new Vector3(bone.WorldX, bone.WorldY, 0));
-            var forward = transform.TransformVector(new Vector3(bone.A, bone.C, 0));
-            int revision = System.HashCode.Combine(renderer.GetInstanceID(), RuntimeHelpers.GetHashCode(skeleton));
-            var tracks = renderer.AnimationState?.Tracks;
-            if (tracks != null) foreach (var track in tracks)
-                if (track != null) revision = System.HashCode.Combine(revision, RuntimeHelpers.GetHashCode(track), track.Animation);
-            return GameplayUnityHitAnchors.FromWorld(position, forward, revision, out pose);
         }
     }
 }
@@ -79114,6 +79150,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         public void CancelInteraction() => _cuePreview?.CancelInteraction();
         private float _presentationStart;
         private GameObject _subject;
+        private readonly GameplayUnityHitAnchors.Session _hitAnchors = new();
         private IGameplayAnimationPlayer _player;
         private PreviewRenderUtility _preview;
         private Bounds _initialBounds,_frameBounds;
@@ -79146,7 +79183,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         /// <summary>Temporary subject for actual SDK diagnostics/preview export; owned by this session.</summary>
         public GameObject PreviewSubject=>_cuePreview?.Subject??_subject;
         public bool TryReadHitPose(Standard.GameplayHitAnchor anchor,out Standard.GameplayHitPose pose) =>
-            GameplayUnityHitAnchors.TrySample(_subject ? _subject.transform : null, anchor, out pose);
+            _hitAnchors.TrySample(_subject ? _subject.transform : null, anchor, out pose);
         /// <summary>Preview-only level selection shared by the controls and export/diagnostics.
         /// A formal document's actual Ability MaxLevel remains the upper bound.</summary>
         public void SetLevel(int level)
@@ -79268,6 +79305,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         private void Release()
         {
             _captureVariantRoll=false;
+            _hitAnchors.Clear();
             _cuePreview?.Dispose();_cuePreview=null;
             _player?.Dispose();_player=null;
             _preview?.Cleanup();_preview=null;
@@ -81714,7 +81752,7 @@ namespace FRFrame.Gameplay.Unity
             finally{_replacingChannels.Clear();ReplacingPhysicalPlayers--;}
             var playback=new Playback(this,definition.Channel,definition.Priority,context,grant,player,speed,writes);
             _channels[definition.Channel]=playback;
-            _hitPoseRevision++;
+            CutHitAnchorBindings();
             PhysicalPlayers.Add(playback);
             if(!Actor.Abilities.TryOwnLifetime(grant,playback)){playback.Dispose();return RejectAnimation(definition,context,"GrantLifetimeEnded");}
             try {player.Seek(0);playback.Sampled=true;PromoteQueue(definition.Channel);return true;}catch{playback.Dispose();throw;}
@@ -81735,6 +81773,7 @@ namespace FRFrame.Gameplay.Unity
         public void Dispose()
         {
             if(_disposed)return;_disposed=true;
+            _hitAnchors.Clear();
             Controllers.Remove(this);
             Actor.CombatChanged-=OnFloatingCombat;
             _pendingCombatText.Clear();
@@ -81785,7 +81824,7 @@ namespace FRFrame.Gameplay.Unity
             public void Dispose()
             {
                 if(_disposed)return;_disposed=true;_player.AnimationEvent-=OnEvent;
-                _owner._hitPoseRevision++;
+                _owner.CutHitAnchorBindings();
                 if(_owner._channels.TryGetValue(_channel,out var current)&&ReferenceEquals(current,this))_owner._channels.Remove(_channel);
                 PhysicalPlayers.Remove(this);
                 _owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);_player.Dispose();
@@ -82488,6 +82527,8 @@ namespace FRFrame.Gameplay.Unity
 </file>
 
 <file path="Gameplay/Integrations/UnityCommon/Runtime/GameplayUnityHitAnchors.cs">
+using System;
+using System.Collections.Generic;
 using FRFrame.Gameplay.Extensions;
 using FRFrame.Gameplay.Standard;
 using UnityEngine;
@@ -82497,26 +82538,73 @@ namespace FRFrame.Gameplay.Unity
     /// <summary>Reads evaluated Unity sockets. An optional SDK installs a reader for its native anchor kind.</summary>
     public static class GameplayUnityHitAnchors
     {
-        public delegate bool SdkSampler(Transform subject, GameplayHitAnchor anchor, out GameplayHitPose pose);
-        public static SdkSampler SpineSampler { private get; set; }
+        public delegate bool SdkSampler(out GameplayHitPose pose);
+        public static Func<Transform, string, SdkSampler> ResolveSpine { private get; set; }
 
-        public static bool TrySample(Transform subject, GameplayHitAnchor anchor, out GameplayHitPose pose)
+        /// <summary>Anchor bindings owned by one runtime or preview subject, reused across its windows.</summary>
+        public sealed class Session
         {
-            pose = default;
-            if (!subject) return false;
-            if (anchor.Kind == GameplayHitAnchorKind.SpineBone)
-                return SpineSampler != null && SpineSampler(subject, anchor, out pose);
-            var selected = anchor.Kind == GameplayHitAnchorKind.OwnerRoot ? subject : subject.Find(anchor.Path);
-            return selected && FromWorld(selected.position, selected.TransformVector(Vector3.right), selected.GetInstanceID(), out pose);
+            private sealed class Binding
+            {
+                internal readonly string[] Segments;
+                internal Transform Socket;
+                internal SdkSampler SampleSpine;
+
+                internal Binding(string path) => Segments = string.IsNullOrEmpty(path) ? Array.Empty<string>() : path.Split('/');
+
+                internal bool IsCurrent(Transform subject)
+                {
+                    var current = Socket;
+                    for (int i = Segments.Length - 1; i >= 0; i--)
+                    {
+                        if (!current || current.name != Segments[i]) return false;
+                        current = current.parent;
+                    }
+                    return current == subject;
+                }
+            }
+
+            private readonly Dictionary<(GameplayHitAnchorKind Kind, string Path, string Bone), Binding> _bindings = new();
+            private Transform _subject;
+
+            public bool TrySample(Transform subject, GameplayHitAnchor anchor, out GameplayHitPose pose)
+            {
+                pose = default;
+                if (_subject != subject) { _bindings.Clear(); _subject = subject; }
+                if (!subject) return false;
+                var key = (anchor.Kind, anchor.Path, anchor.Bone);
+                if (!_bindings.TryGetValue(key, out var binding)) _bindings.Add(key, binding = new Binding(anchor.Path));
+                if (!binding.IsCurrent(subject))
+                {
+                    binding.Socket = binding.Segments.Length == 0 ? subject : subject.Find(anchor.Path);
+                    binding.SampleSpine = null;
+                }
+                var socket = binding.Socket;
+                if (!socket) return false;
+                if (anchor.Kind == GameplayHitAnchorKind.SpineBone)
+                {
+                    binding.SampleSpine ??= ResolveSpine?.Invoke(socket, anchor.Bone);
+                    return binding.SampleSpine != null && binding.SampleSpine(out pose);
+                }
+                return FromWorld(socket.position, socket.TransformVector(Vector3.right), socket.TransformVector(Vector3.up),
+                    socket.GetInstanceID(), out pose);
+            }
+
+            public void Clear()
+            {
+                _bindings.Clear();
+                _subject = null;
+            }
         }
 
         /// <summary>Converts SDK world coordinates to the pure Standard pose contract.</summary>
-        public static bool FromWorld(Vector3 point, Vector3 forward, long revision, out GameplayHitPose pose)
+        public static bool FromWorld(Vector3 point, Vector3 forward, Vector3 up, long revision, out GameplayHitPose pose)
         {
             pose = default;
             if (forward.sqrMagnitude <= 1e-10f) return false;
             pose = new GameplayHitPose(new GameplayPoint(point.x, point.y, point.z),
-                new GameplayDirection(forward.x, forward.y, forward.z), revision);
+                new GameplayDirection(forward.x, forward.y, forward.z),
+                up.sqrMagnitude > 1e-10f ? new GameplayDirection(up.x, up.y, up.z) : default, revision);
             return true;
         }
     }
@@ -82524,12 +82612,21 @@ namespace FRFrame.Gameplay.Unity
     public sealed partial class GameplayUnityAnimationController : IGameplayHitAnchorProvider
     {
         private long _hitPoseRevision;
+        private readonly GameplayUnityHitAnchors.Session _hitAnchors = new();
+
+        private void CutHitAnchorBindings()
+        {
+            _hitPoseRevision++;
+            _hitAnchors.Clear();
+        }
+
         public bool TrySample(GameplayHitAnchor anchor, double worldTime, out GameplayHitPose pose)
         {
             pose = default;
-            if (_disposed || !Subject || !GameplayUnityHitAnchors.TrySample(Subject.transform, anchor, out var sampled))
+            if (_disposed || !Subject || !_hitAnchors.TrySample(Subject.transform, anchor, out var sampled))
                 return false;
-            pose = new GameplayHitPose(sampled.Position, sampled.Forward, System.HashCode.Combine(sampled.Revision, _hitPoseRevision, this));
+            pose = new GameplayHitPose(sampled.Position, sampled.Forward, sampled.Up,
+                HashCode.Combine(sampled.Revision, _hitPoseRevision, this));
             return true;
         }
     }
@@ -84639,6 +84736,7 @@ namespace FRFrame.Gameplay.Standard
 
 <file path="Gameplay/Standard/Runtime/Spatial/GameplayHitContact.cs">
 using System;
+using System.Numerics;
 using FRFrame.Gameplay.Extensions;
 
 namespace FRFrame.Gameplay.Standard
@@ -84648,7 +84746,12 @@ namespace FRFrame.Gameplay.Standard
     {
         private const float Tolerance = .00005f;
 
-        internal static void Basis(GameplaySpatialPlane plane, GameplayDirection forward, out GameplayDirection right, out GameplayDirection up)
+        internal static GameplayDirection ProjectForward(GameplaySpatialPlane plane, GameplayDirection forward) =>
+            plane == GameplaySpatialPlane.XY ? new GameplayDirection(forward.X, forward.Y) :
+            plane == GameplaySpatialPlane.XZ ? new GameplayDirection(forward.X, 0, forward.Z) : forward;
+
+        internal static void Basis(GameplaySpatialPlane plane, GameplayDirection forward, GameplayDirection anchorUp,
+            out GameplayDirection right, out GameplayDirection up)
         {
             if (plane == GameplaySpatialPlane.XY)
             {
@@ -84662,33 +84765,84 @@ namespace FRFrame.Gameplay.Standard
             }
             else
             {
-                right = Math.Abs(forward.Y) > .999f
-                    ? new GameplayDirection(-forward.Y, forward.X, 0)
-                    : new GameplayDirection(forward.Z, 0, -forward.X);
-                up = new GameplayDirection(forward.Y * right.Z - forward.Z * right.Y,
-                    forward.Z * right.X - forward.X * right.Z, forward.X * right.Y - forward.Y * right.X);
+                var axis = Vector(forward);
+                var side = anchorUp.IsValid ? Vector3.Cross(Vector(anchorUp), axis) : Vector3.Zero;
+                if (side.LengthSquared() < 1e-10f)
+                    side = Vector3.Cross(Math.Abs(forward.Y) > .999f ? Vector3.UnitZ : Vector3.UnitY, axis);
+                side = Vector3.Normalize(side);
+                right = Direction(side);
+                up = Direction(Vector3.Cross(axis, side));
             }
         }
 
-        internal static float Dot(GameplayDirection a, GameplayDirection b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+        private static Vector3 Vector(GameplayDirection value) => new Vector3(value.X, value.Y, value.Z);
+        private static GameplayDirection Direction(Vector3 value) => new GameplayDirection(value.X, value.Y, value.Z);
 
-        internal static float Rotation(GameplayHitPose a, GameplayHitPose b) =>
-            a.Forward.X == b.Forward.X && a.Forward.Y == b.Forward.Y && a.Forward.Z == b.Forward.Z
-                ? 0 : MathF.Acos(Math.Clamp(Dot(a.Forward, b.Forward), -1, 1));
-
-        internal static GameplayHitPose Interpolate(GameplayHitPose a, GameplayHitPose b, float t, float radians)
+        /// <summary>Linear translation and shortest continuous rotation between evaluated endpoint poses.</summary>
+        internal readonly struct Motion
         {
-            if (radians < .001f) return new GameplayHitPose(GameplaySpatialMath.Lerp(a.Position, b.Position, t), b.Forward, b.Revision);
-            var weight = MathF.Sin(radians);
-            float from = MathF.Sin((1 - t) * radians) / weight, to = MathF.Sin(t * radians) / weight;
-            var forward = new GameplayDirection(a.Forward.X * from + b.Forward.X * to,
-                a.Forward.Y * from + b.Forward.Y * to, a.Forward.Z * from + b.Forward.Z * to);
-            return new GameplayHitPose(GameplaySpatialMath.Lerp(a.Position, b.Position, t), forward, b.Revision);
+            private readonly GameplaySpatialPlane _plane;
+            private readonly GameplayHitPose _from, _to;
+            private readonly GameplayDirection _forward;
+            private readonly float _turn;
+            private readonly Quaternion _start, _end;
+            internal float Radians { get; }
+
+            internal Motion(GameplaySpatialPlane plane, GameplayHitPose from, GameplayHitPose to)
+            {
+                _plane = plane;
+                _from = from;
+                _to = to;
+                _forward = ProjectForward(plane, from.Forward);
+                var end = ProjectForward(plane, to.Forward);
+                _start = _end = Quaternion.Identity;
+                _turn = 0;
+                if (plane == GameplaySpatialPlane.ThreeDimensional)
+                {
+                    _start = Orientation(_forward, from.Up);
+                    _end = Orientation(end, to.Up);
+                    var delta = Quaternion.Conjugate(_start) * _end;
+                    Radians = 2 * MathF.Atan2(new Vector3(delta.X, delta.Y, delta.Z).Length(), Math.Abs(delta.W));
+                }
+                else
+                {
+                    float a = plane == GameplaySpatialPlane.XY ? _forward.Y : _forward.Z;
+                    float b = plane == GameplaySpatialPlane.XY ? end.Y : end.Z;
+                    _turn = MathF.Atan2(_forward.X * b - a * end.X, _forward.X * end.X + a * b);
+                    Radians = Math.Abs(_turn);
+                }
+            }
+
+            internal GameplayHitPose At(float t)
+            {
+                if (t == 0) return _from;
+                if (t == 1) return _to;
+                var position = GameplaySpatialMath.Lerp(_from.Position, _to.Position, t);
+                if (_plane == GameplaySpatialPlane.ThreeDimensional)
+                {
+                    var rotation = Quaternion.Slerp(_start, _end, t);
+                    return new GameplayHitPose(position, Direction(Vector3.Transform(Vector3.UnitX, rotation)),
+                        Direction(Vector3.Transform(Vector3.UnitZ, rotation)), _to.Revision);
+                }
+                float sin = MathF.Sin(_turn * t), cos = MathF.Cos(_turn * t);
+                float side = _plane == GameplaySpatialPlane.XY ? _forward.Y : _forward.Z;
+                float x = _forward.X * cos - side * sin, y = _forward.X * sin + side * cos;
+                return new GameplayHitPose(position, _plane == GameplaySpatialPlane.XY
+                    ? new GameplayDirection(x, y) : new GameplayDirection(x, 0, y), _to.Revision);
+            }
+
+            private static Quaternion Orientation(GameplayDirection forward, GameplayDirection anchorUp)
+            {
+                Basis(GameplaySpatialPlane.ThreeDimensional, forward, anchorUp, out var side, out var up);
+                return Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(new Matrix4x4(
+                    forward.X, forward.Y, forward.Z, 0, side.X, side.Y, side.Z, 0,
+                    up.X, up.Y, up.Z, 0, 0, 0, 0, 1)));
+            }
         }
 
         internal static float Separation(GameplaySearchGeometry geometry, GameplayPoint center, out GameplayPoint contact)
         {
-            Basis(geometry.Plane, geometry.Direction, out var right, out var up);
+            Basis(geometry.Plane, geometry.Direction, geometry.OrientationUp, out var right, out var up);
             float x = center.X - geometry.Origin.X, y = center.Y - geometry.Origin.Y, z = center.Z - geometry.Origin.Z;
             var forward = geometry.Direction;
             float a = x * forward.X + y * forward.Y + z * forward.Z;
@@ -84730,7 +84884,7 @@ namespace FRFrame.Gameplay.Standard
         }
 
         internal static bool TryFind(GameplayHitWindowDefinition definition, GameplayHitPose from, GameplayHitPose to,
-            GameplayPoint start, GameplayPoint end, float radius, float rotation, bool sweep,
+            GameplayPoint start, GameplayPoint end, float radius, bool sweep,
             out float time, out GameplayPoint contact, out bool budgetExhausted)
         {
             time = 1;
@@ -84739,10 +84893,12 @@ namespace FRFrame.Gameplay.Standard
             float lastGap = Separation(last, end, out contact) - radius;
             if (!sweep) return lastGap <= Tolerance;
 
+            var motion = new Motion(definition.Plane, from, to);
+            float rotation = motion.Radians;
             var first = definition.Geometry(from);
             float Sample(float at, out GameplayPoint point)
             {
-                var geometry = rotation == 0 ? first : definition.Geometry(Interpolate(from, to, at, rotation));
+                var geometry = rotation == 0 ? first : definition.Geometry(motion.At(at));
                 var center = GameplaySpatialMath.Lerp(start, end, at);
                 // With a fixed orientation, move into the first volume's relative frame.
                 var dx = (last.Origin.X - first.Origin.X) * at;
@@ -84760,7 +84916,8 @@ namespace FRFrame.Gameplay.Standard
             // travelled by the farthest point on the volume (including its anchor offset).
             var relativeEnd = new GameplayPoint(end.X - (to.Position.X - from.Position.X),
                 end.Y - (to.Position.Y - from.Position.Y), end.Z - (to.Position.Z - from.Position.Z));
-            float bound = GameplaySpatialMath.Distance(start, relativeEnd) +
+            float travel = GameplaySpatialMath.Distance(start, relativeEnd);
+            float bound = travel +
                 rotation * (first.BoundsRadius + GameplaySpatialMath.Distance(default, definition.Offset));
             if (gapAtStart > bound + Tolerance) return false;
 
@@ -84800,10 +84957,12 @@ namespace FRFrame.Gameplay.Standard
 
             // Conservative advancement over rotating geometry: each step is bounded by
             // the current verified clearance. An exhausted interval never invents a hit.
+            float maxStep = Math.Min(definition.MaxSweepAngle * ((float)Math.PI / 180) / rotation,
+                definition.MaxSweepDistance / travel);
             float t = 0, gap = gapAtStart;
             for (int i = 0; i < definition.SamplingBudget; i++)
             {
-                t += gap / bound;
+                t += Math.Min(gap / bound, maxStep);
                 if (t >= 1) return lastGap <= Tolerance;
                 gap = Sample(t, out var point);
                 if (gap <= Tolerance) { time = t; contact = point; return true; }
@@ -84815,7 +84974,7 @@ namespace FRFrame.Gameplay.Standard
         private static bool TryFixedRoundVolume(GameplaySearchGeometry geometry, GameplayPoint start, GameplayPoint end,
             float radius, out float time, out bool applicable)
         {
-            Basis(geometry.Plane, geometry.Direction, out var side, out var up);
+            Basis(geometry.Plane, geometry.Direction, geometry.OrientationUp, out var side, out var up);
             var origin = geometry.Origin;
             float Project(GameplayPoint p, GameplayDirection axis) =>
                 (p.X - origin.X) * axis.X + (p.Y - origin.Y) * axis.Y + (p.Z - origin.Z) * axis.Z;
@@ -84879,7 +85038,7 @@ namespace FRFrame.Gameplay.Standard
                 kind == GameplayHitAnchorKind.SpineBone && string.IsNullOrWhiteSpace(bone))
                 throw new ArgumentException("A Transform path or Spine bone name is required for the selected anchor.", nameof(kind));
             Kind = kind;
-            Path = path;
+            Path = string.IsNullOrWhiteSpace(path) ? null : path;
             Bone = bone;
         }
     }
@@ -84889,9 +85048,13 @@ namespace FRFrame.Gameplay.Standard
     {
         public GameplayPoint Position { get; }
         public GameplayDirection Forward { get; }
+        /// <summary>Model up in world space. An omitted axis uses the standard world-up basis in 3D.</summary>
+        public GameplayDirection Up { get; }
         public long Revision { get; }
         public GameplayHitPose(GameplayPoint position, GameplayDirection forward, long revision = 0)
-        { Position = position; Forward = forward; Revision = revision; }
+            : this(position, forward, default, revision) { }
+        public GameplayHitPose(GameplayPoint position, GameplayDirection forward, GameplayDirection up, long revision = 0)
+        { Position = position; Forward = forward; Up = up; Revision = revision; }
     }
 
     /// <summary>Reads evaluated pose at the supplied World sample time without advancing animation.</summary>
@@ -84917,6 +85080,7 @@ namespace FRFrame.Gameplay.Standard
     /// <summary>Immutable hit geometry, tracking and callbacks shared by each independently opened window.</summary>
     public sealed class GameplayHitWindowDefinition
     {
+        private const int MaxRehitsPerTarget = 256;
         public GameplaySearchShape Shape { get; }
         public GameplaySpatialPlane Plane { get; }
         public GameplayHitAnchor Anchor { get; }
@@ -84940,6 +85104,7 @@ namespace FRFrame.Gameplay.Standard
         public GameplayTag StopTag { get; }
         public GameplayHitSweepPolicy SweepPolicy { get; }
         public int SamplingBudget { get; }
+        /// <summary>Maximum translation and rotation per advancement probe on a rotating sweep, never a teleport threshold.</summary>
         public float MaxSweepDistance { get; }
         public float MaxSweepAngle { get; }
         public IReadOnlyList<IGameplaySkillAction> OnHit { get; }
@@ -84967,11 +85132,12 @@ namespace FRFrame.Gameplay.Standard
             foreach (float value in new[] { radius, length, width, height, duration, maxSweepDistance })
                 if (!float.IsFinite(value) || value <= 0) throw new ArgumentException("Hit window dimensions, duration and sweep distance must be positive.");
             if (!float.IsFinite(angle) || angle <= 0 || angle > 180 || !float.IsFinite(directionAngle) ||
-                !float.IsFinite(maxSweepAngle) || maxSweepAngle <= 0 || maxSweepAngle >= 180)
-                throw new ArgumentException("Hit sectors support 0 < Angle ≤ 180; sweep cuts require 0 < MaxSweepAngle < 180.");
+                !float.IsFinite(maxSweepAngle) || maxSweepAngle <= 0 || maxSweepAngle > 180)
+                throw new ArgumentException("Hit sectors and angular sweep steps support angles in (0, 180].");
             if (maxDistinctTargets < 1 || maxHitsPerTarget < 1 || !float.IsFinite(rehitInterval) ||
-                rehitInterval < 0 || maxHitsPerTarget > 1 && rehitInterval == 0 || samplingBudget < 8 || samplingBudget > 256)
-                throw new ArgumentException("Hit limits must be positive, repeated hits need a positive interval, and sweep budget must be 8–256.");
+                rehitInterval < 0 || maxHitsPerTarget > MaxRehitsPerTarget ||
+                maxHitsPerTarget > 1 && rehitInterval == 0 || samplingBudget < 8 || samplingBudget > 256)
+                throw new ArgumentException("Target limits must be positive, hits per target 1–256, repeated hits need a positive interval, and sweep budget must be 8–256.");
 
             Shape = shape; Plane = plane; Anchor = anchor; Duration = duration;
             Radius = radius; Angle = angle; Length = length; Width = width; Height = height;
@@ -84988,12 +85154,8 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Builds canonical search geometry from the same evaluated anchor used by runtime and preview.</summary>
         public GameplaySearchGeometry Geometry(GameplayHitPose pose)
         {
-            var forward = pose.Forward;
-            if (Plane == GameplaySpatialPlane.XY && (forward.X != 0 || forward.Y != 0))
-                forward = new GameplayDirection(forward.X, forward.Y);
-            else if (Plane == GameplaySpatialPlane.XZ && (forward.X != 0 || forward.Z != 0))
-                forward = new GameplayDirection(forward.X, 0, forward.Z);
-            GameplayHitContact.Basis(Plane, forward, out var right, out var up);
+            var forward = GameplayHitContact.ProjectForward(Plane, pose.Forward);
+            GameplayHitContact.Basis(Plane, forward, pose.Up, out var right, out var up);
             var origin = GameplaySpatialMath.Offset(GameplaySpatialMath.Offset(
                 GameplaySpatialMath.Offset(pose.Position, forward, Offset.X), right, Offset.Y), up, Offset.Z);
             if (DirectionAngle != 0)
@@ -85002,10 +85164,12 @@ namespace FRFrame.Gameplay.Standard
                 float cos = MathF.Cos(angle), sin = MathF.Sin(angle);
                 forward = new GameplayDirection(forward.X * cos + right.X * sin, forward.Y * cos + right.Y * sin, forward.Z * cos + right.Z * sin);
             }
-            return new GameplaySearchGeometry(Shape, Plane, origin, forward, Radius, Angle, Length, Width, Height);
+            return new GameplaySearchGeometry(Shape, Plane, origin, forward, Radius, Angle, Length, Width, Height,
+                orientationUp: Plane == GameplaySpatialPlane.ThreeDimensional ? up : default);
         }
 
-        internal bool Accepts(GameplayHitPose pose) => pose.Forward.IsValid &&
+        /// <summary>Whether the evaluated anchor has a usable forward in this volume's plane.</summary>
+        public bool AcceptsPose(GameplayHitPose pose) => pose.Forward.IsValid &&
             (Plane == GameplaySpatialPlane.ThreeDimensional || (Plane == GameplaySpatialPlane.XY
                 ? pose.Forward.X != 0 || pose.Forward.Y != 0
                 : pose.Forward.X != 0 || pose.Forward.Z != 0));
@@ -85021,8 +85185,16 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Optional game/SDK override. Presentation providers are used when no override is bound.</summary>
         public IGameplayHitAnchorProvider HitAnchors { get; set; }
         internal long HitPoseRevision { get; private set; }
-        /// <summary>Call at an authoritative teleport or view cut so neither weapon nor hurtbox sweeps across the jump.</summary>
+        /// <summary>Mark an instantaneous facing, pose or model cut at the movement authority.</summary>
         public void MarkHitPoseDiscontinuous() => HitPoseRevision++;
+
+        /// <summary>Instantly places this actor without sweeping its attack or hurtbox between positions.
+        /// Ordinary movement, including a dash or push, writes Position continuously instead.</summary>
+        public void TeleportTo(GameplayPoint position)
+        {
+            MarkHitPoseDiscontinuous();
+            Position = position;
+        }
 
         public bool TrySampleHitAnchor(GameplayHitAnchor anchor, double worldTime, out GameplayHitPose pose)
         {
@@ -85082,19 +85254,31 @@ namespace FRFrame.Gameplay.Standard
             { var shape = actor.Hurtbox; Center = shape.Center(actor.Position); Radius = shape.Radius; Revision = actor.HitPoseRevision; }
         }
 
-        private readonly struct Hit
+        private readonly struct TargetMotion
         {
             internal readonly GameplayStandardActor Actor;
+            internal readonly GameplayPoint Start, End;
+            internal readonly float Radius;
+            internal readonly long Revision;
+            internal readonly bool Sweep;
+
+            internal TargetMotion(GameplayStandardActor actor, GameplayPoint start, GameplayPoint end, TargetSample sample, bool sweep)
+            { Actor = actor; Start = start; End = end; Radius = sample.Radius; Revision = sample.Revision; Sweep = sweep; }
+        }
+
+        private readonly struct Hit
+        {
+            internal readonly TargetMotion Target;
             internal readonly GameplayPoint Point;
-            internal readonly float Time;
+            internal readonly double Time;
             internal readonly double Distance;
-            internal Hit(GameplayStandardActor actor, GameplayPoint point, float time, double distance)
-            { Actor = actor; Point = point; Time = time; Distance = distance; }
+            internal Hit(TargetMotion target, GameplayPoint point, double time, double distance)
+            { Target = target; Point = point; Time = time; Distance = distance; }
         }
 
         private readonly Dictionary<GameplaySourceId, TargetSample> _previousTargets = new();
         private readonly Dictionary<GameplaySourceId, (int count, double time)> _hits = new();
-        private readonly List<Hit> _contacts = new();
+        private readonly SortedSet<Hit> _contacts;
         private GameplayHitPose _previousPose;
         private long _ownerRevision;
         private bool _scanning;
@@ -85109,13 +85293,23 @@ namespace FRFrame.Gameplay.Standard
 
         internal GameplayHitWindowOperation(GameplayStandardActor owner, GameplayContext context,
             GameplayAbilityHandle grant, GameplayHitWindowDefinition definition) : base(owner, context, grant, null, definition.OwnedByAbility)
-        { Definition = definition; }
+        {
+            Definition = definition;
+            _contacts = new SortedSet<Hit>(Comparer<Hit>.Create((a, b) =>
+            {
+                int time = a.Time.CompareTo(b.Time);
+                if (time != 0) return time;
+                int distance = Definition.Order == GameplayTargetOrder.SourceId ? 0 : a.Distance.CompareTo(b.Distance);
+                if (Definition.Order == GameplayTargetOrder.Farthest) distance = -distance;
+                return distance != 0 ? distance : a.Target.Actor.Id.Value.CompareTo(b.Target.Actor.Id.Value);
+            }));
+        }
 
         protected override void OnStart() => Sample(0, 1);
 
         internal override void Advance(float delta)
         {
-            if (delta == 0) return;
+            if (delta == 0 || _scanning) return;
             float active = (float)Math.Min(delta, Definition.Duration - _age);
             Sample(active, active / delta);
             _age += active;
@@ -85137,18 +85331,17 @@ namespace FRFrame.Gameplay.Standard
             GameplayHitPose actual = _previousPose;
             bool first = SampleCount == 0;
             if ((first || Definition.FollowAnchor) &&
-                (!Owner.TrySampleHitAnchor(Definition.Anchor, Owner.World.HitSampleTime, out actual) || !Definition.Accepts(actual)))
+                (!Owner.TrySampleHitAnchor(Definition.Anchor, Owner.World.HitSampleTime, out actual) || !Definition.AcceptsPose(actual)))
             {
                 Diagnose(GameplaySkillTraceStage.ActionRejected, "AnchorUnavailable", Definition.Anchor.Kind + " " + Definition.Anchor.Path + " " + Definition.Anchor.Bone);
                 Finish(GameplaySpatialEndReason.TargetLost);
                 return;
             }
-            bool cut = !first && (_previousPose.Revision != actual.Revision || _ownerRevision != Owner.HitPoseRevision ||
-                GameplaySpatialMath.Distance(_previousPose.Position, actual.Position) > Definition.MaxSweepDistance);
-            float fullRotation = first || cut ? 0 : GameplayHitContact.Rotation(_previousPose, actual);
-            cut |= fullRotation >= Definition.MaxSweepAngle * ((float)Math.PI / 180);
+            bool cut = !first && (_previousPose.Revision != actual.Revision || _ownerRevision != Owner.HitPoseRevision);
             if (cut) Diagnose(GameplaySkillTraceStage.ActionSucceeded, "Cut", "Sweep disconnected at pose discontinuity");
-            var pose = first || cut || fraction == 1 ? actual : GameplayHitContact.Interpolate(_previousPose, actual, fraction, fullRotation);
+            var startPose = first || cut ? actual : _previousPose;
+            var pose = first || cut || fraction == 1 ? actual : new GameplayHitContact.Motion(Definition.Plane, startPose, actual).At(fraction);
+            var motion = new GameplayHitContact.Motion(Definition.Plane, startPose, pose);
             Geometry = Definition.Geometry(pose);
             Position = Geometry.Origin;
             Direction = Geometry.Direction;
@@ -85156,25 +85349,31 @@ namespace FRFrame.Gameplay.Standard
             _scanning = true;
             try
             {
-                if (!cut || fraction == 1) Collect(pose, delta, fraction, fullRotation * fraction, first || cut);
+                if (!cut || fraction == 1) Collect(motion, delta, fraction, first || cut);
                 _previousPose = actual;
                 _ownerRevision = Owner.HitPoseRevision;
                 Notify();
-                foreach (var hit in _contacts)
+                while (_contacts.Count != 0)
                 {
-                    if (!CanAttack()) break;
-                    if (!hit.Actor.IsTargetable) continue;
-                    var id = hit.Actor.Id;
+                    if (!CanAttack() || Owner.HitPoseRevision != _ownerRevision) break;
+                    var hit = _contacts.Min;
+                    _contacts.Remove(hit);
+                    var target = hit.Target.Actor;
+                    if (target.HitPoseRevision != hit.Target.Revision || !CanTarget(target)) continue;
+                    var id = target.Id;
                     bool wasHit = _hits.TryGetValue(id, out var previous);
-                    if (!wasHit && _hits.Count >= Definition.MaxDistinctTargets) continue;
+                    if (!wasHit && _hits.Count >= Definition.MaxDistinctTargets) { LimitedCandidates++; continue; }
                     // Update before invoking authored actions. A cancelled or reentered callback
                     // cannot claim this target a second time.
-                    _hits[id] = (previous.count + 1, _age + delta * hit.Time);
+                    int count = previous.count + 1;
+                    _hits[id] = (count, hit.Time);
                     HitCount++;
                     var context = At(id, hit.Point);
                     Diagnose(GameplaySkillTraceStage.ActionSucceeded, "Contact",
-                        $"t={_hits[id].time:0.000}, target={id}, hurtbox={(hit.Actor.Hurtbox.Radius > 0 ? "Sphere" : "Point")}", context);
+                        $"t={hit.Time:0.000}, target={id}, hurtbox={(hit.Target.Radius > 0 ? "Sphere" : "Point")}", context);
                     Run(Definition.OnHit, context, "Event.Standard.HitWindow.Hit");
+                    if (count < Definition.MaxHitsPerTarget && !IsDisposed)
+                        QueueContact(hit.Target, motion, delta, hit.Time + Definition.RehitInterval);
                 }
                 if (!IsDisposed) CanAttack();
             }
@@ -85190,12 +85389,15 @@ namespace FRFrame.Gameplay.Standard
             }
         }
 
-        private void Collect(GameplayHitPose pose, float delta, float fraction, float rotation, bool cut)
+        private bool CanTarget(GameplayStandardActor actor) =>
+            GameplaySpatialSearchRequest.CanTarget(actor, Owner.Id, Owner.Faction, Definition.Faction, Definition.Tags, Definition.LayerMask);
+
+        private void Collect(GameplayHitContact.Motion motion, float delta, float fraction, bool cut)
         {
             var definition = Definition;
             foreach (var actor in Owner.World.Actors)
             {
-                if (!GameplaySpatialSearchRequest.CanTarget(actor, Owner.Id, Owner.Faction, definition.Faction, definition.Tags, definition.LayerMask))
+                if (!CanTarget(actor))
                 {
                     _previousTargets.Remove(actor.Id);
                     continue;
@@ -85203,42 +85405,37 @@ namespace FRFrame.Gameplay.Standard
                 var next = new TargetSample(actor);
                 bool hasPrevious = _previousTargets.TryGetValue(actor.Id, out var old);
                 _previousTargets[actor.Id] = next;
-                bool targetCut = !hasPrevious || old.Revision != next.Revision || old.Radius != next.Radius ||
-                    GameplaySpatialMath.Distance(old.Center, next.Center) > definition.MaxSweepDistance;
+                bool targetCut = !hasPrevious || old.Revision != next.Revision || old.Radius != next.Radius;
                 if (targetCut && fraction < 1) continue;
                 var end = targetCut || fraction == 1 ? next.Center : GameplaySpatialMath.Lerp(old.Center, next.Center, fraction);
                 bool repeat = _hits.TryGetValue(actor.Id, out var previous);
                 if (repeat && previous.count >= definition.MaxHitsPerTarget ||
                     !repeat && _hits.Count >= definition.MaxDistinctTargets)
                 { LimitedCandidates++; continue; }
-                var eligible = repeat ? previous.time + definition.RehitInterval - _age : 0;
-                if (eligible > delta) continue;
-
                 bool sweep = definition.SweepPolicy == GameplayHitSweepPolicy.Swept && !cut && !targetCut;
-                float startFraction = eligible > 0 ? (float)(eligible / delta) : 0;
-                var start = sweep ? GameplaySpatialMath.Lerp(old.Center, end, startFraction) : end;
-                var startPose = sweep
-                    ? GameplayHitContact.Interpolate(_previousPose, pose, startFraction, rotation)
-                    : pose;
-                bool contact = GameplayHitContact.TryFind(definition, startPose, pose, start, end, next.Radius,
-                    sweep ? rotation * (1 - startFraction) : 0, sweep, out var t, out var point, out var exhausted);
-                if (exhausted) Diagnose(GameplaySkillTraceStage.ActionRejected, "SweepBudget", "Candidate " + actor.Id);
-                if (contact)
-                {
-                    var contactPose = sweep ? GameplayHitContact.Interpolate(startPose, pose, t, rotation * (1 - startFraction)) : pose;
-                    var origin = definition.Geometry(contactPose).Origin;
-                    _contacts.Add(new Hit(actor, point, startFraction + t * (1 - startFraction),
-                        GameplaySearchGeometry.DistanceSquared(origin, GameplaySpatialMath.Lerp(start, end, t))));
-                }
+                var target = new TargetMotion(actor, sweep ? old.Center : end, end, next, sweep);
+                QueueContact(target, motion, delta, repeat ? previous.time + definition.RehitInterval : _age);
             }
-            _contacts.Sort((a, b) =>
-            {
-                int time = a.Time.CompareTo(b.Time);
-                if (time != 0) return time;
-                int distance = definition.Order == GameplayTargetOrder.SourceId ? 0 : a.Distance.CompareTo(b.Distance);
-                if (definition.Order == GameplayTargetOrder.Farthest) distance = -distance;
-                return distance == 0 ? a.Actor.Id.Value.CompareTo(b.Actor.Id.Value) : distance;
-            });
+        }
+
+        // Keep one pending hit per target. Only a callback that actually ran can schedule a
+        // rehit, so cancel/death/teleport cannot leave a precomputed batch of damage behind.
+        private void QueueContact(TargetMotion target, GameplayHitContact.Motion motion, float delta, double due)
+        {
+            double endTime = _age + delta;
+            if (due > endTime) return;
+            double startTime = Math.Max(_age, due);
+            float fraction = target.Sweep && delta > 0 ? (float)((startTime - _age) / delta) : 1;
+            var from = motion.At(fraction);
+            var to = motion.At(1);
+            var start = GameplaySpatialMath.Lerp(target.Start, target.End, fraction);
+            bool found = GameplayHitContact.TryFind(Definition, from, to, start, target.End, target.Radius,
+                target.Sweep && fraction < 1, out var t, out var point, out var exhausted);
+            if (exhausted) Diagnose(GameplaySkillTraceStage.ActionRejected, "SweepBudget", "Candidate " + target.Actor.Id);
+            if (!found) return;
+            var origin = Definition.Geometry(motion.At(fraction + t * (1 - fraction))).Origin;
+            _contacts.Add(new Hit(target, point, startTime + t * (endTime - startTime),
+                GameplaySearchGeometry.DistanceSquared(origin, GameplaySpatialMath.Lerp(start, target.End, t))));
         }
 
         protected override void OnFinished(GameplaySpatialEndReason reason)
@@ -85309,6 +85506,7 @@ namespace FRFrame.Gameplay.Standard
                 step=Math.Min(step,Math.Max(0,GameplaySpatialMath.Distance(Target.Position,Owner.Position)-_minimumSeparation));
             if(_duration>0)step=Math.Min(step,Request.Speed*Math.Max(0,_duration-_age));
             _age+=delta;
+            // MoveTargets is continuous travel. Hosts use TeleportTo for discrete placement.
             Target.Position=GameplaySpatialMath.Offset(Target.Position,Direction,step);Target.Facing=Direction;
             Position=Target.Position;Travelled+=step;Notify();
             if(!IsDisposed&&(Travelled>=_distance||Request.Mode==GameplayDisplacementMode.PullToSource&&GameplaySpatialMath.Distance(Target.Position,Owner.Position)<=_minimumSeparation||_duration>0&&_age>=_duration))Finish(GameplaySpatialEndReason.Arrived);
@@ -85666,6 +85864,8 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySpatialPlane Plane { get; }
         public GameplayPoint Origin { get; }
         public GameplayDirection Direction { get; }
+        /// <summary>Explicit up for a 3D hit volume. Search and Area leave it unset and keep their world-axis basis.</summary>
+        public GameplayDirection OrientationUp { get; }
         public float Radius { get; }
         public float Angle { get; }
         public float Length { get; }
@@ -85678,6 +85878,12 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySearchGeometry(GameplaySearchShape shape, GameplaySpatialPlane plane, GameplayPoint origin,
             GameplayDirection direction, float radius = 1, float angle = 120, float length = 1,
             float width = 1, float height = 1, GameplaySourceId singleTarget = default,
+            IEnumerable<GameplayPoint> cells = null, float cellSize = 1)
+            : this(shape, plane, origin, direction, radius, angle, length, width, height, default, singleTarget, cells, cellSize) { }
+
+        internal GameplaySearchGeometry(GameplaySearchShape shape, GameplaySpatialPlane plane, GameplayPoint origin,
+            GameplayDirection direction, float radius, float angle, float length, float width, float height,
+            GameplayDirection orientationUp, GameplaySourceId singleTarget = default,
             IEnumerable<GameplayPoint> cells = null, float cellSize = 1)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane))
@@ -85692,7 +85898,7 @@ namespace FRFrame.Gameplay.Standard
                 throw new ArgumentException("Direction must have a component in the selected plane.");
             var copied = cells == null ? new List<GameplayPoint>() : new List<GameplayPoint>(cells);
             if (shape == GameplaySearchShape.GridCells && copied.Count == 0) throw new ArgumentException("Grid cells are required.");
-            Shape = shape; Plane = plane; Origin = origin; Direction = direction;
+            Shape = shape; Plane = plane; Origin = origin; Direction = direction; OrientationUp = orientationUp;
             Radius = radius; Angle = angle; Length = length; Width = width; Height = height;
             SingleTarget = singleTarget; Cells = copied.AsReadOnly(); CellSize = cellSize;
         }
@@ -85748,6 +85954,12 @@ namespace FRFrame.Gameplay.Standard
             if (along < 0 || along > Length) return false;
             if (Plane != GameplaySpatialPlane.ThreeDimensional)
                 return Math.Max(0, distanceSquared - along * along) <= (double)Width * Width / 4;
+            if (OrientationUp.IsValid)
+            {
+                GameplayHitContact.Basis(Plane, Direction, OrientationUp, out var right, out var up);
+                return Math.Abs(x * right.X + y * right.Y + z * right.Z) <= Width / 2 &&
+                    Math.Abs(x * up.X + y * up.Y + z * up.Z) <= Height / 2;
+            }
             // Stable local right/up basis; when forward is vertical, choose Z as the auxiliary up.
             double ux = 0, uy = Math.Abs(fy) > .999 ? 0 : 1, uz = Math.Abs(fy) > .999 ? 1 : 0;
             double rx = uy * fz - uz * fy, ry = uz * fx - ux * fz, rz = ux * fy - uy * fx;
@@ -94075,6 +94287,7 @@ namespace FRFrame.Tests.Gameplay
 <file path="Tests/Gameplay/EditMode/GameplayStandardSpatialTests.cs">
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using FRFrame.Gameplay;
 using FRFrame.Gameplay.Extensions;
 using FRFrame.Gameplay.Standard;
@@ -94249,9 +94462,10 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(target.Effects.GetActiveEntriesSnapshot(), Is.Empty);
         }
 
-        [TestCase(GameplaySpatialPlane.XY, 30)]
-        [TestCase(GameplaySpatialPlane.XZ, 60)]
-        public void HitWindowSweepsRelativeHurtboxMotionWithoutDoubleHits(GameplaySpatialPlane plane, int hz)
+        [TestCase(GameplaySpatialPlane.XY, 30, false)]
+        [TestCase(GameplaySpatialPlane.XZ, 60, false)]
+        [TestCase(GameplaySpatialPlane.XY, 30, true)]
+        public void HitWindowSweepsRelativeHurtboxMotionWithoutDoubleHits(GameplaySpatialPlane plane, int hz, bool teleport)
         {
             using var world = new GameplayStandardWorld();
             var owner = world.CreateActor(default, 1);
@@ -94265,8 +94479,10 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(skill.TryCast(), Is.True);
             var window = (GameplayHitWindowOperation)world.GetSpatialSnapshot()[0];
             Assert.That(hits, Is.Empty);
-            target.Position = Along(4);
+            if (teleport) target.TeleportTo(Along(4));
+            else target.Position = Along(4);
             world.Advance(1f / hz);
+            Assert.That(hits.Count, Is.EqualTo(teleport ? 0 : 1));
             target.Position = Along(0);
             world.Advance(1f / hz);
             Assert.That(hits.Count, Is.EqualTo(1));
@@ -94305,21 +94521,100 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(world.GetSpatialSnapshot(), Is.Empty);
         }
 
-        [TestCase(false, 1)]
-        [TestCase(true, 0)]
-        public void HitSectorSweepsRotationUnlessThePoseWasCut(bool cut, int expectedHits)
+        [TestCase(90, false, 1)]
+        [TestCase(140, false, 1)]
+        [TestCase(140, true, 0)]
+        [TestCase(180, false, 1)]
+        public void HitSectorSweepsRotationUnlessThePoseWasCut(float degrees, bool cut, int expectedHits)
         {
             using var world = new GameplayStandardWorld();
             var owner = world.CreateActor(default, 1);
-            world.CreateActor(new GameplayPoint(1, 1), 2);
+            float radians = degrees * MathF.PI / 180;
+            world.CreateActor(new GameplayPoint(MathF.Cos(radians / 2), MathF.Sin(radians / 2)), 2);
             int hits = 0;
             var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Sector, GameplaySpatialPlane.XY,
                 default, .08f, angle:10, onHit:new[] { new Observe(_ => hits++) });
             Install(owner, new GameplayOpenHitWindowAction(definition)).TryCast();
-            owner.Facing = new GameplayDirection(0, 1);
+            owner.Facing = new GameplayDirection(degrees == 180 ? -1 : MathF.Cos(radians), degrees == 180 ? 0 : MathF.Sin(radians));
             if(cut) owner.MarkHitPoseDiscontinuous();
             world.Advance(.03f);
             Assert.That(hits, Is.EqualTo(expectedHits));
+        }
+
+        [Test]
+        public void HitWindowRehitsAtTheSameContactTimesAndStopsInsideTheStep()
+        {
+            string[] Run(float step, bool transit = false, bool cancel = false)
+            {
+                using var world = new GameplayStandardWorld();
+                var owner = world.CreateActor(default, 1);
+                owner.SkillTrace.Enabled = true;
+                var chosen = world.CreateActor(new GameplayPoint(transit ? -4 : 1, 0), 2);
+                world.CreateActor(new GameplayPoint(transit ? 5 : 1, 0), 2);
+                GameplayInstalledSkill skill = null;
+                int hits = 0;
+                var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY,
+                    default, .08f, maxHitsPerTarget:5, rehitInterval:.015f, onHit:new[] { new Observe(ctx =>
+                    {
+                        Assert.That(ctx.TargetData.PrimaryTargetId, Is.EqualTo(chosen.Id));
+                        if (++hits == 2 && cancel) skill.Cancel();
+                    }) });
+                skill = Install(owner, new GameplayOpenHitWindowAction(definition));
+                Assert.That(skill.TryCast(), Is.True);
+                var window = (GameplayHitWindowOperation)world.GetSpatialSnapshot()[0];
+                int steps = (int)Math.Round(.08 / step);
+                for (int i = 1; i <= steps; i++)
+                {
+                    if (transit) chosen.Position = new GameplayPoint(-4 + 8 * i / (float)steps, 0);
+                    world.Advance(step);
+                }
+                Assert.That(window.EndReason, Is.EqualTo(cancel ? GameplaySpatialEndReason.Cancelled : GameplaySpatialEndReason.Completed));
+                return owner.SkillTrace.Snapshot().Select(entry => entry.record)
+                    .Where(record => record.Operation == "HitWindow.Contact").Select(record => record.Detail.Split(',')[0]).ToArray();
+            }
+
+            string At(float t) => $"t={t:0.000}";
+            var times = new[] { At(0), At(.015f), At(.03f), At(.045f), At(.06f) };
+            Assert.That(Run(.04f), Is.EqualTo(times));
+            Assert.That(Run(.01f), Is.EqualTo(times));
+            var transit = new[] { At(.02f), At(.035f), At(.05f) };
+            Assert.That(Run(.08f, transit:true), Is.EqualTo(transit));
+            Assert.That(Run(.01f, transit:true), Is.EqualTo(transit));
+            Assert.That(Run(.08f, cancel:true), Is.EqualTo(times.Take(2)));
+        }
+
+        [Test]
+        public void HitBoxAndCanonicalGeometryUseRollWithUnchangedForward()
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            var target = world.CreateActor(new GameplayPoint(1, .35f, 0), 2);
+            var provider = new HitPoseSource
+            { Pose = new GameplayHitPose(default, new GameplayDirection(1, 0), new GameplayDirection(0, 1)) };
+            owner.HitAnchors = provider;
+            var hits = new List<GameplayContext>();
+            var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Box, GameplaySpatialPlane.ThreeDimensional,
+                new GameplayHitAnchor(GameplayHitAnchorKind.TransformPath, "Blade"), .08f, width:1, height:.2f,
+                onHit:new[] { new Observe(hits.Add) });
+            Install(owner, new GameplayOpenHitWindowAction(definition)).TryCast();
+            var transverse = new GameplayPoint(1, 0, .35f);
+            var unrolled = definition.Geometry(provider.Pose);
+            Assert.That(unrolled.Contains(target.Id, target.Position), Is.False);
+            Assert.That(unrolled.Contains(target.Id, transverse), Is.True);
+            Assert.That(hits, Is.Empty);
+            provider.Pose = new GameplayHitPose(default, provider.Pose.Forward, new GameplayDirection(0, 0, 1));
+            var rolled = definition.Geometry(provider.Pose);
+            Assert.That(rolled.Contains(target.Id, target.Position), Is.True);
+            Assert.That(rolled.Contains(target.Id, transverse), Is.False);
+            world.Advance(.04f);
+            Assert.That(hits.Select(hit => hit.TargetData.PrimaryTargetId), Is.EqualTo(new[] { target.Id }));
+        }
+
+        private sealed class HitPoseSource : IGameplayHitAnchorProvider
+        {
+            public GameplayHitPose Pose { get; set; }
+            public bool TrySample(GameplayHitAnchor anchor, double worldTime, out GameplayHitPose pose)
+            { pose = Pose; return true; }
         }
 
         private static GameplayInstalledSkill Install(GameplayStandardActor actor,IGameplaySkillAction action)
@@ -94676,6 +94971,100 @@ namespace FRFrame.Tests.Gameplay.Editor
   [Test]public void NullCompletionAndMissingEffectHavePrecisePaths()
   {var root=Asset();try{root.CompletionExecutions=new GameplayEffectCompletionAuthoring[]{null,new GameplayApplyEffectOnCompletionAuthoring()};var v=new GameplayAuthoringValidationContext();v.Asset(root,"Root");Assert.That(v.Issues.Select(i=>i.Path),Does.Contain("Root.CompletionExecutions[0]").And.Contain("Root.CompletionExecutions[1].Effect"));}finally{UnityEngine.Object.DestroyImmediate(root);}}
  }
+}
+</file>
+
+<file path="Tests/Gameplay/Editor/GameplayHitWindowAuthoringTests.cs">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
+using FRFrame.Gameplay.Editor.SkillAuthoring;
+using NUnit.Framework;
+using UnityEngine;
+
+namespace FRFrame.Tests.Gameplay.Editor
+{
+    public sealed class GameplayHitWindowAuthoringTests
+    {
+        [Test]
+        public void WindowCallbacksKeepCapturedScalarsAndOnlyContactGuaranteesAnActor()
+        {
+            const string defaultKey = "Data.Test.Window.Default";
+            const string capturedKey = "Data.Test.Window.Captured";
+            const string missingKey = "Data.Test.Window.Missing";
+            var document = ScriptableObject.CreateInstance<GameplaySkillDocumentAsset>();
+            try
+            {
+                document.Defaults = new[] { new GameplayScalarInputAuthoring { Key = new GameplayTagReference(defaultKey), Value = 2 } };
+                var graph = new GameplayAuthoringGraph();
+                var rule = new GameplayAuthoringNode { Payload = new GameplayRuleNodePayload() };
+                graph.PrimaryRuleNodeId = rule.Id;
+                graph.Nodes.Add(rule);
+                var capture = new GameplayAuthoringNode
+                {
+                    Payload = new GameplayActionNodePayload
+                    { Action = new GameplaySkillSetContextValueActionAuthoring { Key = new GameplayTagReference(capturedKey), Value = 3 } }
+                };
+                graph.Nodes.Add(capture);
+                var hitWindow = new GameplayLocalDefinition { Payload = new GameplayHitWindowData() };
+                graph.LocalDefinitions.Add(hitWindow);
+                var open = new GameplayActionNodePayload { Action = new GameplayOpenHitWindowActionAuthoring() };
+                open.Definitions.Add(new GameplayDefinitionBinding { PropertyPath = "Window", LocalId = hitWindow.Id });
+                var node = new GameplayAuthoringNode { Payload = open };
+                graph.Nodes.Add(node);
+                graph.Connections.Add(new GameplayAuthoringConnection { FromNodeId = rule.Id, OutputPortKey = "Actions", ToNodeId = capture.Id });
+                graph.Connections.Add(new GameplayAuthoringConnection { FromNodeId = capture.Id, OutputPortKey = "Then", ToNodeId = node.Id });
+
+                foreach (var (port, key) in new[]
+                {
+                    (nameof(GameplayHitWindowData.OnHit), capturedKey),
+                    (nameof(GameplayHitWindowData.OnWindowFinished), defaultKey),
+                    (nameof(GameplayHitWindowData.OnCancelled), capturedKey),
+                    (nameof(GameplayHitWindowData.OnCancelled), missingKey)
+                })
+                {
+                    var reader = new GameplayAuthoringNode
+                    {
+                        Payload = new GameplayActionNodePayload
+                        {
+                            Action = new GameplaySkillBranchActionAuthoring
+                            { Condition = new GameplaySkillContextValueConditionAuthoring { Key = new GameplayTagReference(key) } }
+                        }
+                    };
+                    graph.Nodes.Add(reader);
+                    graph.Connections.Add(new GameplayAuthoringConnection
+                    { FromNodeId = hitWindow.Id, OutputPortKey = port, ToNodeId = reader.Id });
+                }
+                document.SetAuthoringGraph(graph);
+
+                var analysisType = typeof(GameplaySkillWorkbench).Assembly.GetType(
+                    "FRFrame.Gameplay.Editor.SkillAuthoring.GameplaySkillContextVariables", throwOnError: true);
+                var analysis = analysisType.GetMethod("For", BindingFlags.NonPublic | BindingFlags.Static)
+                    .Invoke(null, new object[] { document });
+                var warnings = (IEnumerable<GameplayAuthoringValidationIssue>)analysisType
+                    .GetMethod("Diagnostics", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(analysis, null);
+                Assert.That(warnings.Select(issue => issue.Message).Single(), Does.StartWith(missingKey));
+
+                var input = new GameplayGraphContextPolicy.Inputs(true, true, "Original cast target");
+                var contact = GameplayGraphContextPolicy.Output(hitWindow.Payload, "OnHit", input);
+                Assert.That(contact.Actor && contact.TriggerActor, Is.True);
+                foreach (var port in new[] { "OnWindowFinished", "OnCancelled" })
+                {
+                    var output = GameplayGraphContextPolicy.Output(hitWindow.Payload, port, input);
+                    Assert.That(output.Actor, Is.False);
+                    Assert.That(output.TriggerActor, Is.False);
+                    Assert.That(output.Point && output.TriggerPoint, Is.True);
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(document);
+            }
+        }
+    }
 }
 </file>
 

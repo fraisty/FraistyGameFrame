@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using FRFrame.Gameplay;
 using FRFrame.Gameplay.Extensions;
 using FRFrame.Gameplay.Standard;
@@ -174,9 +175,10 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(target.Effects.GetActiveEntriesSnapshot(), Is.Empty);
         }
 
-        [TestCase(GameplaySpatialPlane.XY, 30)]
-        [TestCase(GameplaySpatialPlane.XZ, 60)]
-        public void HitWindowSweepsRelativeHurtboxMotionWithoutDoubleHits(GameplaySpatialPlane plane, int hz)
+        [TestCase(GameplaySpatialPlane.XY, 30, false)]
+        [TestCase(GameplaySpatialPlane.XZ, 60, false)]
+        [TestCase(GameplaySpatialPlane.XY, 30, true)]
+        public void HitWindowSweepsRelativeHurtboxMotionWithoutDoubleHits(GameplaySpatialPlane plane, int hz, bool teleport)
         {
             using var world = new GameplayStandardWorld();
             var owner = world.CreateActor(default, 1);
@@ -190,8 +192,10 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(skill.TryCast(), Is.True);
             var window = (GameplayHitWindowOperation)world.GetSpatialSnapshot()[0];
             Assert.That(hits, Is.Empty);
-            target.Position = Along(4);
+            if (teleport) target.TeleportTo(Along(4));
+            else target.Position = Along(4);
             world.Advance(1f / hz);
+            Assert.That(hits.Count, Is.EqualTo(teleport ? 0 : 1));
             target.Position = Along(0);
             world.Advance(1f / hz);
             Assert.That(hits.Count, Is.EqualTo(1));
@@ -230,21 +234,100 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(world.GetSpatialSnapshot(), Is.Empty);
         }
 
-        [TestCase(false, 1)]
-        [TestCase(true, 0)]
-        public void HitSectorSweepsRotationUnlessThePoseWasCut(bool cut, int expectedHits)
+        [TestCase(90, false, 1)]
+        [TestCase(140, false, 1)]
+        [TestCase(140, true, 0)]
+        [TestCase(180, false, 1)]
+        public void HitSectorSweepsRotationUnlessThePoseWasCut(float degrees, bool cut, int expectedHits)
         {
             using var world = new GameplayStandardWorld();
             var owner = world.CreateActor(default, 1);
-            world.CreateActor(new GameplayPoint(1, 1), 2);
+            float radians = degrees * MathF.PI / 180;
+            world.CreateActor(new GameplayPoint(MathF.Cos(radians / 2), MathF.Sin(radians / 2)), 2);
             int hits = 0;
             var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Sector, GameplaySpatialPlane.XY,
                 default, .08f, angle:10, onHit:new[] { new Observe(_ => hits++) });
             Install(owner, new GameplayOpenHitWindowAction(definition)).TryCast();
-            owner.Facing = new GameplayDirection(0, 1);
+            owner.Facing = new GameplayDirection(degrees == 180 ? -1 : MathF.Cos(radians), degrees == 180 ? 0 : MathF.Sin(radians));
             if(cut) owner.MarkHitPoseDiscontinuous();
             world.Advance(.03f);
             Assert.That(hits, Is.EqualTo(expectedHits));
+        }
+
+        [Test]
+        public void HitWindowRehitsAtTheSameContactTimesAndStopsInsideTheStep()
+        {
+            string[] Run(float step, bool transit = false, bool cancel = false)
+            {
+                using var world = new GameplayStandardWorld();
+                var owner = world.CreateActor(default, 1);
+                owner.SkillTrace.Enabled = true;
+                var chosen = world.CreateActor(new GameplayPoint(transit ? -4 : 1, 0), 2);
+                world.CreateActor(new GameplayPoint(transit ? 5 : 1, 0), 2);
+                GameplayInstalledSkill skill = null;
+                int hits = 0;
+                var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY,
+                    default, .08f, maxHitsPerTarget:5, rehitInterval:.015f, onHit:new[] { new Observe(ctx =>
+                    {
+                        Assert.That(ctx.TargetData.PrimaryTargetId, Is.EqualTo(chosen.Id));
+                        if (++hits == 2 && cancel) skill.Cancel();
+                    }) });
+                skill = Install(owner, new GameplayOpenHitWindowAction(definition));
+                Assert.That(skill.TryCast(), Is.True);
+                var window = (GameplayHitWindowOperation)world.GetSpatialSnapshot()[0];
+                int steps = (int)Math.Round(.08 / step);
+                for (int i = 1; i <= steps; i++)
+                {
+                    if (transit) chosen.Position = new GameplayPoint(-4 + 8 * i / (float)steps, 0);
+                    world.Advance(step);
+                }
+                Assert.That(window.EndReason, Is.EqualTo(cancel ? GameplaySpatialEndReason.Cancelled : GameplaySpatialEndReason.Completed));
+                return owner.SkillTrace.Snapshot().Select(entry => entry.record)
+                    .Where(record => record.Operation == "HitWindow.Contact").Select(record => record.Detail.Split(',')[0]).ToArray();
+            }
+
+            string At(float t) => $"t={t:0.000}";
+            var times = new[] { At(0), At(.015f), At(.03f), At(.045f), At(.06f) };
+            Assert.That(Run(.04f), Is.EqualTo(times));
+            Assert.That(Run(.01f), Is.EqualTo(times));
+            var transit = new[] { At(.02f), At(.035f), At(.05f) };
+            Assert.That(Run(.08f, transit:true), Is.EqualTo(transit));
+            Assert.That(Run(.01f, transit:true), Is.EqualTo(transit));
+            Assert.That(Run(.08f, cancel:true), Is.EqualTo(times.Take(2)));
+        }
+
+        [Test]
+        public void HitBoxAndCanonicalGeometryUseRollWithUnchangedForward()
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            var target = world.CreateActor(new GameplayPoint(1, .35f, 0), 2);
+            var provider = new HitPoseSource
+            { Pose = new GameplayHitPose(default, new GameplayDirection(1, 0), new GameplayDirection(0, 1)) };
+            owner.HitAnchors = provider;
+            var hits = new List<GameplayContext>();
+            var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Box, GameplaySpatialPlane.ThreeDimensional,
+                new GameplayHitAnchor(GameplayHitAnchorKind.TransformPath, "Blade"), .08f, width:1, height:.2f,
+                onHit:new[] { new Observe(hits.Add) });
+            Install(owner, new GameplayOpenHitWindowAction(definition)).TryCast();
+            var transverse = new GameplayPoint(1, 0, .35f);
+            var unrolled = definition.Geometry(provider.Pose);
+            Assert.That(unrolled.Contains(target.Id, target.Position), Is.False);
+            Assert.That(unrolled.Contains(target.Id, transverse), Is.True);
+            Assert.That(hits, Is.Empty);
+            provider.Pose = new GameplayHitPose(default, provider.Pose.Forward, new GameplayDirection(0, 0, 1));
+            var rolled = definition.Geometry(provider.Pose);
+            Assert.That(rolled.Contains(target.Id, target.Position), Is.True);
+            Assert.That(rolled.Contains(target.Id, transverse), Is.False);
+            world.Advance(.04f);
+            Assert.That(hits.Select(hit => hit.TargetData.PrimaryTargetId), Is.EqualTo(new[] { target.Id }));
+        }
+
+        private sealed class HitPoseSource : IGameplayHitAnchorProvider
+        {
+            public GameplayHitPose Pose { get; set; }
+            public bool TrySample(GameplayHitAnchor anchor, double worldTime, out GameplayHitPose pose)
+            { pose = Pose; return true; }
         }
 
         private static GameplayInstalledSkill Install(GameplayStandardActor actor,IGameplaySkillAction action)

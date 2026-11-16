@@ -18,10 +18,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 var definition=window.PreviewDefinition();
                 if(definition.Anchor.Kind!=GameplayHitAnchorKind.OwnerRoot&&!context.HitPose.HasValue)
-                    throw new InvalidOperationException("锚点未采样。请选择包含真实模型或骨骼的动画预览并移动编排光标。");
+                    throw new InvalidOperationException("当前姿态缺少所选挂点或骨骼。请选择匹配的动画模型并移动编排光标。");
                 var pose=context.HitPose??new GameplayHitPose(default,new Extensions.GameplayDirection(1,0));
+                if (!definition.AcceptsPose(pose))
+                    throw new InvalidOperationException("所选锚点的前向无法投影到窗口平面。");
                 var hit=definition.Geometry(pose);
-                string label=context.HitPose.HasValue?"当前模型锚点":"角色根节点静态姿态";
+                string label=context.HitPose.HasValue?"光标处模型姿态 · 单帧体积":"角色根节点 · 静态体积";
                 return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,
                     $"有效窗 {definition.Duration:0.###}s · {label} · {hit.Plane}", geometry:hit);
             }

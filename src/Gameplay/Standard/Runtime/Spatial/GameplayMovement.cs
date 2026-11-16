@@ -43,6 +43,7 @@ namespace FRFrame.Gameplay.Standard
                 step=Math.Min(step,Math.Max(0,GameplaySpatialMath.Distance(Target.Position,Owner.Position)-_minimumSeparation));
             if(_duration>0)step=Math.Min(step,Request.Speed*Math.Max(0,_duration-_age));
             _age+=delta;
+            // MoveTargets is continuous travel. Hosts use TeleportTo for discrete placement.
             Target.Position=GameplaySpatialMath.Offset(Target.Position,Direction,step);Target.Facing=Direction;
             Position=Target.Position;Travelled+=step;Notify();
             if(!IsDisposed&&(Travelled>=_distance||Request.Mode==GameplayDisplacementMode.PullToSource&&GameplaySpatialMath.Distance(Target.Position,Owner.Position)<=_minimumSeparation||_duration>0&&_age>=_duration))Finish(GameplaySpatialEndReason.Arrived);

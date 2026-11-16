@@ -21,6 +21,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach(var value in document.AuthoringGraph.Nodes.SelectMany(n=>n.Payload.Definitions).Concat(document.AuthoringGraph.LocalDefinitions.SelectMany(d=>d.Definitions)).Select(b=>b.External)){
                 if(value is GameplayProjectileDefinitionAsset projectile)yield return projectile.Plane;
                 if(value is GameplayAreaDefinitionAsset area)yield return area.Plane;
+                if(value is GameplayHitWindowDefinitionAsset window)yield return window.Plane;
             }
         }
         public static string Physics2DReason(GameplaySkillDocumentAsset document)=>Planes(document).Any(p=>p!=GameplaySpatialPlane.XY)?"此技能使用 XZ / 3D 范围；Physics2D 仅支持 XY，请选择 Logical / Physics3D Host。":null;

@@ -139,8 +139,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var anchor=Group("姿态锚点","Root 读取角色朝向。Socket 与 Bone 读取已求值的模型。","AnchorKind","AnchorPath","AnchorBone","Offset","DirectionAngle","FollowAnchor");
                 anchor.Labels["AnchorKind"]="锚点类型";anchor.Labels["AnchorPath"]="模型相对路径";anchor.Labels["AnchorBone"]="Spine 骨骼";anchor.Labels["Offset"]="局部偏移（前 / 侧 / 深）";anchor.Labels["FollowAnchor"]="跟随锚点";
                 yield return anchor;
-                var timing=Group("有效帧与扫掠","超过距离或角度门槛时断开扫掠轨迹。","Duration","SweepPolicy","SamplingBudget","MaxSweepDistance","MaxSweepAngle","OwnedByAbility","StopTag");
-                timing.Labels["Duration"]="有效秒数";timing.Labels["SweepPolicy"]="采样方式";timing.Labels["SamplingBudget"]="扫掠预算";timing.Labels["MaxSweepDistance"]="断轨距离";timing.Labels["MaxSweepAngle"]="断轨角度";timing.Labels["OwnedByAbility"]="随施放结束回收";timing.Labels["StopTag"]="中断标签";
+                var timing=Group("有效帧与扫掠","连续扫掠在相邻姿态间做最短旋转插值。由传送和动画切换显式断轨。","Duration","SweepPolicy","SamplingBudget","MaxSweepDistance","MaxSweepAngle","OwnedByAbility","StopTag");
+                timing.Labels["Duration"]="有效秒数";timing.Labels["SweepPolicy"]="采样方式";timing.Labels["SamplingBudget"]="扫掠预算";timing.Labels["MaxSweepDistance"]="旋转扫掠步进距离";timing.Labels["MaxSweepAngle"]="扫掠步进角度";timing.Labels["OwnedByAbility"]="随施放结束回收";timing.Labels["StopTag"]="中断标签";
                 yield return timing;
                 var filter=Group("筛选与去重","每个窗口独立计数。无显式 Hurtbox 的目标以角色逻辑点检测。","Faction","Tags","LayerMask","Order","MaxDistinctTargets","MaxHitsPerTarget","RehitInterval");
                 filter.Labels["MaxDistinctTargets"]="不同目标上限";filter.Labels["MaxHitsPerTarget"]="同目标次数";filter.Labels["RehitInterval"]="同目标重击间隔";

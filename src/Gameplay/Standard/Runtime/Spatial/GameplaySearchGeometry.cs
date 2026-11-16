@@ -17,6 +17,8 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySpatialPlane Plane { get; }
         public GameplayPoint Origin { get; }
         public GameplayDirection Direction { get; }
+        /// <summary>Explicit up for a 3D hit volume. Search and Area leave it unset and keep their world-axis basis.</summary>
+        public GameplayDirection OrientationUp { get; }
         public float Radius { get; }
         public float Angle { get; }
         public float Length { get; }
@@ -29,6 +31,12 @@ namespace FRFrame.Gameplay.Standard
         public GameplaySearchGeometry(GameplaySearchShape shape, GameplaySpatialPlane plane, GameplayPoint origin,
             GameplayDirection direction, float radius = 1, float angle = 120, float length = 1,
             float width = 1, float height = 1, GameplaySourceId singleTarget = default,
+            IEnumerable<GameplayPoint> cells = null, float cellSize = 1)
+            : this(shape, plane, origin, direction, radius, angle, length, width, height, default, singleTarget, cells, cellSize) { }
+
+        internal GameplaySearchGeometry(GameplaySearchShape shape, GameplaySpatialPlane plane, GameplayPoint origin,
+            GameplayDirection direction, float radius, float angle, float length, float width, float height,
+            GameplayDirection orientationUp, GameplaySourceId singleTarget = default,
             IEnumerable<GameplayPoint> cells = null, float cellSize = 1)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane))
@@ -43,7 +51,7 @@ namespace FRFrame.Gameplay.Standard
                 throw new ArgumentException("Direction must have a component in the selected plane.");
             var copied = cells == null ? new List<GameplayPoint>() : new List<GameplayPoint>(cells);
             if (shape == GameplaySearchShape.GridCells && copied.Count == 0) throw new ArgumentException("Grid cells are required.");
-            Shape = shape; Plane = plane; Origin = origin; Direction = direction;
+            Shape = shape; Plane = plane; Origin = origin; Direction = direction; OrientationUp = orientationUp;
             Radius = radius; Angle = angle; Length = length; Width = width; Height = height;
             SingleTarget = singleTarget; Cells = copied.AsReadOnly(); CellSize = cellSize;
         }
@@ -99,6 +107,12 @@ namespace FRFrame.Gameplay.Standard
             if (along < 0 || along > Length) return false;
             if (Plane != GameplaySpatialPlane.ThreeDimensional)
                 return Math.Max(0, distanceSquared - along * along) <= (double)Width * Width / 4;
+            if (OrientationUp.IsValid)
+            {
+                GameplayHitContact.Basis(Plane, Direction, OrientationUp, out var right, out var up);
+                return Math.Abs(x * right.X + y * right.Y + z * right.Z) <= Width / 2 &&
+                    Math.Abs(x * up.X + y * up.Y + z * up.Z) <= Height / 2;
+            }
             // Stable local right/up basis; when forward is vertical, choose Z as the auxiliary up.
             double ux = 0, uy = Math.Abs(fy) > .999 ? 0 : 1, uz = Math.Abs(fy) > .999 ? 1 : 0;
             double rx = uy * fz - uz * fy, ry = uz * fx - ux * fz, rz = ux * fy - uy * fx;

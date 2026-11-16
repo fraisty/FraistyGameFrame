@@ -169,7 +169,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     bool spatial = payload is GameplayAreaDefinitionData || payload is GameplayProjectileDefinitionData ||
                         payload is GameplaySummonDefinitionData;
                     foreach (var slot in GameplayGraphFields.ActionArrays(payload))
-                        RunOutput(id, GameplayGraphEffectCallbacks.ActionKey(slot), spatial || payload is GameplayEffectDefinitionData ? input : Empty);
+                    {
+                        string port = GameplayGraphEffectCallbacks.ActionKey(slot);
+                        // All three callbacks keep the captured scalars. GraphContextPolicy
+                        // separately limits guaranteed target Actor to the actual contact port.
+                        bool keepsValues = payload is GameplayHitWindowData &&
+                            (port == nameof(GameplayHitWindowData.OnHit) || port == nameof(GameplayHitWindowData.OnWindowFinished) ||
+                             port == nameof(GameplayHitWindowData.OnCancelled));
+                        RunOutput(id, port, keepsValues || spatial || payload is GameplayEffectDefinitionData ? input : Empty);
+                    }
                     foreach (var slot in GameplayGraphEffectCallbacks.Slots(payload))
                         foreach (var edge in edges[(id, slot.Key)])
                             VisitDefinition(GameplayGraphEffectCallbacks.EffectBinding(nodes[edge.ToNodeId].node)?.LocalId, input);

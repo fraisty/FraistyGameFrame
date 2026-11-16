@@ -48,7 +48,10 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(port=="NoTargets"||port=="Completed"||port=="Then")return input.With(false,true,"搜索完成/无目标不保证 Actor；先以地点重新搜索");
             }
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
-            if(payload is GameplayHitWindowData)return input.With(port=="OnHit",true,"命中窗口仅实际接触提供目标 Actor");
+            if(payload is GameplayHitWindowData)
+                return port == nameof(GameplayHitWindowData.OnHit)
+                    ? new Inputs(true, true, "实际接触提供命中对象和触点")
+                    : new Inputs(false, true, "窗口结束或中断提供窗口位置");
             if (payload is GameplayGrantTimedShieldActionAuthoring && port == "OnBroken")
                 return input.With(true, true, "护盾耗尽后提供破盾者与地点");
             if (payload is GameplayGrantTimedShieldActionAuthoring && (port == "OnExpired" || port == "OnAbsorbed" || port == "OnRemoved"))
