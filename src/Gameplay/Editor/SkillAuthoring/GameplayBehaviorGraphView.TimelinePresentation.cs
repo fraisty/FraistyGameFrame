@@ -195,6 +195,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private void ResourcePort(Node card,GameplayLocalDefinition definition,GameplayDefinitionBinding binding,string key)
         {
             var port=AddPort(card,definition.Id,key);string role=binding.PropertyPath=="CooldownEffect"?"冷却":definition.Payload is GameplayProjectileDefinitionData?"弹体":definition.Payload is GameplayAreaDefinitionData?"区域":definition.Payload is GameplayEffectDefinitionData?"效果":null;
+            if(definition.Payload is GameplayHitWindowData && key=="OnHit")port.portName="命中 · 实际接触";
             if(role=="冷却"&&(key==GameplayGraphEffectCallbacks.Completion||key.StartsWith("Completion/",StringComparison.Ordinal)))port.portName=key==GameplayGraphEffectCallbacks.Completion?"冷却到期 · 添加效果":"冷却到期 · 续接效果";
             else if(role!=null&&role!="效果")port.portName=role+" · "+port.portName;
             if(GameplayGraphEffectCallbacks.Slots(definition.Payload).Any(s=>s.Key==key)){

@@ -39,7 +39,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool showInactive = Open.Contains(inactiveKey);
             RevealPaths.TryGetValue(document.GetInstanceID(), out string reveal);
             DrawChildren(root, value, "", key, true);
-            if (value is GameplayEffectDefinitionData || value is GameplayProjectileDefinitionData || value is GameplayAreaDefinitionData)
+            if (value is GameplayEffectDefinitionData || value is GameplayProjectileDefinitionData || value is GameplayAreaDefinitionData || value is GameplayHitWindowData)
                 Fold(inactiveKey, "当前策略未启用的配置", "切换策略会保留原参数。可在此清除不再使用的值。", false);
 
             void DrawChildren(SerializedProperty parent, object owner, string relative, string uiKey, bool top)

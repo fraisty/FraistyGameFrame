@@ -77,7 +77,7 @@ namespace FRFrame.Gameplay.Standard
         }
         protected virtual void OnFinished(GameplaySpatialEndReason reason) { }
         public void Dispose()=>Finish(GameplaySpatialEndReason.Cancelled);
-        public void Terminate(GameplayAbilityTerminationObservation observation)=>
+        public virtual void Terminate(GameplayAbilityTerminationObservation observation)=>
             Finish(observation.Reason==GameplayAbilityTerminationReason.Ended?GameplaySpatialEndReason.Completed:GameplaySpatialEndReason.Cancelled);
     }
     public sealed partial class GameplayStandardWorld

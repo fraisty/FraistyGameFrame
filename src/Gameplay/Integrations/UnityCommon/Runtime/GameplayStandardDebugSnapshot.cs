@@ -34,6 +34,7 @@ namespace FRFrame.Gameplay.Unity
                     string line=operation.GetType().Name+" SourceId="+operation.Id+" Root="+operation.Context.OriginSourceId+" Activation="+operation.Context.ActivationSourceId+" Level="+operation.Context.AbilityLevel+" Position=("+operation.Position.X+","+operation.Position.Y+","+operation.Position.Z+")";
                     if(operation is GameplayProjectile projectile)line+=" Hits="+projectile.HitCount+" Distance="+projectile.DistanceTravelled;
                     if(operation is GameplayAreaOperation area)line+=" Inside="+area.InsideCount+" Armed="+area.IsArmed+" Triggers="+area.TriggerCount;
+                    if(operation is GameplayHitWindowOperation window)line+=$" Anchor={window.Definition.Anchor.Kind} {window.Geometry?.Shape} Age={window.Age:0.###}/{window.Definition.Duration:0.###} Hits={window.HitCount} Targets={window.DistinctTargets} Samples={window.SampleCount} HitLimitSkips={window.LimitedCandidates}";
                     operations.Add(line);
                 }
                 var trace=actor.SkillTrace.Snapshot().Select(t=>t.order+" "+t.record.Stage+" "+t.record.Operation+"["+t.record.ActionIndex+"] Event="+t.record.EventTag+
@@ -41,7 +42,9 @@ namespace FRFrame.Gameplay.Unity
                     (t.record.Source.IsValid?" SourceAsset="+Uri.EscapeDataString(t.record.Source.DefinitionId)+" NodeId="+t.record.Source.NodeId+" SourceDocument="+Uri.EscapeDataString(t.record.Source.DocumentId??""):"")+" "+t.record.Detail);
                 result.Add(new GameplayDebugUnitSnapshot(actor.Id,group+" / Actor "+actor.Id,group,new[]{
                     new GameplayDebugSection("Attributes",attributes),new GameplayDebugSection("Resources",resources),new GameplayDebugSection("Skills",skills),new GameplayDebugSection("Tags / Sources",tags),new GameplayDebugSection("Effects",effects),new GameplayDebugSection("Shield Contributions",shields),new GameplayDebugSection("Abilities",abilities),
-                    new GameplayDebugSection("Sequences",sequences),new GameplayDebugSection("Spatial / Aura",operations),new GameplayDebugSection("Skill Trace"+(actor.SkillTrace.Enabled?"":" (disabled)"),trace),
+                    new GameplayDebugSection("Sequences",sequences),new GameplayDebugSection("Spatial / Aura",operations),
+                    new GameplayDebugSection("Hurtbox",new[]{actor.Hurtbox.Radius>0?"Sphere radius "+actor.Hurtbox.Radius:"Logical point at actor root"}),
+                    new GameplayDebugSection("Skill Trace"+(actor.SkillTrace.Enabled?"":" (disabled)"),trace),
                     new GameplayDebugSection("Combat",new[]{actor.LastCombatOutcome.HasValue?actor.LastCombatOutcome.Value.Kind+" applied="+actor.LastCombatOutcome.Value.Applied:"No committed result"})}));
             }
             return result.AsReadOnly();

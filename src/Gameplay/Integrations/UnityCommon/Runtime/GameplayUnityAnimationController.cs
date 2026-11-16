@@ -79,6 +79,7 @@ namespace FRFrame.Gameplay.Unity
             finally{_replacingChannels.Clear();ReplacingPhysicalPlayers--;}
             var playback=new Playback(this,definition.Channel,definition.Priority,context,grant,player,speed,writes);
             _channels[definition.Channel]=playback;
+            _hitPoseRevision++;
             PhysicalPlayers.Add(playback);
             if(!Actor.Abilities.TryOwnLifetime(grant,playback)){playback.Dispose();return RejectAnimation(definition,context,"GrantLifetimeEnded");}
             try {player.Seek(0);playback.Sampled=true;PromoteQueue(definition.Channel);return true;}catch{playback.Dispose();throw;}
@@ -149,6 +150,7 @@ namespace FRFrame.Gameplay.Unity
             public void Dispose()
             {
                 if(_disposed)return;_disposed=true;_player.AnimationEvent-=OnEvent;
+                _owner._hitPoseRevision++;
                 if(_owner._channels.TryGetValue(_channel,out var current)&&ReferenceEquals(current,this))_owner._channels.Remove(_channel);
                 PhysicalPlayers.Remove(this);
                 _owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);_player.Dispose();

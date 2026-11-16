@@ -33,6 +33,27 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private void DrawRangePreview(){
             var graph=_document.AuthoringGraph;int index=graph.Nodes.FindIndex(n=>n.Id==_selected);
+            int hitIndex=graph.LocalDefinitions.FindIndex(d=>d.Id==_definition&&d.Payload is GameplayHitWindowData);
+            if(hitIndex<0&&index>=0&&graph.Nodes[index].Payload is FRFrame.Gameplay.Authoring.Graph.GameplayActionNodePayload hitAction&&hitAction.Action is GameplayOpenHitWindowActionAuthoring)
+                hitIndex=graph.LocalDefinitions.FindIndex(d=>d.Payload is GameplayHitWindowData&&hitAction.Definitions.Any(b=>b.LocalId==d.Id));
+            if(hitIndex>=0)
+            {
+                var data=(GameplayHitWindowData)graph.LocalDefinitions[hitIndex].Payload;
+                Standard.GameplayHitPose? sampled=null;
+                if(data.AnchorKind!=Standard.GameplayHitAnchorKind.OwnerRoot&&_previewClockOwner!=null&&
+                    _previews.TryGetValue(_previewClockOwner,out var state)&&state.Session is IGameplayHitPosePreview sample&&
+                    (data.AnchorKind==Standard.GameplayHitAnchorKind.TransformPath?!string.IsNullOrWhiteSpace(data.AnchorPath):!string.IsNullOrWhiteSpace(data.AnchorBone))&&
+                    sample.TryReadHitPose(new Standard.GameplayHitAnchor(data.AnchorKind,data.AnchorPath,data.AnchorBone),out var pose))
+                    sampled=pose;
+                var hitContext=new GameplayRangePreviewContext(_document,"authoringGraph.LocalDefinitions.Array.data["+hitIndex+"].Payload",hitPose:sampled);
+                if(GameplayRangePreview.TryRead(hitContext,out var hit,out var error))
+                {
+                    GUILayout.Label(hit.Label,EditorStyles.boldLabel);
+                    GameplayRangePreview.Draw(GUILayoutUtility.GetRect(100,180,GUILayout.ExpandWidth(true)),hit);
+                }
+                else if(error!=null)EditorGUILayout.HelpBox(error,MessageType.Warning);
+                return;
+            }
             if(index<0||!((graph.Nodes[index].Payload as FRFrame.Gameplay.Authoring.Graph.GameplayActionNodePayload)?.Action is GameplaySearchTargetActionAuthoring))return;
             _rangeLevel=Mathf.Clamp(EditorGUILayout.IntField("范围预览等级",_rangeLevel),1,_document.EffectiveMaxLevel);
             var context=new FRFrame.Gameplay.Editor.SkillAuthoring.GameplayRangePreviewContext(_document,"authoringGraph.Nodes.Array.data["+index+"].Payload.Action",_rangeLevel);

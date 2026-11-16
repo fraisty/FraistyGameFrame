@@ -14,6 +14,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {"Circle","圆形"},{"Sector","扇形"},{"Box","矩形"},{"Sphere","球形"},{"Capsule","胶囊"},{"GridCells","格子集合"},{"Cells","格子集合"},
             {"Enemies","敌方"},{"Allies","友方"},{"Any","任意"},{"All","全部"},{"Self","自身"},{"None","无"},
             {"Unspecified","未选择施放输入"},{"Auto","自动寻敌（无需指定目标）"},{"Unit","选中单位"},{"GroundPoint","指定地面位置"},
+            {"OwnerRoot","角色根节点 / 朝向"},{"TransformPath","模型 Transform"},{"SpineBone","Spine 骨骼"},{"SampledPose","逐步姿态"},{"Swept","连续扫掠"},
             {"Physical","物理伤害"},{"Magical","魔法伤害"},{"Magic","魔法伤害"},{"True","真实伤害"},
             {"Owner","施法者"},{"Target","当前目标"},{"Context","调用上下文"},{"OwnerFacing","施法者朝向"},{"TargetDirection","目标方向"},
             {"PrimaryTarget","实际主目标"},{"ContextPoint","上下文地点"},{"CallbackSegment","回调起点 → 命中地点"},

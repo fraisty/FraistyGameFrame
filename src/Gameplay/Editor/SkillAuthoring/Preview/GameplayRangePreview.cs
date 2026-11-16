@@ -28,13 +28,19 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public readonly string PropertyPath;
         public readonly int AbilityLevel;
         public readonly GameplayActorProfileAsset Profile;
-        public GameplayRangePreviewContext(Object asset, string propertyPath, int abilityLevel = 1, GameplayActorProfileAsset profile = null)
-        { Asset = asset; PropertyPath = propertyPath; AbilityLevel = abilityLevel; Profile = profile; }
+        public readonly GameplayHitPose? HitPose;
+        public GameplayRangePreviewContext(Object asset, string propertyPath, int abilityLevel = 1, GameplayActorProfileAsset profile = null, GameplayHitPose? hitPose = null)
+        { Asset = asset; PropertyPath = propertyPath; AbilityLevel = abilityLevel; Profile = profile; HitPose = hitPose; }
     }
     public interface IGameplayRangePreviewProvider
     {
         bool Supports(GameplayRangePreviewContext context, SerializedProperty property);
         GameplayRangePreviewShape Read(GameplayRangePreviewContext context, SerializedProperty property);
+    }
+    /// <summary>Optional access to the already-evaluated model at the existing Timeline preview cursor.</summary>
+    public interface IGameplayHitPosePreview
+    {
+        bool TryReadHitPose(GameplayHitAnchor anchor, out GameplayHitPose pose);
     }
     public static class GameplayRangePreview
     {

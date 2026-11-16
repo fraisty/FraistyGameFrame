@@ -27,7 +27,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         public bool CanPreview(GameplaySkillDefinitionAsset skill)=>!EditorApplication.isPlayingOrWillChangePlaymode;
         public IGameplaySkillPreviewSession CreateSession(GameplaySkillDefinitionAsset skill)=>new GameplayAnimationPreviewSession();
     }
-    public sealed partial class GameplayAnimationPreviewSession:IGameplaySkillPreviewSession,IGameplaySkillPreviewDiagnostics,IGameplaySkillPreviewSource
+    public sealed partial class GameplayAnimationPreviewSession:IGameplaySkillPreviewSession,IGameplaySkillPreviewDiagnostics,IGameplaySkillPreviewSource,IGameplayHitPosePreview
     {
         private GameplayAnimationAsset _source;
         private GameplayPresentationCueAsset _cueSource;
@@ -75,6 +75,8 @@ namespace FRFrame.Gameplay.Unity.Editor
         public Camera PreviewCamera=>_cuePreview?.Camera??_preview?.camera;
         /// <summary>Temporary subject for actual SDK diagnostics/preview export; owned by this session.</summary>
         public GameObject PreviewSubject=>_cuePreview?.Subject??_subject;
+        public bool TryReadHitPose(Standard.GameplayHitAnchor anchor,out Standard.GameplayHitPose pose) =>
+            GameplayUnityHitAnchors.TrySample(_subject ? _subject.transform : null, anchor, out pose);
         /// <summary>Preview-only level selection shared by the controls and export/diagnostics.
         /// A formal document's actual Ability MaxLevel remains the upper bound.</summary>
         public void SetLevel(int level)

@@ -276,7 +276,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     }
                     if(_policySelection!=null)Canvas.DrawPolicy(_policySelection,true);
                     else if(Canvas.SelectedEventId==null){if(!Canvas.IsTimelineInline(_selected)||_definition!=null)using(GameplayAuthoringInspector.UseFieldContext("Inspector"))GameplaySkillFieldSchema.Draw(Canvas.SerializedSource,_document,_selected,_definition,true);}
-                    else {GUILayout.Label("选中调度事件 · 行为参数在卡片编辑",EditorStyles.wordWrappedLabel);if(GUILayout.Button("行为高级参数")){Canvas.SelectNodeWithoutCamera(_selected);Canvas.ClearEventSelection();}}
+                    else {
+                        var graph=_document.AuthoringGraph;
+                        if (graph.Nodes.Find(node=>node.Id==_selected)?.Payload is GameplayActionNodePayload action &&
+                            action.Action is GameplayOpenHitWindowActionAuthoring)
+                            GameplaySkillFieldSchema.DrawHitWindowReferences(graph, action.Definitions.FirstOrDefault(
+                                binding=>binding.PropertyPath==nameof(GameplayOpenHitWindowActionAuthoring.Window))?.LocalId);
+                        GUILayout.Label("选中调度事件 · 行为参数在卡片编辑",EditorStyles.wordWrappedLabel);
+                        if(GUILayout.Button("行为高级参数")){Canvas.SelectNodeWithoutCamera(_selected);Canvas.ClearEventSelection();}
+                    }
                     if(_policySelection==null&&_definition==null&&Canvas.SelectedEventId==null)Canvas.DrawMainAnimationSettings(_selected);
                     DrawTimelineFields(Canvas.SerializedSource,_document,_selected,Canvas.SelectedEventId,Canvas);
                 }
@@ -392,6 +400,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 menu.AddItem(new GUIContent("效果/持续与控制/周期治疗","真实持续Effect：4秒、每0.5秒治疗；不生成虚假的周期执行端口。"), false, () => Create(() => GameplaySkillAuthoringCommands.CreateAction(_document,new GameplayApplyToTargetsActionAuthoring(),"周期治疗",position,
                     new GameplayEffectDefinitionData{DurationPolicy=GameplayEffectDurationPolicy.Duration,Duration=4,Period=.5f,Executions=new GameplayEffectExecutionAuthoring[]{new GameplayHealExecutionAuthoring()}},"Effect",timeline,seconds,link)));
             }
+            var instantHit = new GameplaySearchTargetActionAuthoring { Shape = Standard.GameplaySearchShape.Sector,
+                Direction = Standard.GameplaySearchDirection.OwnerFacing, Radius = new GameplayConstantFloatValueAuthoring { Value = 2 } };
+            string instantReason = ContextReason(instantHit);
+            var instantCaption = new GUIContent("目标与空间/命中判定/瞬时范围命中", instantReason ?? "在当前帧按朝向执行一次正式 Search，从逐目标端口接伤害。");
+            if (instantReason == null)
+                menu.AddItem(instantCaption, false, () => Create(() => GameplaySkillAuthoringCommands.CreateAction(
+                    _document, instantHit, "瞬时范围命中", position, timelineId: timeline, seconds: seconds, link: link)));
+            else if(!effectLink) menu.AddDisabledItem(instantCaption);
             foreach (var type in GameplayAuthoringTypeCatalog.Query(typeof(GameplaySkillActionAuthoring), _document.AuthoringGraph.Scope))
             {
                 if (type == typeof(GameplayOwnedSequenceActionAuthoring) || type == typeof(GameplaySkillPlaySequenceActionAuthoring) || type == typeof(GameplaySkillApplyEffectActionAuthoring)) continue;

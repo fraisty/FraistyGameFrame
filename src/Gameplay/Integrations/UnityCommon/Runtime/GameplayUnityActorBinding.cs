@@ -18,7 +18,10 @@ namespace FRFrame.Gameplay.Unity
         public Vector3 Facing = Vector3.right;
         public Collider2D Body2D;
         public Collider Body3D;
+        [Tooltip("命中窗口读取已指定的 SphereCollider 或 CircleCollider2D。未启用时沿用逻辑 Hurtbox。")]
+        public bool UseBodyAsHurtbox;
         public GameplayStandardActor Actor { get; private set; }
+        private Func<GameplayHurtbox> _hitBody;
         private void Start()
         {
             if (Host == null || Host.World == null || Profile == null) throw new InvalidOperationException("Actor requires its world and formal profile.");
@@ -26,6 +29,7 @@ namespace FRFrame.Gameplay.Unity
             Actor = Host.World.CreateActor(ReadPosition(), Faction, gameObject.layer, ReadPosition, WritePosition, ReadFacing, WriteFacing);
             try
             {
+                BindHitBody(Actor);
                 Profile.Build(build).Initialize(Actor);
                 Actor.Presentation = new GameplayUnityAnimationController(Actor,gameObject){FloatingText=FloatingText==null?null:FloatingText.Build(build)};
                 Actor.Facing = new Extensions.GameplayDirection(Facing.x, Facing.y, Facing.z);
@@ -57,11 +61,59 @@ namespace FRFrame.Gameplay.Unity
             else transform.rotation=Quaternion.Euler(0,0,Mathf.Atan2(Facing.y,Facing.x)*Mathf.Rad2Deg);
         }
         /// <summary>Attaches a game's already registered actor without creating any containers/clock.</summary>
-        public void BindExisting(GameplayStandardActor actor) { if (Actor != null) throw new InvalidOperationException("Actor already bound."); Actor = actor ?? throw new ArgumentNullException(nameof(actor)); enabled = false; }
+        public void BindExisting(GameplayStandardActor actor)
+        {
+            if (Actor != null) throw new InvalidOperationException("Actor already bound.");
+            if (actor == null) throw new ArgumentNullException(nameof(actor));
+            BindHitBody(actor);
+            Actor = actor;
+            enabled = false;
+        }
         /// <summary>Detaches only this borrowed binding before its pooled view is reused. Actor
         /// disposal remains the owner's responsibility; form/scene bindings cannot be stolen.</summary>
         public void UnbindExisting(GameplayStandardActor actor)
-        {if(enabled||!ReferenceEquals(Actor,actor))throw new InvalidOperationException("Existing actor binding mismatch.");Actor=null;}
-        private void OnDestroy() { if (enabled) Actor?.Dispose(); Actor = null; }
+        {if(enabled||!ReferenceEquals(Actor,actor))throw new InvalidOperationException("Existing actor binding mismatch.");UnbindHitBody();Actor=null;}
+
+        private void BindHitBody(GameplayStandardActor actor)
+        {
+            if (!UseBodyAsHurtbox) return;
+            if (Body3D is SphereCollider sphere)
+            {
+                _hitBody = () =>
+                {
+                    var shape = sphere.transform;
+                    var scale = shape.lossyScale;
+                    float radius = sphere.radius * Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z));
+                    return HitBody(actor, shape.TransformPoint(sphere.center), radius);
+                };
+            }
+            else if (Body2D is CircleCollider2D circle)
+            {
+                _hitBody = () =>
+                {
+                    var shape = circle.transform;
+                    var scale = shape.lossyScale;
+                    float radius = circle.radius * Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y));
+                    return HitBody(actor, shape.TransformPoint(circle.offset), radius);
+                };
+            }
+            else throw new InvalidOperationException("Hit body requires an explicitly assigned SphereCollider or CircleCollider2D.");
+            actor.HurtboxSource = _hitBody;
+        }
+
+        private static GameplayHurtbox HitBody(GameplayStandardActor actor, Vector3 center, float radius)
+        {
+            var root = actor.Position;
+            return new GameplayHurtbox(radius, new GameplayPoint(center.x-root.X, center.y-root.Y, center.z-root.Z));
+        }
+
+        private void UnbindHitBody()
+        {
+            if (Actor != null && _hitBody != null && ReferenceEquals(Actor.HurtboxSource, _hitBody))
+                Actor.HurtboxSource = null;
+            _hitBody = null;
+        }
+
+        private void OnDestroy() { UnbindHitBody(); if (enabled) Actor?.Dispose(); Actor = null; }
     }
 }

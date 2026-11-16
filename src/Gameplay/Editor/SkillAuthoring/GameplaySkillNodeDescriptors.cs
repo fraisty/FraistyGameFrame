@@ -48,6 +48,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             if(type==typeof(GameplayOwnedSequenceActionAuthoring))return "时间/时间编排";
             if(type==typeof(GameplaySearchTargetActionAuthoring))return "目标与空间/搜索";
+            if(type==typeof(GameplayOpenHitWindowActionAuthoring))return "目标与空间/命中判定";
             if(type==typeof(GameplaySpawnProjectileActionAuthoring))return "目标与空间/弹体";
             if(type==typeof(GameplaySpawnAreaActionAuthoring))return "目标与空间/持续区域";
             if(type==typeof(GameplaySpawnSummonActionAuthoring))return "目标与空间/召唤";
@@ -165,6 +166,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 type.Name == "GameplayEndAbilityActionAuthoring" ? "结束技能" :
                 type.Name == "GameplaySpawnProjectileActionAuthoring" ? "发射弹体" :
                 type.Name == "GameplaySpawnAreaActionAuthoring" ? "生成持续区域" :
+                type.Name == "GameplayOpenHitWindowActionAuthoring" ? "开启近战命中窗口" :
                 type.Name == "GameplaySpawnSummonActionAuthoring" ? "召唤正式单位" :
                 type.Name == "GameplayMoveTargetsActionAuthoring" ? "位移 / 推拉" :
                 type.Name == "GameplayRotateToPointActionAuthoring" ? "转向目标点" :

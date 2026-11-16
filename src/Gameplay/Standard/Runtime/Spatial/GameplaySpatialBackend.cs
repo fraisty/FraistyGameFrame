@@ -50,11 +50,7 @@ namespace FRFrame.Gameplay.Standard
             var selected = new List<IGameplaySpatialActor>(); var seen = new HashSet<GameplaySourceId>();
             foreach (var actor in candidates)
             {
-                if (actor == null || !actor.Id.IsValid || !actor.IsTargetable || actor.Tags == null || actor.Layer < 0 || actor.Layer > 31 ||
-                    (!IncludeSelf && actor.Id == Context.InstigatorId) || (LayerMask & (1 << actor.Layer)) == 0 ||
-                    (Faction == GameplayFactionFilter.Allies && actor.Faction != SourceFaction) ||
-                    (Faction == GameplayFactionFilter.Enemies && actor.Faction == SourceFaction) ||
-                    !Tags.Matches(actor.Tags) || !Geometry.Contains(actor.Id, actor.Position) ||
+                if (!CanTarget(actor, Context.InstigatorId, SourceFaction, Faction, Tags, LayerMask, IncludeSelf) || !Geometry.Contains(actor.Id, actor.Position) ||
                     _excluded?.Invoke(actor.Id) == true || !seen.Add(actor.Id)) continue;
                 selected.Add(actor);
             }
@@ -71,6 +67,13 @@ namespace FRFrame.Gameplay.Standard
                 new GameplayArea(Geometry.Origin, Geometry.Radius) : (GameplayArea?)null;
             return new GameplayTargetData(ids.Count > 0 ? ids[0] : default, Geometry.Origin, area, ids);
         }
+
+        internal static bool CanTarget(IGameplaySpatialActor actor, GameplaySourceId source, int sourceFaction,
+            GameplayFactionFilter faction, GameplayTagQuery tags, int layerMask, bool includeSelf = false) =>
+            actor != null && actor.Id.IsValid && actor.IsTargetable && actor.Tags != null && actor.Layer >= 0 && actor.Layer <= 31 &&
+            (includeSelf || actor.Id != source) && (layerMask & (1 << actor.Layer)) != 0 &&
+            (faction != GameplayFactionFilter.Allies || actor.Faction == sourceFaction) &&
+            (faction != GameplayFactionFilter.Enemies || actor.Faction != sourceFaction) && tags.Matches(actor.Tags);
     }
     public interface IGameplaySpatialQueryBackend { GameplayTargetData Query(GameplaySpatialSearchRequest request); }
 

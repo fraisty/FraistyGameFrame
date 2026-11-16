@@ -138,6 +138,7 @@ namespace FRFrame.Gameplay.Standard
         private void AdvanceStep(float amount, Action<float> advanceBorrowedSequences,
             Action<IReadOnlyList<GameplayEffectContainer>,float> advanceEffects)
         {
+            HitSampleTime += amount;
             // Snapshot membership once before callbacks, but reuse private storage between steps.
             // Advance rejects reentry; finally releases references even after callbacks throw/dispose.
             var actors = _stepActors; actors.AddRange(_actors);
@@ -150,7 +151,11 @@ namespace FRFrame.Gameplay.Standard
             if(advanceEffects==null)GameplayEffectContainer.AdvanceTogether(effectContainers, amount);
             else advanceEffects(new List<GameplayEffectContainer>(effectContainers).AsReadOnly(), amount); // External callbacks may retain their detached list.
             foreach (var actor in actors) if (!actor.IsDisposed && !actor.BorrowsContainers) actor.Abilities.Advance(amount);
-            foreach (var operation in spatial) if (!operation.IsDisposed) operation.Advance(amount);
+            foreach (var operation in spatial)
+                if (!operation.IsDisposed && !(operation is GameplayHitWindowOperation)) operation.Advance(amount);
+            // Weapons sample after presentation and spatial movement have updated their poses.
+            foreach (var operation in spatial)
+                if (operation is GameplayHitWindowOperation window && !window.IsDisposed) window.Advance(amount);
             advanceBorrowedSequences?.Invoke(amount);
             foreach (var actor in actors) if (!actor.IsDisposed && !actor.BorrowsContainers) actor.Sequences.Advance(amount);
             foreach (var actor in actors) if (!actor.IsDisposed) actor.AdvanceSkills(amount);

@@ -50,6 +50,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {typeof(GameplayAbilityDefinitionAsset),typeof(GameplayAbilityDefinitionData)},
             {typeof(GameplayContinuationDefinitionAsset),typeof(GameplayContinuationDefinitionData)},
             {typeof(GameplayProjectileDefinitionAsset),typeof(GameplayProjectileDefinitionData)},
+            {typeof(GameplayHitWindowDefinitionAsset),typeof(GameplayHitWindowData)},
             {typeof(GameplayAreaDefinitionAsset),typeof(GameplayAreaDefinitionData)},
             {typeof(GameplaySummonDefinitionAsset),typeof(GameplaySummonDefinitionData)} };
         private sealed class EditState { internal bool Structural; internal readonly HashSet<string> Paths=new HashSet<string>(); }
@@ -183,6 +184,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static bool TryDuration(GameplayAuthoringGraph graph,string nodeId,out string localId,out string path,out float seconds){
             localId=null;path=null;seconds=0;var node=graph.Nodes.Find(n=>n.Id==nodeId);if(node==null)return false;
             foreach(var binding in node.Payload.Definitions){var local=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId);object values=local?.Payload;if(values==null&&binding.External){try{values=binding.External.CaptureGraphValues();}catch(NotSupportedException){}}if(values==null)continue;
+                if(values is GameplayHitWindowData window){localId=local?.Id;path=nameof(window.Duration);seconds=window.Duration;return seconds>0;}
                 foreach(var provider in Providers.OfType<IGameplaySkillValueDuration>())if(provider.TryReadDuration(values,out path,out seconds)){localId=local?.Id;return seconds>0;}}
             return false;
         }
@@ -192,6 +194,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static string Name(Type type) => Providers.Select(p => p.Name(type)).FirstOrDefault(n => n != null) ??
             (type == typeof(GameplayEffectDefinitionData) ? "效果 / Buff" : type == typeof(GameplayProjectileDefinitionData) ? "逻辑弹体" :
              type == typeof(GameplayAreaDefinitionData) ? "逻辑区域" : type == typeof(GameplaySummonDefinitionData) ? "逻辑召唤" :
+             type == typeof(GameplayHitWindowData) ? "有效帧" :
              type == typeof(GameplayAbilityDefinitionData) ? "释放 / 消耗 / 冷却" : "后续规则");
 
         public static string NodeName(GameplayAuthoringNode node)
@@ -220,7 +223,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 key == "NoTargets" ? "无目标" : key == "TrueActions" ? "满足条件" : key == "FalseActions" ? "不满足" :
                 key == "OnHit" ? "命中" : key == "OnArrive" ? "到达" : key == "OnRange" ? "射程结束" :
                 key == "OnEnter" ? "进入" : key == "OnExit" ? "离开" : key == "OnTick" ? "周期" : key=="OnStay"?"持续停留（每步）":
-                key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
+                key == "OnWindowFinished" ? "有效窗自然结束" : key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
                 key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" : key == "OnAbsorbed" ? "吸收 · 护盾仍存续" :
                 key == "OnRemoved" ? "移除 · 原目标" :
                 ObjectNames.NicifyVariableName(path);
@@ -314,11 +317,34 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if (heading) GUILayout.Label(definition.Name + " · 内嵌配置", EditorStyles.boldLabel);
             var p = serialized.FindProperty("authoringGraph.LocalDefinitions").GetArrayElementAtIndex(index);
             Field(p.FindPropertyRelative("Name"), new GUIContent("名称"));
+            if (definition.Payload is GameplayHitWindowData)
+                DrawHitWindowReferences(doc.AuthoringGraph, definition.Id);
             DrawValue(doc, serialized, p.FindPropertyRelative("Payload"), definition.Id, definition.Definitions, "", visited,edit);
             visited.Remove(definition.Id);
         }
+        internal static void DrawHitWindowReferences(GameplayAuthoringGraph graph, string definitionId)
+        {
+            if (string.IsNullOrEmpty(definitionId)) return;
+            var consumers = graph.Nodes.Where(node => node.Payload.Definitions.Any(binding => binding.LocalId == definitionId))
+                .Select(node => node.Id).ToHashSet();
+            var times = graph.Timelines.SelectMany(timeline => timeline.Events)
+                .Where(entry => consumers.Contains(entry.EntryNodeId)).OrderBy(entry => entry.TimeSeconds)
+                .Select(entry => entry.TimeSeconds.ToString("0.###") + "s").ToArray();
+            if (times.Length > 0)
+                EditorGUILayout.LabelField("编排引用 · " + string.Join(" / ", times) + " · 每次独立", EditorStyles.wordWrappedMiniLabel);
+        }
         internal static bool Visible(object owner,string field)
         {
+            if (owner is GameplayHitWindowData window)
+            {
+                if(field=="AnchorPath")return window.AnchorKind!=Standard.GameplayHitAnchorKind.OwnerRoot;
+                if(field=="AnchorBone")return window.AnchorKind==Standard.GameplayHitAnchorKind.SpineBone;
+                if(field=="RehitInterval")return window.MaxHitsPerTarget>1;
+                if(field=="Length")return window.Shape==Standard.GameplaySearchShape.Box||window.Shape==Standard.GameplaySearchShape.Capsule;
+                if(field=="Width")return window.Shape==Standard.GameplaySearchShape.Box;
+                if(field=="Angle")return window.Shape==Standard.GameplaySearchShape.Sector;
+                if(field=="Radius")return window.Shape!=Standard.GameplaySearchShape.Box;
+            }
             if(owner is GameplayEffectDefinitionData effect){
                 if(field=="Duration"||field=="DurationValue"||field=="CompletionExecutions")return effect.DurationPolicy==GameplayEffectDurationPolicy.Duration;
                 if(field=="Period"||field=="PeriodValue"||field=="PeriodicStart"||field=="Stacking"||field=="Modifiers"||field=="GrantedTags"||field=="OngoingRequirements")return effect.DurationPolicy!=GameplayEffectDurationPolicy.Instant;

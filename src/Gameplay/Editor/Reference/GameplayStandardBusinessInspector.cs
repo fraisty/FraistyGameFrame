@@ -26,6 +26,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 value is GameplayFloatValueAuthoring||value is GameplayAbilityCostAuthoring||value is GameplayEffectCompletionAuthoring||value is GameplayEffectOverflowAuthoring||
                 value?.GetType().Name=="GameplayPresentationCueAsset"||value?.GetType().Name=="GameplayFloatingTextAsset"||value?.GetType().Name=="GameplayPresentationCueData"||value?.GetType().Name=="GameplayFloatingTextData")return true;
             return value is GameplayDispelEffectsActionAuthoring || value is GameplaySearchTargetActionAuthoring ||
+                value is GameplayHitWindowData || value is GameplayOpenHitWindowActionAuthoring ||
                 value is GameplayDamageExecutionAuthoring || value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring ||
                 value is GameplayApplyToTargetsActionAuthoring || value is GameplayOwnedSequenceActionAuthoring || value is GameplayEndAbilityActionAuthoring ||
                 value is GameplaySkillDocumentAsset || (value is GameplayProjectileDefinitionAsset || value is GameplayProjectileDefinitionData) || (value is GameplayAreaDefinitionAsset || value is GameplayAreaDefinitionData) || (value is GameplaySummonDefinitionAsset || value is GameplaySummonDefinitionData) || value is GameplaySpawnSummonActionAuthoring ||
@@ -130,6 +131,24 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("实际回调","使用既有规则动作；可以施效果、生成区域或执行后续编排。","OnHit","OnArrive","OnRange","OnCancelled");
                 yield return Group("可选场景资源","场景 Source 直接绑定实际 Prefab；逻辑 Source 无 Unity 表现依赖。","Prefab");
             }
+            else if(value is GameplayHitWindowData)
+            {
+                var geometry=Group("命中几何","射程、角度及厚度决定规则接触。斩光从独立 Cue 配置。","Shape","Plane","Radius","Angle","Length","Width","Height");
+                geometry.Labels["Height"]="厚度 / 高度";
+                yield return geometry;
+                var anchor=Group("姿态锚点","Root 读取角色朝向。Socket 与 Bone 读取已求值的模型。","AnchorKind","AnchorPath","AnchorBone","Offset","DirectionAngle","FollowAnchor");
+                anchor.Labels["AnchorKind"]="锚点类型";anchor.Labels["AnchorPath"]="模型相对路径";anchor.Labels["AnchorBone"]="Spine 骨骼";anchor.Labels["Offset"]="局部偏移（前 / 侧 / 深）";anchor.Labels["FollowAnchor"]="跟随锚点";
+                yield return anchor;
+                var timing=Group("有效帧与扫掠","超过距离或角度门槛时断开扫掠轨迹。","Duration","SweepPolicy","SamplingBudget","MaxSweepDistance","MaxSweepAngle","OwnedByAbility","StopTag");
+                timing.Labels["Duration"]="有效秒数";timing.Labels["SweepPolicy"]="采样方式";timing.Labels["SamplingBudget"]="扫掠预算";timing.Labels["MaxSweepDistance"]="断轨距离";timing.Labels["MaxSweepAngle"]="断轨角度";timing.Labels["OwnedByAbility"]="随施放结束回收";timing.Labels["StopTag"]="中断标签";
+                yield return timing;
+                var filter=Group("筛选与去重","每个窗口独立计数。无显式 Hurtbox 的目标以角色逻辑点检测。","Faction","Tags","LayerMask","Order","MaxDistinctTargets","MaxHitsPerTarget","RehitInterval");
+                filter.Labels["MaxDistinctTargets"]="不同目标上限";filter.Labels["MaxHitsPerTarget"]="同目标次数";filter.Labels["RehitInterval"]="同目标重击间隔";
+                yield return filter;
+                yield return Group("命中、完成与中断","实际接触提供 Actor 和接触点，后续沿用标准伤害、Effect 和 Cue。","OnHit","OnWindowFinished","OnCancelled");
+            }
+            else if(value is GameplayOpenHitWindowActionAuthoring)
+                yield return Group("开启命中窗口","每次执行建立一份有效时窗。","Window");
             else if((value is GameplayAreaDefinitionAsset || value is GameplayAreaDefinitionData))
             {
                 var geometry = Group("持续区域 / 坐标","与 Search 共用几何与后端；Cells 为世界坐标。","Shape","Plane","Origin","OriginOffset","Radius","Angle","Length","Width","Height","Cells","CellSize");

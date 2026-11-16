@@ -380,8 +380,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static void ResizeConstantDuration(GameplaySkillDocumentAsset document,string localId,string valuePath,float seconds)
         {
             if(!float.IsFinite(seconds)||seconds<=0)throw new ArgumentOutOfRangeException(nameof(seconds));
-            Transaction(document,"调整表现持续时间",graph=>{
+            Transaction(document,"调整持续时间",graph=>{
                 var local=graph.LocalDefinitions.Single(d=>d.Id==localId);
+                if(local.Payload is GameplayHitWindowData hit&&valuePath==nameof(hit.Duration)){hit.Duration=seconds;return;}
                 var value=GameplayGraphFields.ObjectPaths(local.Payload).Single(p=>p.Value==valuePath).Key as GameplayConstantFloatValueAuthoring;
                 if(value==null)throw new InvalidOperationException("持续配置已改变，请重新选择此事件。");value.Value=seconds;
             },false,GameplaySkillAuthoringChange.Local(new[]{localId}));

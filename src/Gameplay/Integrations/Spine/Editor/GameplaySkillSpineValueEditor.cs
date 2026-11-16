@@ -13,6 +13,8 @@ namespace FRFrame.Gameplay.Spine.Editor
 {
     public sealed class GameplaySkillSpineValueEditor : IGameplaySkillValueEditor, IGameplaySkillValueDescription, IGameplaySkillCardFieldProvider, IGameplaySkillValueDuration, IGameplaySkillFieldControlProvider
     {
+        [InitializeOnLoadMethod]
+        private static void RegisterHitPreview() => GameplaySpineHitAnchors.Register();
         // Resolve stable local identity only while the initiating node binding still owns it.
         // Direct source pages intentionally have an independent local-definition lifetime.
         private sealed class Location
@@ -163,6 +165,34 @@ namespace FRFrame.Gameplay.Spine.Editor
         private static readonly Dictionary<string,SkinState> Skins=new Dictionary<string,SkinState>();
         public bool DrawField(SerializedProperty root,SerializedProperty field)
         {
+            if(field.name=="AnchorBone"&&root.managedReferenceValue is GameplayHitWindowData&&
+                field.serializedObject.targetObject is GameplaySkillDocumentAsset document)
+            {
+                var skeletons=document.AuthoringGraph.LocalDefinitions.Select(d=>d.Payload).OfType<GameplaySpineAnimationData>().Select(d=>d.Skeleton)
+                    .Concat(document.AuthoringGraph.Nodes.SelectMany(n=>n.Payload.Definitions).Select(b=>b.External).OfType<GameplaySpineAnimationAsset>().Select(a=>a.Skeleton))
+                    .Where(s=>s).Distinct().ToArray();
+                field.stringValue=EditorGUILayout.TextField("Spine 骨骼名",field.stringValue);
+                if(skeletons.Length==1)
+                {
+                    string key=document.GetInstanceID()+field.propertyPath;
+                    Filters.TryGetValue(key,out var filter);
+                    Filters[key]=EditorGUILayout.TextField("搜索骨骼",filter??"");
+                    var bones=skeletons[0].GetSkeletonData(false)?.Bones;
+                    if(bones!=null)
+                    {
+                        var names=bones.Select(b=>b.Name).Where(n=>n.IndexOf(Filters[key],StringComparison.OrdinalIgnoreCase)>=0).ToArray();
+                        if(names.Length>0)
+                        {
+                            int selected=EditorGUILayout.Popup("匹配骨骼",Array.IndexOf(names,field.stringValue),names);
+                            if(selected>=0)field.stringValue=names[selected];
+                        }
+                        if(!string.IsNullOrWhiteSpace(field.stringValue)&&!bones.Any(b=>b.Name==field.stringValue))
+                            EditorGUILayout.HelpBox("所选动画骨架中没有该骨骼。运行时需有真实匹配锚点。",MessageType.Warning);
+                    }
+                }
+                else EditorGUILayout.HelpBox("请用动画卡的安全搜索选择骨架，或填写实际宿主的精确骨骼名。多骨架请填写模型相对路径。",MessageType.Info);
+                return true;
+            }
             if(!(root.managedReferenceValue is GameplaySpineAnimationData))return false;
             if(field.name=="Skeleton"){
                 // The embedded Inspector uses the same safe search and pending-buffer clear

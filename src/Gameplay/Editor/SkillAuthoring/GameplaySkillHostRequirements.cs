@@ -16,6 +16,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach(var value in document.AuthoringGraph.LocalDefinitions.Select(d=>d.Payload)){
                 if(value is GameplayProjectileDefinitionData projectile)yield return projectile.Plane;
                 if(value is GameplayAreaDefinitionData area)yield return area.Plane;
+                if(value is GameplayHitWindowData window)yield return window.Plane;
             }
             foreach(var value in document.AuthoringGraph.Nodes.SelectMany(n=>n.Payload.Definitions).Concat(document.AuthoringGraph.LocalDefinitions.SelectMany(d=>d.Definitions)).Select(b=>b.External)){
                 if(value is GameplayProjectileDefinitionAsset projectile)yield return projectile.Plane;

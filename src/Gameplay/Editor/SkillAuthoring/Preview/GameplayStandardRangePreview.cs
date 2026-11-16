@@ -11,9 +11,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public sealed class GameplayStandardRangePreview : IGameplayRangePreviewProvider
     {
         public bool Supports(GameplayRangePreviewContext context, SerializedProperty property)=>
-            property?.propertyType==SerializedPropertyType.ManagedReference && property.managedReferenceValue is GameplaySearchTargetActionAuthoring;
+            property?.propertyType==SerializedPropertyType.ManagedReference && (property.managedReferenceValue is GameplaySearchTargetActionAuthoring || property.managedReferenceValue is GameplayHitWindowData);
         public GameplayRangePreviewShape Read(GameplayRangePreviewContext context, SerializedProperty property)
         {
+            if(property.managedReferenceValue is GameplayHitWindowData window)
+            {
+                var definition=window.PreviewDefinition();
+                if(definition.Anchor.Kind!=GameplayHitAnchorKind.OwnerRoot&&!context.HitPose.HasValue)
+                    throw new InvalidOperationException("锚点未采样。请选择包含真实模型或骨骼的动画预览并移动编排光标。");
+                var pose=context.HitPose??new GameplayHitPose(default,new Extensions.GameplayDirection(1,0));
+                var hit=definition.Geometry(pose);
+                string label=context.HitPose.HasValue?"当前模型锚点":"角色根节点静态姿态";
+                return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,
+                    $"有效窗 {definition.Duration:0.###}s · {label} · {hit.Plane}", geometry:hit);
+            }
             var source=(GameplaySearchTargetActionAuthoring)property.managedReferenceValue;
             using(var world=new GameplayStandardWorld())
             {

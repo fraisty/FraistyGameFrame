@@ -174,6 +174,79 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(target.Effects.GetActiveEntriesSnapshot(), Is.Empty);
         }
 
+        [TestCase(GameplaySpatialPlane.XY, 30)]
+        [TestCase(GameplaySpatialPlane.XZ, 60)]
+        public void HitWindowSweepsRelativeHurtboxMotionWithoutDoubleHits(GameplaySpatialPlane plane, int hz)
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            GameplayPoint Along(float y) => plane == GameplaySpatialPlane.XY ? new GameplayPoint(.45f, y) : new GameplayPoint(.45f, 0, y);
+            var target = world.CreateActor(Along(-4), 2);
+            target.Hurtbox = new GameplayHurtbox(.25f);
+            var hits = new List<GameplayContext>();
+            var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Circle, plane, default, .08f,
+                radius:.25f, onHit:new[] { new Observe(hits.Add) });
+            var skill = Install(owner, new GameplayOpenHitWindowAction(definition));
+            Assert.That(skill.TryCast(), Is.True);
+            var window = (GameplayHitWindowOperation)world.GetSpatialSnapshot()[0];
+            Assert.That(hits, Is.Empty);
+            target.Position = Along(4);
+            world.Advance(1f / hz);
+            target.Position = Along(0);
+            world.Advance(1f / hz);
+            Assert.That(hits.Count, Is.EqualTo(1));
+            Assert.That(hits[0].TargetData.PrimaryTargetId, Is.EqualTo(target.Id));
+            Assert.That(hits[0].EffectiveSourceId, Is.EqualTo(window.Id));
+            Assert.That(hits[0].ActivationSourceId, Is.EqualTo(skill.LastCastContext.ActivationSourceId));
+            world.Advance(.1f);
+            Assert.That(window.EndReason, Is.EqualTo(GameplaySpatialEndReason.Completed));
+        }
+
+        [Test]
+        public void HitWindowsStartAtTheirMarkerAndCancelWithTheCast()
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            var enemy = world.CreateActor(new GameplayPoint(1, 0), 2);
+            world.CreateActor(new GameplayPoint(1, 0), 2);
+            var hits = new List<GameplayContext>(); var interrupted = new List<GameplayContext>();
+            var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Sector, GameplaySpatialPlane.XY, default,
+                .08f, onHit:new[] { new Observe(hits.Add) }, onCancelled:new[] { new Observe(interrupted.Add) });
+            var actions = new[] { new GameplayOpenHitWindowAction(definition) };
+            var start = new GameplaySequenceSkillStepMarkerDefinition(.06f, Array.Empty<IGameplaySkillCondition>(), new GameplaySkillSelfTarget(), actions);
+            var second = new GameplaySequenceSkillStepMarkerDefinition(.31f, Array.Empty<IGameplaySkillCondition>(), new GameplaySkillSelfTarget(), actions);
+            var skill = Install(owner, new GameplayOwnedSequenceAction(new GameplaySequenceDefinition(1, new[] { start, second })));
+            skill.TryCast();
+            world.Advance(.06f);
+            var first = (GameplayHitWindowOperation)world.GetSpatialSnapshot()[0];
+            Assert.That(first.Age, Is.Zero);
+            Assert.That(hits[0].TargetData.PrimaryTargetId, Is.EqualTo(enemy.Id));
+            world.Advance(.25f);
+            Assert.That(first.EndReason, Is.EqualTo(GameplaySpatialEndReason.Completed));
+            Assert.That(hits.Count, Is.EqualTo(2));
+            Assert.That(hits[1].EffectiveSourceId, Is.Not.EqualTo(first.Id));
+            skill.Cancel();
+            Assert.That(interrupted.Count, Is.EqualTo(1));
+            Assert.That(world.GetSpatialSnapshot(), Is.Empty);
+        }
+
+        [TestCase(false, 1)]
+        [TestCase(true, 0)]
+        public void HitSectorSweepsRotationUnlessThePoseWasCut(bool cut, int expectedHits)
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            world.CreateActor(new GameplayPoint(1, 1), 2);
+            int hits = 0;
+            var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Sector, GameplaySpatialPlane.XY,
+                default, .08f, angle:10, onHit:new[] { new Observe(_ => hits++) });
+            Install(owner, new GameplayOpenHitWindowAction(definition)).TryCast();
+            owner.Facing = new GameplayDirection(0, 1);
+            if(cut) owner.MarkHitPoseDiscontinuous();
+            world.Advance(.03f);
+            Assert.That(hits, Is.EqualTo(expectedHits));
+        }
+
         private static GameplayInstalledSkill Install(GameplayStandardActor actor,IGameplaySkillAction action)
         {
             var signal=new GameplayTag("Event.Test.Spatial.Cast");
