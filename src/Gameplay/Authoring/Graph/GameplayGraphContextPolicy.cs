@@ -25,6 +25,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         private static Inputs Target(GameplaySkillTargetAuthoring target,Inputs input,bool timeline=false)=>
             target is GameplaySkillSelfTargetAuthoring?input.With(true,false,"显式自身"):
             target is GameplaySkillPointTargetAuthoring?input.With(false,true,"显式地点"):
+            target is GameplaySkillContextTargetAuthoring { UseActionContext: true }?input:
             timeline?input.With(input.TriggerActor,input.TriggerPoint,"时间事件读取原 TriggerEvent.Context",input.OptionalTriggerActor,input.OptionalTriggerPoint):input;
         public static HashSet<string> Reachable(GameplayAuthoringGraph graph)
         {
@@ -47,6 +48,8 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(port=="Then"&&search.HopIntervalSeconds>0)return input;
                 if(port=="NoTargets"||port=="Completed"||port=="Then")return input.With(false,true,"搜索完成/无目标不保证 Actor；先以地点重新搜索");
             }
+            if(payload is GameplayCaptureWorldPointActionAuthoring)
+                return input.With(false,true,"捕获动作提供冻结的世界地点");
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
             if(payload is GameplayHitWindowData)
                 return port == nameof(GameplayHitWindowData.OnHit)

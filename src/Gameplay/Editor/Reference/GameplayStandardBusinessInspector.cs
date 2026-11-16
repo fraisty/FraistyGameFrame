@@ -25,7 +25,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 value is GameplaySequenceMarkerAuthoring||value is GameplaySkillConditionAuthoring||value is GameplaySkillTriggerAuthoring||value is GameplaySkillTargetAuthoring||
                 value is GameplayFloatValueAuthoring||value is GameplayAbilityCostAuthoring||value is GameplayEffectCompletionAuthoring||value is GameplayEffectOverflowAuthoring||
                 value?.GetType().Name=="GameplayPresentationCueAsset"||value?.GetType().Name=="GameplayFloatingTextAsset"||value?.GetType().Name=="GameplayPresentationCueData"||value?.GetType().Name=="GameplayFloatingTextData")return true;
-            return value is GameplayDispelEffectsActionAuthoring || value is GameplaySearchTargetActionAuthoring ||
+            return value is GameplayDispelEffectsActionAuthoring || value is GameplaySearchTargetActionAuthoring || value is GameplayCaptureWorldPointActionAuthoring ||
                 value is GameplayHitWindowData || value is GameplayOpenHitWindowActionAuthoring ||
                 value is GameplayDamageExecutionAuthoring || value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring ||
                 value is GameplayApplyToTargetsActionAuthoring || value is GameplayOwnedSequenceActionAuthoring || value is GameplayEndAbilityActionAuthoring ||
@@ -86,6 +86,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             else if(value is GameplayDispelEffectsActionAuthoring)yield return Group("驱散效果分类","作用于明确选择的目标；匹配 EffectTags，移除原因是 Dispel，不触发自然到期动作。至少选择一个 All/Any 分类。","EffectTags");
             else if(value is GameplayCooldownActionAuthoring cooldown)yield return Group("冷却 / 充能命令","SkillId=0仅当前cast；正数选择本角色已安装技能。重置使用上次捕获时长，减少冷却使用负数，恢复充能使用正整数。",cooldown.Operation==Standard.GameplayCooldownOperation.Restart?new[]{"SkillId","Operation"}:new[]{"SkillId","Operation","Value"});
             else if(value is GameplayActorProfileAsset)yield return Group("战前角色配置","初始属性与技能等级解析到独立运行容器；共享配置不保存战斗状态。","Combat","Attributes","StartingSkills");
+            else if(value is GameplayCaptureWorldPointActionAuthoring)
+            {
+                var capture=Group("捕获世界落点","显式地点优先；自动选最近敌人中心，空场保存当前朝向的前向点。时间事件可选择沿用捕获目标。","Plane","Range","Faction");
+                capture.Labels["Range"]="搜索与空场前向距离";
+                yield return capture;
+            }
             else if(value is GameplaySearchTargetActionAuthoring search)
             {
                 yield return Group("搜索形状 / 坐标","所有后端复用同一几何；按 Actor 中心判断。","Shape","Plane","Origin");
@@ -99,7 +105,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(search.Shape==FRFrame.Gameplay.Standard.GameplaySearchShape.GridCells)dimensions.AddRange(new[]{"Cells","CellSize"});
                 dimensions.Add("Height");
                 yield return Group("正式范围数值","可用常量、等级表、公式；形状切换保留原有配置。",dimensions.ToArray());
-                yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf");
+                yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf","UseActorCenters");
                 yield return Group("逐次重选","圆形查询从上一目标的位置选最近未访问目标，目标上限为总跳数。逐目标分支可读取 Context.Data.Standard.Search.Multiplier。",
                     "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier","HopIntervalSeconds");
                 yield return Group("正式续接","查询前保留原输入；每个目标提供单个 Actor；搜索完成收到完整结果。","OnBegin","EachTarget","Completed","NoTargets");
@@ -126,8 +132,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("结束当前来源","按捕获的激活来源查找本次 grant。End/Cancel 结束 Ability；后继是否继续由宿主守卫决定，普通 Rule 可继续清理，延时 OwnedSequence 会取消自身。","Cancel");
             else if((value is GameplayProjectileDefinitionAsset || value is GameplayProjectileDefinitionData))
             {
-                yield return Group("弹体轨迹 / 时间 / 数值","直线方向模式保持旧射程弹；固定终点捕获释放点/目标位置，不追踪。射程/时长先耗尽分别 Range/Completed；命中上限优先。弧线/抛物线/Bezier使用时长与逐段扫掠。","Motion","StraightDestination","Plane","Speed","Duration","HitRadius","MaxRange","CurveHeight","Control1Offset","Control2Offset","DirectionAngle","LaunchOffset","DestinationOffset","CancelOnAbilityEnd");
-                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消清理以生命周期归属为准。","Faction","Tags","LayerMask","MaxHits","OnlyHitPrimaryTarget");
+                yield return Group("弹体轨迹 / 时间 / 数值","直线方向模式保持旧射程弹；固定终点捕获释放点/目标位置，不追踪。射程/时长先耗尽分别 Range/Completed；命中上限优先。弧线/抛物线/Bezier使用时长与逐段扫掠。","Motion","StraightDestination","Plane","Speed","Duration","HitRadius","MaxRange","CurveHeight","Control1Offset","Control2Offset","DirectionAngle","LaunchOffset","DestinationOffset","ForwardLaunchOffset","UseOwnerFacing","CancelOnAbilityEnd");
+                yield return Group("相对贝塞尔","相对二次控制点跟随捕获的起点与终点。随机偏移方向只在实际发射时取一次。","BezierControl","ControlAlong","RelativeControlOffset","CurveSide");
+                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消清理以生命周期归属为准。","Faction","Tags","LayerMask","MaxHits","OnlyHitPrimaryTarget","ContactMode","ContactStep","ContinueAfterHit");
                 yield return Group("实际回调","使用既有规则动作；可以施效果、生成区域或执行后续编排。","OnHit","OnArrive","OnRange","OnCancelled");
                 yield return Group("可选场景资源","场景 Source 直接绑定实际 Prefab；逻辑 Source 无 Unity 表现依赖。","Prefab");
             }

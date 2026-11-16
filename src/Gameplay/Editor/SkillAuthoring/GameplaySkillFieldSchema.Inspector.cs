@@ -21,6 +21,39 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             };
         }
 
+        private static void DrawRelativeCurve(GameplayProjectileDefinitionData curve)
+        {
+            EditorGUILayout.LabelField("轨迹预览 · 终点距离 6", EditorStyles.miniLabel);
+            var rect = GUILayoutUtility.GetRect(100, 90, GUILayout.ExpandWidth(true));
+            if (Event.current.type != EventType.Repaint || !float.IsFinite(curve.ControlAlong)) return;
+            bool xz = curve.Plane == Standard.GameplaySpatialPlane.XZ;
+            var offset = curve.RelativeControlOffset;
+            if (!float.IsFinite(offset.x) || !float.IsFinite(offset.y) || !float.IsFinite(offset.z)) return;
+            var definition = new Standard.GameplayProjectileMotionDefinition(Standard.GameplayProjectileMotionKind.Bezier,
+                bezierControl: Standard.GameplayBezierControlMode.RelativeQuadratic, controlAlong: Mathf.Clamp01(curve.ControlAlong),
+                relativeOffset: new GameplayPoint(offset.x, offset.y, offset.z));
+            float scale = Mathf.Min((rect.width - 20) / (6 + Mathf.Abs(offset.x)), (rect.height - 12) / Mathf.Max(2, Mathf.Abs(xz ? offset.z : offset.y)));
+            Handles.BeginGUI();
+            var previous = Handles.color;
+            for (int sign = -1; sign <= 1; sign += 2)
+            {
+                if (curve.CurveSide == Standard.GameplayCurveSide.Positive && sign < 0 ||
+                    curve.CurveSide == Standard.GameplayCurveSide.Negative && sign > 0) continue;
+                var shot = definition.Create(new Standard.GameplayProjectileLaunch(default, new GameplayPoint(6,0),
+                    new Extensions.GameplayDirection(1,0),curve.Plane,1,1,1,sign));
+                var samples = new Vector3[25];
+                for (int i = 0; i < samples.Length; i++)
+                {
+                    var p = shot.Sample(i / 24f,0,default,null);
+                    samples[i] = new Vector3(rect.center.x + (p.X - 3) * scale, rect.center.y - (xz ? p.Z : p.Y) * scale);
+                }
+                Handles.color = sign > 0 ? new Color(.3f,.83f,.95f) : new Color(.96f,.59f,.27f);
+                Handles.DrawAAPolyLine(2,samples);
+            }
+            Handles.color = previous;
+            Handles.EndGUI();
+        }
+
         internal static IEnumerable<GameplayBusinessInspectorGroup> DescribeSections(object owner)
         {
             var sections = ValueSections.SelectMany(provider => provider.Sections(owner)).ToArray();
@@ -39,6 +72,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool showInactive = Open.Contains(inactiveKey);
             RevealPaths.TryGetValue(document.GetInstanceID(), out string reveal);
             DrawChildren(root, value, "", key, true);
+            if (value is GameplayProjectileDefinitionData curve && curve.Motion == Standard.GameplayProjectileMotionKind.Bezier &&
+                curve.BezierControl == Standard.GameplayBezierControlMode.RelativeQuadratic)
+                DrawRelativeCurve(curve);
             if (value is GameplayEffectDefinitionData || value is GameplayProjectileDefinitionData || value is GameplayAreaDefinitionData || value is GameplayHitWindowData)
                 Fold(inactiveKey, "当前策略未启用的配置", "切换策略会保留原参数。可在此清除不再使用的值。", false);
 
@@ -96,7 +132,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         else
                         {
                             bool policy = field.Name == "Motion" || field.Name == "StraightDestination" ||
-                                field.Name == "DurationPolicy" || field.Name == "Overflow";
+                                field.Name == "DurationPolicy" || field.Name == "Overflow" || field.Name == "BezierControl" ||
+                                field.Name == "ContactMode" || field.Name == "ContinueAfterHit";
                             if (policy) EditorGUI.BeginChangeCheck();
                             DrawLeaf(property, field.Label, field.Help, field.Kind == InspectorFieldKind.Reference ||
                                 owner is GameplayFormulaFloatValueAuthoring, field.Choices);

@@ -5,8 +5,14 @@ using FRFrame.Gameplay.Extensions;
 namespace FRFrame.Gameplay.Standard
 {
     /// <summary>Preserves the actual event's target snapshot, including captured point and multi-target list.</summary>
-    public sealed class GameplaySkillContextTarget:IGameplaySkillTarget
-    { public GameplayTargetData Resolve(IGameplaySkillHost host,GameplayEventData triggerEvent)=>triggerEvent.Context?.TargetData; }
+    public sealed class GameplaySkillContextTarget : IGameplaySkillTarget, IGameplaySkillContextTarget
+    {
+        private readonly bool _useActionContext;
+        public GameplaySkillContextTarget(bool useActionContext = false) => _useActionContext = useActionContext;
+        public GameplayTargetData Resolve(IGameplaySkillHost host, GameplayEventData triggerEvent) => triggerEvent.Context?.TargetData;
+        public GameplayTargetData ResolveContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent) =>
+            _useActionContext ? context.TargetData : Resolve(host, triggerEvent);
+    }
     /// <summary>Explicit captured world point; absence of an actor target is meaningful.</summary>
     public sealed class GameplaySkillPointTarget:IGameplaySkillTarget
     {private readonly GameplayPoint _point;public GameplaySkillPointTarget(GameplayPoint point)=>_point=point;public GameplayTargetData Resolve(IGameplaySkillHost host,GameplayEventData data)=>new GameplayTargetData(default,_point);}
@@ -62,7 +68,11 @@ namespace FRFrame.Gameplay.Standard
         {
             if(Owner.IsDisposed||Owner.World.IsDisposed||(!ending&&IsDisposed))return;
             var data=new GameplayEventData(new GameplayTag(signal),context,magnitude);
-            Owner.RunPresentationCallback(actions,context,data,()=>!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed));
+            var world = Owner.World;
+            if (ending && EndReason == GameplaySpatialEndReason.Arrived && !OwnedByAbility && this is GameplayProjectile projectile)
+                world.RunProjectileArrival(projectile, actions, context, data);
+            else
+                Owner.RunPresentationCallback(actions,context,data,()=>!Owner.IsDisposed&&!world.IsDisposed&&(ending||!IsDisposed));
             if(!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed))Owner.Events.Publish(data);
         }
         public void Finish(GameplaySpatialEndReason reason)
@@ -83,6 +93,46 @@ namespace FRFrame.Gameplay.Standard
     public sealed partial class GameplayStandardWorld
     {
         private readonly List<GameplaySpatialOperation> _spatial=new List<GameplaySpatialOperation>();
+        private GameplayProjectile _arrivingProjectile;
+        private GameplayContext _arrivalContext;
+
+        // A detached, genuinely arriving operation can authorize its synchronous authored children.
+        // Publishing the observation is deliberately outside this scope.
+        internal void RunProjectileArrival(GameplayProjectile projectile, IReadOnlyList<IGameplaySkillAction> actions,
+            GameplayContext context, GameplayEventData trigger)
+        {
+            var previousProjectile = _arrivingProjectile;
+            var previousContext = _arrivalContext;
+            _arrivingProjectile = projectile;
+            _arrivalContext = context;
+            try
+            {
+                projectile.Owner.RunPresentationCallback(actions, context, trigger, () => !IsDisposed && !projectile.Owner.IsDisposed);
+            }
+            finally
+            {
+                _arrivingProjectile = previousProjectile;
+                _arrivalContext = previousContext;
+            }
+        }
+
+        internal bool TryResolveAreaOrigin(GameplayStandardActor owner, GameplayContext context, GameplayContext trigger,
+            bool worldOwned, out GameplayContext spawnContext, out GameplayAbilityHandle grant)
+        {
+            spawnContext = context;
+            grant = default;
+            if (IsDisposed || owner.IsDisposed || owner.World != this) return false;
+            if (worldOwned && _arrivingProjectile != null && ReferenceEquals(trigger, _arrivalContext) &&
+                _arrivingProjectile.Owner == owner && context.InstigatorId == trigger.InstigatorId &&
+                context.EffectiveSourceId == trigger.EffectiveSourceId &&
+                context.ActivationSourceId == trigger.ActivationSourceId && context.OriginSourceId == trigger.OriginSourceId)
+            {
+                spawnContext = context.WithTarget(new GameplayTargetData(default, trigger.TargetData.Point));
+                return true;
+            }
+            return GameplayStandardActivation.TryFindGrant(owner, context, out grant);
+        }
+
         public IReadOnlyList<GameplaySpatialOperation> GetSpatialSnapshot()=>_spatial.ToArray();
         internal void DetachSpatial(GameplaySpatialOperation operation)=>_spatial.Remove(operation);
         internal T RegisterSpatial<T>(T operation,GameplayAbilityHandle grant) where T:GameplaySpatialOperation

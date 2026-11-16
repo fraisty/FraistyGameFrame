@@ -6,6 +6,37 @@ using UnityEngine.Scripting;
 
 namespace FRFrame.Gameplay.Authoring
 {
+    [Serializable, Preserve]
+    public sealed class GameplayFacingConditionAuthoring : GameplaySkillConditionAuthoring
+    {
+        [InspectorName("判定平面")] public GameplaySpatialPlane Plane;
+        [InspectorName("夹角全角"), Range(1, 360)] public float Angle = 180;
+        [InspectorName("读取目标实时位置")] public bool UseLiveTarget;
+        public override void Validate(GameplayAuthoringValidationContext v, string p)
+        {
+            v.Enum(Plane, p + ".Plane");
+            if (!(Angle > 0 && Angle <= 360)) v.Error(p + ".Angle", "夹角全角必须大于 0 且不超过 360°。");
+        }
+        public override IGameplaySkillCondition Build() => new GameplayFacingCondition(Plane, Angle, UseLiveTarget);
+    }
+
+    [Serializable, Preserve]
+    public sealed class GameplayCaptureWorldPointActionAuthoring : GameplaySkillActionAuthoring
+    {
+        [InspectorName("搜索平面")] public GameplaySpatialPlane Plane;
+        [SerializeReference, InspectorName("搜索与空场前向距离")]
+        public GameplayFloatValueAuthoring Range = new GameplayConstantFloatValueAuthoring { Value = 9 };
+        [InspectorName("自动搜索阵营")] public GameplayFactionFilter Faction = GameplayFactionFilter.Enemies;
+        public override void Validate(GameplayAuthoringValidationContext v, string p)
+        {
+            v.Enum(Plane, p + ".Plane");
+            v.Enum(Faction, p + ".Faction");
+            GameplaySpatialAuthoringUtility.Value(Range, v, p + ".Range");
+        }
+        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context) =>
+            new GameplayCaptureWorldPointAction(Plane, Range.Build(), Faction);
+    }
+
     [Serializable,Preserve]public sealed class GameplaySkillPointTargetAuthoring:GameplaySkillTargetAuthoring
     {
         public Vector3 Point;
@@ -16,7 +47,9 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable,Preserve]public sealed class GameplaySkillContextTargetAuthoring:GameplaySkillTargetAuthoring
     {
         public override void Validate(GameplayAuthoringValidationContext v,string p) { }
-        public override IGameplaySkillTarget Build()=>new GameplaySkillContextTarget();
+        [InspectorName("沿用时间轴启动时的捕获目标"), Tooltip("开启后，时间事件读取启动该编排的当前上下文。关闭后仍读取原触发事件。")]
+        public bool UseActionContext;
+        public override IGameplaySkillTarget Build()=>new GameplaySkillContextTarget(UseActionContext);
     }
     [Serializable,Preserve]public sealed class GameplaySpawnProjectileActionAuthoring:GameplaySkillActionAuthoring
     {

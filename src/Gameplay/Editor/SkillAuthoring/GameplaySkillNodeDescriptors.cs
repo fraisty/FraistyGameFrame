@@ -56,6 +56,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(type==typeof(GameplayChangeStateActionAuthoring))return "状态与位移/行为状态";
             if(type==typeof(GameplayEndAbilityActionAuthoring))return "控制/结束与取消";
             if(type==typeof(GameplayCooldownActionAuthoring))return "控制/运行时冷却与回充";
+            if(type==typeof(GameplayCaptureWorldPointActionAuthoring))return "数值与上下文/捕获与赋值";
             if(type==typeof(GameplayCaptureValueActionAuthoring)||type==typeof(GameplaySkillSetContextValueActionAuthoring)||type==typeof(GameplayCaptureCombatRollActionAuthoring))return "数值与上下文/捕获与赋值";
             if(type==typeof(GameplaySkillBranchActionAuthoring))return "条件与触发/条件分支";
             if(type==typeof(GameplayApplyToTargetsActionAuthoring)||type==typeof(GameplayGrantTimedShieldActionAuthoring)||type==typeof(GameplayDispelEffectsActionAuthoring))return "效果/护盾与驱散";
@@ -129,6 +130,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             string name = type.Name == "GameplaySkillEventTriggerAuthoring" ? "事件触发" :
                 type.Name == "GameplaySkillOwnerEventCountTriggerAuthoring" ? "事件计数触发" :
                 type.Name == "GameplaySkillIntervalTriggerAuthoring" ? "定时触发" :
+                type.Name == "GameplayFacingConditionAuthoring" ? "目标夹角" :
+                type.Name == "GameplayCaptureWorldPointActionAuthoring" ? "捕获世界落点" :
                 type.Name == "GameplaySkillTagConditionAuthoring" ? "标签条件" :
                 type.Name == "GameplaySkillAttributeConditionAuthoring" ? "属性条件" :
                 type.Name == "GameplaySkillSelfTargetAuthoring" ? "自身目标" :

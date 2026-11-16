@@ -208,6 +208,13 @@ namespace FRFrame.Gameplay.Standard
         public GameplayAreaDefinition Definition {get;}
         public GameplaySpawnAreaAction(GameplayAreaDefinition definition)=>Definition=definition??throw new ArgumentNullException(nameof(definition));
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
-        {if(!(host is GameplayStandardActor actor)||!GameplayStandardActivation.TryFindGrant(actor,context,out _))return GameplaySkillActionResult.Rejected;return actor.World.SpawnArea(actor,context,Definition)!=null?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;}
+        {
+            if (!(host is GameplayStandardActor actor) || !actor.World.TryResolveAreaOrigin(actor, context, triggerEvent.Context,
+                    !Definition.CancelOnAbilityEnd, out var spawnContext, out var grant))
+                return GameplaySkillActionResult.Rejected;
+            var operation = new GameplayAreaOperation(actor, spawnContext, grant, Definition);
+            return actor.World.RegisterSpatial(operation, grant) != null
+                ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+        }
     }
 }

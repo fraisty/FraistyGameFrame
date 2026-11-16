@@ -26,7 +26,7 @@ namespace FRFrame.Gameplay.Standard
         private readonly GameplayTagQuery _tags;
         private readonly int _layerMask, _maxTargets;
         private readonly GameplayTargetOrder _order;
-        private readonly bool _includeSelf;
+        private readonly bool _includeSelf, _useActorCenters;
         private readonly bool _excludePrimaryTarget, _repeatFromResult;
         private readonly float _repeatMultiplier;
         private readonly float _hopIntervalSeconds;
@@ -43,7 +43,7 @@ namespace FRFrame.Gameplay.Standard
             GameplaySearchDirection direction = GameplaySearchDirection.OwnerFacing,
             IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default,
             bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1,
-            IEnumerable<IGameplaySkillAction> onBegin = null, float hopIntervalSeconds = 0)
+            IEnumerable<IGameplaySkillAction> onBegin = null, float hopIntervalSeconds = 0, bool useActorCenters = false)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane) ||
                 !Enum.IsDefined(typeof(GameplaySearchOrigin), origin)) throw new ArgumentOutOfRangeException(nameof(shape));
@@ -65,6 +65,7 @@ namespace FRFrame.Gameplay.Standard
                 (hopIntervalSeconds > 0 && (!repeatFromResult || shape != GameplaySearchShape.Circle)))
                 throw new ArgumentOutOfRangeException(nameof(hopIntervalSeconds), "A positive hop interval requires repeated circle search.");
             _hopIntervalSeconds = hopIntervalSeconds;
+            _useActorCenters = useActorCenters;
             _each = Copy(each); _completed = Copy(completed); _empty = Copy(empty);
             _onBegin = Copy(onBegin);
             _cells = new List<GameplayPoint>(cells ?? Array.Empty<GameplayPoint>()).AsReadOnly(); _cellSize = cellSize;
@@ -314,7 +315,7 @@ namespace FRFrame.Gameplay.Standard
                 _repeatFromResult ? GameplayTargetOrder.Nearest : _order, _includeSelf,
                 _excludePrimaryTarget || visited != null
                     ? id => (_excludePrimaryTarget && id == context.TargetData.PrimaryTargetId) || (visited != null && visited.Contains(id))
-                    : null);
+                    : null, _useActorCenters);
             return true;
         }
     }

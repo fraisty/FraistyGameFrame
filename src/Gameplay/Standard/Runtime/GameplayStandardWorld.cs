@@ -133,7 +133,7 @@ namespace FRFrame.Gameplay.Standard
             if (_advancing || _publishingCombat) throw new InvalidOperationException("World Advance cannot be nested inside a rule callback.");
             _advancing = true;
             try { AdvanceStep(amount, advanceBorrowedSequences, advanceEffects); }
-            finally { _stepActors.Clear(); _stepSpatial.Clear(); _stepEffects.Clear(); _advancing = false; }
+            finally { _stepActors.Clear(); _stepSpatial.Clear(); _stepEffects.Clear(); _movementWrites.Clear(); _advancing = false; }
         }
         private void AdvanceStep(float amount, Action<float> advanceBorrowedSequences,
             Action<IReadOnlyList<GameplayEffectContainer>,float> advanceEffects)

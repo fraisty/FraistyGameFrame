@@ -168,7 +168,9 @@ namespace FRFrame.Gameplay
             foreach (var condition in step.Conditions)
                 if (entry.Cancelled || !GameplaySkillActionRunner.Evaluate(condition, entry.Context, triggerEvent, entry.Host)) return;
             if (entry.Cancelled) return;
-            GameplayTargetData target = step.Target.Resolve(entry.Host, triggerEvent);
+            GameplayTargetData target = step.Target is IGameplaySkillContextTarget contextual
+                ? contextual.ResolveContext(entry.Context, entry.Host, triggerEvent)
+                : step.Target.Resolve(entry.Host, triggerEvent);
             if (target == null || entry.Cancelled) return;
             var context = entry.Context.WithTarget(target);
             GameplaySkillActionRunner.Execute(step.Actions, context, triggerEvent, entry.Host, () => !entry.Cancelled);

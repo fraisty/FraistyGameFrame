@@ -20,6 +20,7 @@ namespace FRFrame.Gameplay.Unity
         { _world = world ?? throw new ArgumentNullException(nameof(world)); _resolve = resolve ?? (c => c.GetComponentInParent<GameplayUnityActorBinding>()?.Actor); _useColliderGeometry=useColliderGeometry; }
         public GameplayTargetData Query(GameplaySpatialSearchRequest request)
         {
+            if (request.UseActorCenters) return request.Select(_world.Actors);
             if (request.Geometry.Plane != GameplaySpatialPlane.XY) throw new InvalidOperationException("Physics2D backend supports XY queries; select logical/Physics3D for XZ or 3D.");
             if (request.Geometry.Shape == GameplaySearchShape.Single) return request.Select(_world.Actors);
             Physics2D.SyncTransforms();
@@ -70,6 +71,7 @@ namespace FRFrame.Gameplay.Unity
         public GameplayTargetData Query(GameplaySpatialSearchRequest request)
         {
             if (request.Geometry.Shape == GameplaySearchShape.Single) return request.Select(_world.Actors);
+            if (request.UseActorCenters) return request.Select(_world.Actors);
             Physics.SyncTransforms();
             var g = request.Geometry; var candidates = new List<IGameplaySpatialActor>();
             foreach (var collider in Physics.OverlapSphere(new Vector3(g.Origin.X, g.Origin.Y, g.Origin.Z), g.BoundsRadius,

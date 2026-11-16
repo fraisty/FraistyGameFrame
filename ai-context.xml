@@ -712,6 +712,7 @@ Gameplay/
         GameplaySearchGeometry.cs
         GameplaySearchTargetAction.cs
         GameplaySpatialBackend.cs
+        GameplaySpatialContextRules.cs
         GameplaySpatialOperation.cs
         GameplaySummon.cs
       FRFrame.Gameplay.Standard.asmdef
@@ -60585,6 +60586,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         private static Inputs Target(GameplaySkillTargetAuthoring target,Inputs input,bool timeline=false)=>
             target is GameplaySkillSelfTargetAuthoring?input.With(true,false,"显式自身"):
             target is GameplaySkillPointTargetAuthoring?input.With(false,true,"显式地点"):
+            target is GameplaySkillContextTargetAuthoring { UseActionContext: true }?input:
             timeline?input.With(input.TriggerActor,input.TriggerPoint,"时间事件读取原 TriggerEvent.Context",input.OptionalTriggerActor,input.OptionalTriggerPoint):input;
         public static HashSet<string> Reachable(GameplayAuthoringGraph graph)
         {
@@ -60607,6 +60609,8 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(port=="Then"&&search.HopIntervalSeconds>0)return input;
                 if(port=="NoTargets"||port=="Completed"||port=="Then")return input.With(false,true,"搜索完成/无目标不保证 Actor；先以地点重新搜索");
             }
+            if(payload is GameplayCaptureWorldPointActionAuthoring)
+                return input.With(false,true,"捕获动作提供冻结的世界地点");
             if(payload is GameplayProjectileDefinitionData)return input.With(port=="OnHit",true,"弹体仅 OnHit 保证 Actor");
             if(payload is GameplayHitWindowData)
                 return port == nameof(GameplayHitWindowData.OnHit)
@@ -61334,6 +61338,15 @@ namespace FRFrame.Gameplay.Authoring
         public bool CancelOnAbilityEnd=true;
         public Vector3 LaunchOffset,DestinationOffset;
         public float DirectionAngle;
+        [InspectorName("沿角色朝向的发射偏移")] public float ForwardLaunchOffset;
+        [InspectorName("按角色朝向直射")] public bool UseOwnerFacing;
+        [InspectorName("接触采样")] public GameplayProjectileContactMode ContactMode;
+        [InspectorName("定点采样间隔（秒）")] public float ContactStep = .02f;
+        [InspectorName("命中后继续飞行")] public bool ContinueAfterHit;
+        [InspectorName("贝塞尔控制方式")] public GameplayBezierControlMode BezierControl;
+        [InspectorName("相对控制点比例"), Range(0,1)] public float ControlAlong = .5f;
+        [InspectorName("相对控制点世界偏移")] public Vector3 RelativeControlOffset = Vector3.up;
+        [InspectorName("偏移方向")] public GameplayCurveSide CurveSide;
         [SerializeReference] public GameplayFloatValueAuthoring Speed=new GameplayConstantFloatValueAuthoring{Value=8};
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=3};
         [SerializeReference] public GameplayFloatValueAuthoring HitRadius=new GameplayConstantFloatValueAuthoring{Value=.25f};
@@ -61351,10 +61364,12 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplaySkillActionAuthoring[] OnRange=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnCancelled=Array.Empty<GameplaySkillActionAuthoring>();
         public GameplayProjectileDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>new GameplayProjectileDefinition(
-            new GameplayProjectileMotionDefinition(Motion,new GameplayPoint(Control1Offset.x,Control1Offset.y,Control1Offset.z),new GameplayPoint(Control2Offset.x,Control2Offset.y,Control2Offset.z),StraightDestination),
+            new GameplayProjectileMotionDefinition(Motion,new GameplayPoint(Control1Offset.x,Control1Offset.y,Control1Offset.z),new GameplayPoint(Control2Offset.x,Control2Offset.y,Control2Offset.z),StraightDestination,BezierControl,ControlAlong,
+                new GameplayPoint(RelativeControlOffset.x,RelativeControlOffset.y,RelativeControlOffset.z),CurveSide),
             Speed.Build(),Duration.Build(),HitRadius.Build(),MaxRange.Build(),CurveHeight.Build(),Plane,Faction,Tags?.Build(),LayerMask,MaxHits,Motion==GameplayProjectileMotionKind.Homing,
             GameplaySpatialAuthoringUtility.Build(OnHit,context),GameplaySpatialAuthoringUtility.Build(OnArrive,context),GameplaySpatialAuthoringUtility.Build(OnRange,context),GameplaySpatialAuthoringUtility.Build(OnCancelled,context),CreateView(context),
-            CancelOnAbilityEnd,new GameplayPoint(LaunchOffset.x,LaunchOffset.y,LaunchOffset.z),new GameplayPoint(DestinationOffset.x,DestinationOffset.y,DestinationOffset.z),DirectionAngle,OnlyHitPrimaryTarget));
+            CancelOnAbilityEnd,new GameplayPoint(LaunchOffset.x,LaunchOffset.y,LaunchOffset.z),new GameplayPoint(DestinationOffset.x,DestinationOffset.y,DestinationOffset.z),DirectionAngle,OnlyHitPrimaryTarget,
+            ForwardLaunchOffset,UseOwnerFacing,ContactMode,ContactStep,ContinueAfterHit));
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {
@@ -61369,6 +61384,22 @@ namespace FRFrame.Gameplay.Authoring
             GameplaySpatialAuthoringUtility.Validate(OnHit,v,p+".OnHit");GameplaySpatialAuthoringUtility.Validate(OnArrive,v,p+".OnArrive");
             GameplaySpatialAuthoringUtility.Validate(OnRange,v,p+".OnRange");GameplaySpatialAuthoringUtility.Validate(OnCancelled,v,p+".OnCancelled");
             v.Finite(DirectionAngle,p+".DirectionAngle");
+            v.Finite(ForwardLaunchOffset,p+".ForwardLaunchOffset");
+            v.Enum(ContactMode,p+".ContactMode");
+            if (ContactMode == GameplayProjectileContactMode.FixedEndpointNearest && (!float.IsFinite(ContactStep) || ContactStep <= 0))
+                v.Error(p+".ContactStep","定点采样间隔必须是正数。");
+            if (Motion == GameplayProjectileMotionKind.Bezier)
+            {
+                v.Enum(BezierControl,p+".BezierControl");
+                if (BezierControl == GameplayBezierControlMode.RelativeQuadratic)
+                {
+                    v.Enum(CurveSide,p+".CurveSide");
+                    if (!(ControlAlong >= 0 && ControlAlong <= 1)) v.Error(p+".ControlAlong","控制点比例应在 0 到 1 之间。");
+                    v.Finite(RelativeControlOffset.x,p+".RelativeControlOffset.x");
+                    v.Finite(RelativeControlOffset.y,p+".RelativeControlOffset.y");
+                    v.Finite(RelativeControlOffset.z,p+".RelativeControlOffset.z");
+                }
+            }
             foreach(var offset in new[]{Control1Offset,Control2Offset,LaunchOffset,DestinationOffset})if(!float.IsFinite(offset.x)||!float.IsFinite(offset.y)||!float.IsFinite(offset.z))v.Error(p,"Projectile offsets must be finite.");
         }
     
@@ -62002,6 +62033,8 @@ namespace FRFrame.Gameplay.Authoring
         [Min(1)] public int MaxTargets = 32;
         public GameplayTargetOrder Order = GameplayTargetOrder.Nearest;
         public bool IncludeSelf;
+        [InspectorName("以角色中心匹配"), Tooltip("以逻辑角色位置查询和排序，不使用碰撞体接触点。")]
+        public bool UseActorCenters;
         [Tooltip("跳过输入的主要目标，例如弹体命中后为子弹重选目标。")]
         public bool ExcludePrimaryTarget;
         [Tooltip("每次选最近的未访问目标，再从命中地点重选。目标上限是总次数。")]
@@ -62069,7 +62102,7 @@ namespace FRFrame.Gameplay.Authoring
                 Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds);
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds, UseActorCenters);
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;
@@ -62256,6 +62289,37 @@ using UnityEngine.Scripting;
 
 namespace FRFrame.Gameplay.Authoring
 {
+    [Serializable, Preserve]
+    public sealed class GameplayFacingConditionAuthoring : GameplaySkillConditionAuthoring
+    {
+        [InspectorName("判定平面")] public GameplaySpatialPlane Plane;
+        [InspectorName("夹角全角"), Range(1, 360)] public float Angle = 180;
+        [InspectorName("读取目标实时位置")] public bool UseLiveTarget;
+        public override void Validate(GameplayAuthoringValidationContext v, string p)
+        {
+            v.Enum(Plane, p + ".Plane");
+            if (!(Angle > 0 && Angle <= 360)) v.Error(p + ".Angle", "夹角全角必须大于 0 且不超过 360°。");
+        }
+        public override IGameplaySkillCondition Build() => new GameplayFacingCondition(Plane, Angle, UseLiveTarget);
+    }
+
+    [Serializable, Preserve]
+    public sealed class GameplayCaptureWorldPointActionAuthoring : GameplaySkillActionAuthoring
+    {
+        [InspectorName("搜索平面")] public GameplaySpatialPlane Plane;
+        [SerializeReference, InspectorName("搜索与空场前向距离")]
+        public GameplayFloatValueAuthoring Range = new GameplayConstantFloatValueAuthoring { Value = 9 };
+        [InspectorName("自动搜索阵营")] public GameplayFactionFilter Faction = GameplayFactionFilter.Enemies;
+        public override void Validate(GameplayAuthoringValidationContext v, string p)
+        {
+            v.Enum(Plane, p + ".Plane");
+            v.Enum(Faction, p + ".Faction");
+            GameplaySpatialAuthoringUtility.Value(Range, v, p + ".Range");
+        }
+        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context) =>
+            new GameplayCaptureWorldPointAction(Plane, Range.Build(), Faction);
+    }
+
     [Serializable,Preserve]public sealed class GameplaySkillPointTargetAuthoring:GameplaySkillTargetAuthoring
     {
         public Vector3 Point;
@@ -62266,7 +62330,9 @@ namespace FRFrame.Gameplay.Authoring
     [Serializable,Preserve]public sealed class GameplaySkillContextTargetAuthoring:GameplaySkillTargetAuthoring
     {
         public override void Validate(GameplayAuthoringValidationContext v,string p) { }
-        public override IGameplaySkillTarget Build()=>new GameplaySkillContextTarget();
+        [InspectorName("沿用时间轴启动时的捕获目标"), Tooltip("开启后，时间事件读取启动该编排的当前上下文。关闭后仍读取原触发事件。")]
+        public bool UseActionContext;
+        public override IGameplaySkillTarget Build()=>new GameplaySkillContextTarget(UseActionContext);
     }
     [Serializable,Preserve]public sealed class GameplaySpawnProjectileActionAuthoring:GameplaySkillActionAuthoring
     {
@@ -64735,6 +64801,18 @@ namespace FRFrame.Gameplay.Editor
             Labels["Cells"]="格子坐标";
             Labels["CellSize"]="格子尺寸";
             Labels["Motion"]="运动轨迹";
+            Labels["UseActorCenters"]="以角色中心匹配";
+            Labels["UseLiveTarget"]="读取目标实时位置";
+            Labels["UseActionContext"]="沿用时间轴启动时的捕获目标";
+            Labels["ForwardLaunchOffset"]="沿角色朝向的发射偏移";
+            Labels["UseOwnerFacing"]="按角色朝向直射";
+            Labels["ContactMode"]="接触采样";
+            Labels["ContactStep"]="定点采样间隔（秒）";
+            Labels["ContinueAfterHit"]="命中后继续飞行";
+            Labels["BezierControl"]="贝塞尔控制方式";
+            Labels["ControlAlong"]="相对控制点比例";
+            Labels["RelativeControlOffset"]="相对控制点世界偏移";
+            Labels["CurveSide"]="偏移方向";
             Labels["StraightDestination"]="直线终点模式";
             Labels["LaunchOffset"]="发射偏移";
             Labels["DestinationOffset"]="终点偏移";
@@ -66804,7 +66882,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 value is GameplaySequenceMarkerAuthoring||value is GameplaySkillConditionAuthoring||value is GameplaySkillTriggerAuthoring||value is GameplaySkillTargetAuthoring||
                 value is GameplayFloatValueAuthoring||value is GameplayAbilityCostAuthoring||value is GameplayEffectCompletionAuthoring||value is GameplayEffectOverflowAuthoring||
                 value?.GetType().Name=="GameplayPresentationCueAsset"||value?.GetType().Name=="GameplayFloatingTextAsset"||value?.GetType().Name=="GameplayPresentationCueData"||value?.GetType().Name=="GameplayFloatingTextData")return true;
-            return value is GameplayDispelEffectsActionAuthoring || value is GameplaySearchTargetActionAuthoring ||
+            return value is GameplayDispelEffectsActionAuthoring || value is GameplaySearchTargetActionAuthoring || value is GameplayCaptureWorldPointActionAuthoring ||
                 value is GameplayHitWindowData || value is GameplayOpenHitWindowActionAuthoring ||
                 value is GameplayDamageExecutionAuthoring || value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring ||
                 value is GameplayApplyToTargetsActionAuthoring || value is GameplayOwnedSequenceActionAuthoring || value is GameplayEndAbilityActionAuthoring ||
@@ -66865,6 +66943,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             else if(value is GameplayDispelEffectsActionAuthoring)yield return Group("驱散效果分类","作用于明确选择的目标；匹配 EffectTags，移除原因是 Dispel，不触发自然到期动作。至少选择一个 All/Any 分类。","EffectTags");
             else if(value is GameplayCooldownActionAuthoring cooldown)yield return Group("冷却 / 充能命令","SkillId=0仅当前cast；正数选择本角色已安装技能。重置使用上次捕获时长，减少冷却使用负数，恢复充能使用正整数。",cooldown.Operation==Standard.GameplayCooldownOperation.Restart?new[]{"SkillId","Operation"}:new[]{"SkillId","Operation","Value"});
             else if(value is GameplayActorProfileAsset)yield return Group("战前角色配置","初始属性与技能等级解析到独立运行容器；共享配置不保存战斗状态。","Combat","Attributes","StartingSkills");
+            else if(value is GameplayCaptureWorldPointActionAuthoring)
+            {
+                var capture=Group("捕获世界落点","显式地点优先；自动选最近敌人中心，空场保存当前朝向的前向点。时间事件可选择沿用捕获目标。","Plane","Range","Faction");
+                capture.Labels["Range"]="搜索与空场前向距离";
+                yield return capture;
+            }
             else if(value is GameplaySearchTargetActionAuthoring search)
             {
                 yield return Group("搜索形状 / 坐标","所有后端复用同一几何；按 Actor 中心判断。","Shape","Plane","Origin");
@@ -66878,7 +66962,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(search.Shape==FRFrame.Gameplay.Standard.GameplaySearchShape.GridCells)dimensions.AddRange(new[]{"Cells","CellSize"});
                 dimensions.Add("Height");
                 yield return Group("正式范围数值","可用常量、等级表、公式；形状切换保留原有配置。",dimensions.ToArray());
-                yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf");
+                yield return Group("筛选 / 稳定结果","先过滤和去重，再排序与限制数量；空结果不会退回 Self。","Faction","Tags","LayerMask","MaxTargets","Order","IncludeSelf","UseActorCenters");
                 yield return Group("逐次重选","圆形查询从上一目标的位置选最近未访问目标，目标上限为总跳数。逐目标分支可读取 Context.Data.Standard.Search.Multiplier。",
                     "ExcludePrimaryTarget","RepeatFromResult","RepeatMultiplier","HopIntervalSeconds");
                 yield return Group("正式续接","查询前保留原输入；每个目标提供单个 Actor；搜索完成收到完整结果。","OnBegin","EachTarget","Completed","NoTargets");
@@ -66905,8 +66989,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("结束当前来源","按捕获的激活来源查找本次 grant。End/Cancel 结束 Ability；后继是否继续由宿主守卫决定，普通 Rule 可继续清理，延时 OwnedSequence 会取消自身。","Cancel");
             else if((value is GameplayProjectileDefinitionAsset || value is GameplayProjectileDefinitionData))
             {
-                yield return Group("弹体轨迹 / 时间 / 数值","直线方向模式保持旧射程弹；固定终点捕获释放点/目标位置，不追踪。射程/时长先耗尽分别 Range/Completed；命中上限优先。弧线/抛物线/Bezier使用时长与逐段扫掠。","Motion","StraightDestination","Plane","Speed","Duration","HitRadius","MaxRange","CurveHeight","Control1Offset","Control2Offset","DirectionAngle","LaunchOffset","DestinationOffset","CancelOnAbilityEnd");
-                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消清理以生命周期归属为准。","Faction","Tags","LayerMask","MaxHits","OnlyHitPrimaryTarget");
+                yield return Group("弹体轨迹 / 时间 / 数值","直线方向模式保持旧射程弹；固定终点捕获释放点/目标位置，不追踪。射程/时长先耗尽分别 Range/Completed；命中上限优先。弧线/抛物线/Bezier使用时长与逐段扫掠。","Motion","StraightDestination","Plane","Speed","Duration","HitRadius","MaxRange","CurveHeight","Control1Offset","Control2Offset","DirectionAngle","LaunchOffset","DestinationOffset","ForwardLaunchOffset","UseOwnerFacing","CancelOnAbilityEnd");
+                yield return Group("相对贝塞尔","相对二次控制点跟随捕获的起点与终点。随机偏移方向只在实际发射时取一次。","BezierControl","ControlAlong","RelativeControlOffset","CurveSide");
+                yield return Group("命中筛选 / 来源","MaxHits 是本弹体最多命中不同目标的总数；取消清理以生命周期归属为准。","Faction","Tags","LayerMask","MaxHits","OnlyHitPrimaryTarget","ContactMode","ContactStep","ContinueAfterHit");
                 yield return Group("实际回调","使用既有规则动作；可以施效果、生成区域或执行后续编排。","OnHit","OnArrive","OnRange","OnCancelled");
                 yield return Group("可选场景资源","场景 Source 直接绑定实际 Prefab；逻辑 Source 无 Unity 表现依赖。","Prefab");
             }
@@ -72428,7 +72513,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(field=="StraightDestination")return projectile.Motion==Standard.GameplayProjectileMotionKind.Straight;
                 if(field=="DirectionAngle")return projectile.Motion==Standard.GameplayProjectileMotionKind.Straight||projectile.Motion==Standard.GameplayProjectileMotionKind.Arc;
                 if(field=="CurveHeight")return projectile.Motion==Standard.GameplayProjectileMotionKind.Arc||projectile.Motion==Standard.GameplayProjectileMotionKind.Parabolic;
-                if(field=="Control1Offset"||field=="Control2Offset")return projectile.Motion==Standard.GameplayProjectileMotionKind.Bezier;
+                bool bezier = projectile.Motion == Standard.GameplayProjectileMotionKind.Bezier;
+                bool relative = projectile.BezierControl == Standard.GameplayBezierControlMode.RelativeQuadratic;
+                if(field=="BezierControl")return bezier;
+                if(field=="Control1Offset"||field=="Control2Offset")return bezier&&!relative;
+                if(field=="ControlAlong"||field=="RelativeControlOffset"||field=="CurveSide")return bezier&&relative;
+                if(field=="ContactStep")return projectile.ContactMode==Standard.GameplayProjectileContactMode.FixedEndpointNearest;
+                if(field=="MaxHits")return !projectile.ContinueAfterHit;
+                if(field=="UseOwnerFacing")return projectile.Motion==Standard.GameplayProjectileMotionKind.Straight&&
+                    projectile.StraightDestination==Standard.GameplayStraightDestinationMode.Direction;
             }
             if(owner is GameplayAreaDefinitionData area){
                 if(field=="Radius")return area.Shape==GameplayAreaAuthoringShape.Circle||area.Shape==GameplayAreaAuthoringShape.Sector;
@@ -72544,6 +72637,39 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             };
         }
 
+        private static void DrawRelativeCurve(GameplayProjectileDefinitionData curve)
+        {
+            EditorGUILayout.LabelField("轨迹预览 · 终点距离 6", EditorStyles.miniLabel);
+            var rect = GUILayoutUtility.GetRect(100, 90, GUILayout.ExpandWidth(true));
+            if (Event.current.type != EventType.Repaint || !float.IsFinite(curve.ControlAlong)) return;
+            bool xz = curve.Plane == Standard.GameplaySpatialPlane.XZ;
+            var offset = curve.RelativeControlOffset;
+            if (!float.IsFinite(offset.x) || !float.IsFinite(offset.y) || !float.IsFinite(offset.z)) return;
+            var definition = new Standard.GameplayProjectileMotionDefinition(Standard.GameplayProjectileMotionKind.Bezier,
+                bezierControl: Standard.GameplayBezierControlMode.RelativeQuadratic, controlAlong: Mathf.Clamp01(curve.ControlAlong),
+                relativeOffset: new GameplayPoint(offset.x, offset.y, offset.z));
+            float scale = Mathf.Min((rect.width - 20) / (6 + Mathf.Abs(offset.x)), (rect.height - 12) / Mathf.Max(2, Mathf.Abs(xz ? offset.z : offset.y)));
+            Handles.BeginGUI();
+            var previous = Handles.color;
+            for (int sign = -1; sign <= 1; sign += 2)
+            {
+                if (curve.CurveSide == Standard.GameplayCurveSide.Positive && sign < 0 ||
+                    curve.CurveSide == Standard.GameplayCurveSide.Negative && sign > 0) continue;
+                var shot = definition.Create(new Standard.GameplayProjectileLaunch(default, new GameplayPoint(6,0),
+                    new Extensions.GameplayDirection(1,0),curve.Plane,1,1,1,sign));
+                var samples = new Vector3[25];
+                for (int i = 0; i < samples.Length; i++)
+                {
+                    var p = shot.Sample(i / 24f,0,default,null);
+                    samples[i] = new Vector3(rect.center.x + (p.X - 3) * scale, rect.center.y - (xz ? p.Z : p.Y) * scale);
+                }
+                Handles.color = sign > 0 ? new Color(.3f,.83f,.95f) : new Color(.96f,.59f,.27f);
+                Handles.DrawAAPolyLine(2,samples);
+            }
+            Handles.color = previous;
+            Handles.EndGUI();
+        }
+
         internal static IEnumerable<GameplayBusinessInspectorGroup> DescribeSections(object owner)
         {
             var sections = ValueSections.SelectMany(provider => provider.Sections(owner)).ToArray();
@@ -72562,6 +72688,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool showInactive = Open.Contains(inactiveKey);
             RevealPaths.TryGetValue(document.GetInstanceID(), out string reveal);
             DrawChildren(root, value, "", key, true);
+            if (value is GameplayProjectileDefinitionData curve && curve.Motion == Standard.GameplayProjectileMotionKind.Bezier &&
+                curve.BezierControl == Standard.GameplayBezierControlMode.RelativeQuadratic)
+                DrawRelativeCurve(curve);
             if (value is GameplayEffectDefinitionData || value is GameplayProjectileDefinitionData || value is GameplayAreaDefinitionData || value is GameplayHitWindowData)
                 Fold(inactiveKey, "当前策略未启用的配置", "切换策略会保留原参数。可在此清除不再使用的值。", false);
 
@@ -72619,7 +72748,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         else
                         {
                             bool policy = field.Name == "Motion" || field.Name == "StraightDestination" ||
-                                field.Name == "DurationPolicy" || field.Name == "Overflow";
+                                field.Name == "DurationPolicy" || field.Name == "Overflow" || field.Name == "BezierControl" ||
+                                field.Name == "ContactMode" || field.Name == "ContinueAfterHit";
                             if (policy) EditorGUI.BeginChangeCheck();
                             DrawLeaf(property, field.Label, field.Help, field.Kind == InspectorFieldKind.Reference ||
                                 owner is GameplayFormulaFloatValueAuthoring, field.Choices);
@@ -73120,6 +73250,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(type==typeof(GameplayChangeStateActionAuthoring))return "状态与位移/行为状态";
             if(type==typeof(GameplayEndAbilityActionAuthoring))return "控制/结束与取消";
             if(type==typeof(GameplayCooldownActionAuthoring))return "控制/运行时冷却与回充";
+            if(type==typeof(GameplayCaptureWorldPointActionAuthoring))return "数值与上下文/捕获与赋值";
             if(type==typeof(GameplayCaptureValueActionAuthoring)||type==typeof(GameplaySkillSetContextValueActionAuthoring)||type==typeof(GameplayCaptureCombatRollActionAuthoring))return "数值与上下文/捕获与赋值";
             if(type==typeof(GameplaySkillBranchActionAuthoring))return "条件与触发/条件分支";
             if(type==typeof(GameplayApplyToTargetsActionAuthoring)||type==typeof(GameplayGrantTimedShieldActionAuthoring)||type==typeof(GameplayDispelEffectsActionAuthoring))return "效果/护盾与驱散";
@@ -73193,6 +73324,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             string name = type.Name == "GameplaySkillEventTriggerAuthoring" ? "事件触发" :
                 type.Name == "GameplaySkillOwnerEventCountTriggerAuthoring" ? "事件计数触发" :
                 type.Name == "GameplaySkillIntervalTriggerAuthoring" ? "定时触发" :
+                type.Name == "GameplayFacingConditionAuthoring" ? "目标夹角" :
+                type.Name == "GameplayCaptureWorldPointActionAuthoring" ? "捕获世界落点" :
                 type.Name == "GameplaySkillTagConditionAuthoring" ? "标签条件" :
                 type.Name == "GameplaySkillAttributeConditionAuthoring" ? "属性条件" :
                 type.Name == "GameplaySkillSelfTargetAuthoring" ? "自身目标" :
@@ -81481,7 +81614,15 @@ namespace FRFrame.Gameplay.Unity
                 var sequences=actor.Sequences.GetActiveEntriesSnapshot().Select(s=>"Handle="+s.Handle.LocalSequence+" SourceId="+s.Context.EffectiveSourceId+" Elapsed="+s.Elapsed+" Next="+s.NextMarkerIndex+" / Time="+s.NextMarkerTime);
                 var operations=new List<string>();foreach(var operation in spatial)if(ReferenceEquals(operation.Owner,actor)){
                     string line=operation.GetType().Name+" SourceId="+operation.Id+" Root="+operation.Context.OriginSourceId+" Activation="+operation.Context.ActivationSourceId+" Level="+operation.Context.AbilityLevel+" Position=("+operation.Position.X+","+operation.Position.Y+","+operation.Position.Z+")";
-                    if(operation is GameplayProjectile projectile)line+=" Hits="+projectile.HitCount+" Distance="+projectile.DistanceTravelled;
+                    if (operation is GameplayProjectile projectile)
+                    {
+                        line += " Hits="+projectile.HitCount+" Distance="+projectile.DistanceTravelled;
+                        if (projectile.Context.TargetData.HasPoint)
+                        {
+                            var point = projectile.Context.TargetData.Point;
+                            line += " Destination=("+point.X+","+point.Y+","+point.Z+") CurveSign="+projectile.CurveSign;
+                        }
+                    }
                     if(operation is GameplayAreaOperation area)line+=" Inside="+area.InsideCount+" Armed="+area.IsArmed+" Triggers="+area.TriggerCount;
                     if(operation is GameplayHitWindowOperation window)line+=$" Anchor={window.Definition.Anchor.Kind} {window.Geometry?.Shape} Age={window.Age:0.###}/{window.Definition.Duration:0.###} Hits={window.HitCount} Targets={window.DistinctTargets} Samples={window.SampleCount} HitLimitSkips={window.LimitedCandidates}";
                     operations.Add(line);
@@ -82677,6 +82818,7 @@ namespace FRFrame.Gameplay.Unity
         { _world = world ?? throw new ArgumentNullException(nameof(world)); _resolve = resolve ?? (c => c.GetComponentInParent<GameplayUnityActorBinding>()?.Actor); _useColliderGeometry=useColliderGeometry; }
         public GameplayTargetData Query(GameplaySpatialSearchRequest request)
         {
+            if (request.UseActorCenters) return request.Select(_world.Actors);
             if (request.Geometry.Plane != GameplaySpatialPlane.XY) throw new InvalidOperationException("Physics2D backend supports XY queries; select logical/Physics3D for XZ or 3D.");
             if (request.Geometry.Shape == GameplaySearchShape.Single) return request.Select(_world.Actors);
             Physics2D.SyncTransforms();
@@ -82727,6 +82869,7 @@ namespace FRFrame.Gameplay.Unity
         public GameplayTargetData Query(GameplaySpatialSearchRequest request)
         {
             if (request.Geometry.Shape == GameplaySearchShape.Single) return request.Select(_world.Actors);
+            if (request.UseActorCenters) return request.Select(_world.Actors);
             Physics.SyncTransforms();
             var g = request.Geometry; var candidates = new List<IGameplaySpatialActor>();
             foreach (var collider in Physics.OverlapSphere(new Vector3(g.Origin.X, g.Origin.Y, g.Origin.Z), g.BoundsRadius,
@@ -83058,7 +83201,9 @@ namespace FRFrame.Gameplay
             foreach (var condition in step.Conditions)
                 if (entry.Cancelled || !GameplaySkillActionRunner.Evaluate(condition, entry.Context, triggerEvent, entry.Host)) return;
             if (entry.Cancelled) return;
-            GameplayTargetData target = step.Target.Resolve(entry.Host, triggerEvent);
+            GameplayTargetData target = step.Target is IGameplaySkillContextTarget contextual
+                ? contextual.ResolveContext(entry.Context, entry.Host, triggerEvent)
+                : step.Target.Resolve(entry.Host, triggerEvent);
             if (target == null || entry.Cancelled) return;
             var context = entry.Context.WithTarget(target);
             GameplaySkillActionRunner.Execute(step.Actions, context, triggerEvent, entry.Host, () => !entry.Cancelled);
@@ -83782,6 +83927,11 @@ namespace FRFrame.Gameplay
     public interface IGameplaySkillContextCondition
     {
         bool EvaluateContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent);
+    }
+    /// <summary>Opt-in target resolution for retaining a context captured before a delayed marker.</summary>
+    public interface IGameplaySkillContextTarget
+    {
+        GameplayTargetData ResolveContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent);
     }
     /// <summary>Successful execution must supply a context; rejection stops the chain without rollback.</summary>
     public readonly struct GameplaySkillActionExecution
@@ -84729,7 +84879,14 @@ namespace FRFrame.Gameplay.Standard
         public GameplayAreaDefinition Definition {get;}
         public GameplaySpawnAreaAction(GameplayAreaDefinition definition)=>Definition=definition??throw new ArgumentNullException(nameof(definition));
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
-        {if(!(host is GameplayStandardActor actor)||!GameplayStandardActivation.TryFindGrant(actor,context,out _))return GameplaySkillActionResult.Rejected;return actor.World.SpawnArea(actor,context,Definition)!=null?GameplaySkillActionResult.Succeeded:GameplaySkillActionResult.Rejected;}
+        {
+            if (!(host is GameplayStandardActor actor) || !actor.World.TryResolveAreaOrigin(actor, context, triggerEvent.Context,
+                    !Definition.CancelOnAbilityEnd, out var spawnContext, out var grant))
+                return GameplaySkillActionResult.Rejected;
+            var operation = new GameplayAreaOperation(actor, spawnContext, grant, Definition);
+            return actor.World.RegisterSpatial(operation, grant) != null
+                ? GameplaySkillActionResult.Succeeded : GameplaySkillActionResult.Rejected;
+        }
     }
 }
 </file>
@@ -85546,6 +85703,7 @@ namespace FRFrame.Gameplay.Standard
             if(_duration>0)step=Math.Min(step,Request.Speed*Math.Max(0,_duration-_age));
             _age+=delta;
             // MoveTargets is continuous travel. Hosts use TeleportTo for discrete placement.
+            if (step > 0) Owner.World.MarkMovementWrite(Target.Id);
             Target.Position=GameplaySpatialMath.Offset(Target.Position,Direction,step);Target.Facing=Direction;
             Position=Target.Position;Travelled+=step;Notify();
             if(!IsDisposed&&(Travelled>=_distance||Request.Mode==GameplayDisplacementMode.PullToSource&&GameplaySpatialMath.Distance(Target.Position,Owner.Position)<=_minimumSeparation||_duration>0&&_age>=_duration))Finish(GameplaySpatialEndReason.Arrived);
@@ -85560,6 +85718,16 @@ namespace FRFrame.Gameplay.Standard
     public sealed partial class GameplayStandardWorld
     {
         private readonly Dictionary<GameplaySourceId,GameplayMovementOperation> _movements=new Dictionary<GameplaySourceId,GameplayMovementOperation>();
+        private readonly HashSet<GameplaySourceId> _movementWrites = new HashSet<GameplaySourceId>();
+
+        /// <summary>True while Standard displacement owns the actor, including the step that wrote its final pose.</summary>
+        public bool ControlsMovement(GameplaySourceId target) => _movements.ContainsKey(target) || _movementWrites.Contains(target);
+
+        internal void MarkMovementWrite(GameplaySourceId target)
+        {
+            if (_advancing) _movementWrites.Add(target);
+        }
+
         internal void DetachMovement(GameplayMovementOperation operation)
         {if(_movements.TryGetValue(operation.Target.Id,out var current)&&ReferenceEquals(current,operation))_movements.Remove(operation.Target.Id);}
         public GameplayMovementOperation StartMovement(GameplayStandardActor owner,GameplayDisplacementRequest request,int priority=10,
@@ -85646,6 +85814,9 @@ namespace FRFrame.Gameplay.Standard
     public enum GameplayProjectileMotionKind { Straight, Homing, Arc, Parabolic, Bezier }
     /// <summary>Direction preserves legacy range shots; CapturedDestination stops at the launch point/target snapshot.</summary>
     public enum GameplayStraightDestinationMode { Direction, CapturedDestination }
+    public enum GameplayBezierControlMode { FixedOffsets, RelativeQuadratic }
+    public enum GameplayCurveSide { Positive, Negative, RandomAtLaunch }
+    public enum GameplayProjectileContactMode { Swept, FixedEndpointNearest }
     /// <summary>Immutable launch inputs. Duration/Speed/Height are captured at spawn; a homing
     /// target's actual current position is supplied at sampling time, not copied into a shared asset.</summary>
     public readonly struct GameplayProjectileLaunch
@@ -85657,8 +85828,9 @@ namespace FRFrame.Gameplay.Standard
         public float Speed {get;}
         public float Duration {get;}
         public float Height {get;}
-        public GameplayProjectileLaunch(GameplayPoint origin,GameplayPoint destination,GameplayDirection direction,GameplaySpatialPlane plane,float speed,float duration,float height)
-        {Origin=origin;Destination=destination;Direction=direction;Plane=plane;Speed=speed;Duration=duration;Height=height;}
+        public float CurveSign {get;}
+        public GameplayProjectileLaunch(GameplayPoint origin,GameplayPoint destination,GameplayDirection direction,GameplaySpatialPlane plane,float speed,float duration,float height,float curveSign=1)
+        {Origin=origin;Destination=destination;Direction=direction;Plane=plane;Speed=speed;Duration=duration;Height=height;CurveSign=curveSign;}
     }
     /// <summary>Per-projectile motion instance. A custom strategy receives the world's existing delta
     /// and absolute local age; it must not create a timer, move a Unity object or invoke another world step.</summary>
@@ -85672,16 +85844,47 @@ namespace FRFrame.Gameplay.Standard
         public GameplayPoint Control1Offset {get;}
         public GameplayPoint Control2Offset {get;}
         public GameplayStraightDestinationMode StraightDestination {get;}
+        public GameplayBezierControlMode BezierControl {get;}
+        public GameplayCurveSide CurveSide {get;}
+        public float ControlAlong {get;}
+        public GameplayPoint RelativeOffset {get;}
         public GameplayProjectileMotionDefinition(GameplayProjectileMotionKind kind,GameplayPoint control1Offset=default,GameplayPoint control2Offset=default,
-            GameplayStraightDestinationMode straightDestination=GameplayStraightDestinationMode.Direction)
-        {if(!Enum.IsDefined(typeof(GameplayProjectileMotionKind),kind)||!Enum.IsDefined(typeof(GameplayStraightDestinationMode),straightDestination))throw new ArgumentOutOfRangeException(nameof(kind));Kind=kind;Control1Offset=control1Offset;Control2Offset=control2Offset;StraightDestination=straightDestination;}
+            GameplayStraightDestinationMode straightDestination=GameplayStraightDestinationMode.Direction,
+            GameplayBezierControlMode bezierControl=GameplayBezierControlMode.FixedOffsets,float controlAlong=.5f,
+            GameplayPoint relativeOffset=default,GameplayCurveSide curveSide=GameplayCurveSide.Positive)
+        {if(!Enum.IsDefined(typeof(GameplayProjectileMotionKind),kind)||!Enum.IsDefined(typeof(GameplayStraightDestinationMode),straightDestination))throw new ArgumentOutOfRangeException(nameof(kind));Kind=kind;Control1Offset=control1Offset;Control2Offset=control2Offset;StraightDestination=straightDestination;
+            if (!(controlAlong >= 0 && controlAlong <= 1)) throw new ArgumentOutOfRangeException(nameof(controlAlong));
+            BezierControl=bezierControl; ControlAlong=controlAlong; RelativeOffset=relativeOffset; CurveSide=curveSide;
+        }
         public IGameplayProjectileMotion Create(GameplayProjectileLaunch launch)=>new Motion(this,launch);
         private sealed class Motion:IGameplayProjectileMotion
         {
             private readonly GameplayProjectileMotionDefinition _definition;
             private readonly GameplayProjectileLaunch _launch;
             public bool Arrived {get;private set;}
-            internal Motion(GameplayProjectileMotionDefinition definition,GameplayProjectileLaunch launch){_definition=definition;_launch=launch;}
+            private readonly GameplayPoint _control1, _control2;
+            internal Motion(GameplayProjectileMotionDefinition definition,GameplayProjectileLaunch launch)
+            {
+                _definition=definition; _launch=launch;
+                if (definition.Kind != GameplayProjectileMotionKind.Bezier) return;
+                var a = launch.Origin;
+                var d = launch.Destination;
+                if (definition.BezierControl == GameplayBezierControlMode.RelativeQuadratic)
+                {
+                    var q = GameplaySpatialMath.Lerp(a, d, definition.ControlAlong);
+                    var offset = definition.RelativeOffset;
+                    q = new GameplayPoint(q.X + offset.X * launch.CurveSign, q.Y + offset.Y * launch.CurveSign, q.Z + offset.Z * launch.CurveSign);
+                    _control1 = GameplaySpatialMath.Lerp(a, q, 2f / 3);
+                    _control2 = GameplaySpatialMath.Lerp(d, q, 2f / 3);
+                }
+                else
+                {
+                    var b = definition.Control1Offset;
+                    var c = definition.Control2Offset;
+                    _control1 = new GameplayPoint(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
+                    _control2 = new GameplayPoint(d.X + c.X, d.Y + c.Y, d.Z + c.Z);
+                }
+            }
             public GameplayPoint Sample(double age,float delta,GameplayPoint current,GameplayPoint? liveTarget)
             {
                 if(_definition.Kind==GameplayProjectileMotionKind.Straight)
@@ -85702,8 +85905,8 @@ namespace FRFrame.Gameplay.Standard
                 if(_definition.Kind==GameplayProjectileMotionKind.Bezier)
                 {
                     var a=_launch.Origin;var d=_launch.Destination;
-                    var b=new GameplayPoint(a.X+_definition.Control1Offset.X,a.Y+_definition.Control1Offset.Y,a.Z+_definition.Control1Offset.Z);
-                    var c=new GameplayPoint(d.X+_definition.Control2Offset.X,d.Y+_definition.Control2Offset.Y,d.Z+_definition.Control2Offset.Z);
+                    var b=_control1;
+                    var c=_control2;
                     return GameplaySpatialMath.Lerp(GameplaySpatialMath.Lerp(GameplaySpatialMath.Lerp(a,b,t),GameplaySpatialMath.Lerp(b,c,t),t),
                         GameplaySpatialMath.Lerp(GameplaySpatialMath.Lerp(b,c,t),GameplaySpatialMath.Lerp(c,d,t),t),t);
                 }
@@ -85741,12 +85944,19 @@ namespace FRFrame.Gameplay.Standard
         public GameplayPoint LaunchOffset {get;}
         public GameplayPoint DestinationOffset {get;}
         public float DirectionAngle {get;}
+        public float ForwardLaunchOffset {get;}
+        public bool UseOwnerFacing {get;}
+        public GameplayProjectileContactMode ContactMode {get;}
+        public float ContactStep {get;}
+        public bool ContinueAfterHit {get;}
         public GameplayProjectileDefinition(IGameplayProjectileMotionDefinition motion,IGameplayFloatValue speed,IGameplayFloatValue duration,
             IGameplayFloatValue hitRadius,IGameplayFloatValue maxRange,IGameplayFloatValue height,GameplaySpatialPlane plane=GameplaySpatialPlane.XY,
             GameplayFactionFilter faction=GameplayFactionFilter.Enemies,GameplayTagQuery tags=null,int layerMask=-1,int maxHits=1,bool requiresLiveTarget=false,
             IEnumerable<IGameplaySkillAction> onHit=null,IEnumerable<IGameplaySkillAction> onArrive=null,IEnumerable<IGameplaySkillAction> onRange=null,IEnumerable<IGameplaySkillAction> onCancelled=null,IGameplaySpatialViewFactory view=null,
             bool cancelOnAbilityEnd=true,GameplayPoint launchOffset=default,GameplayPoint destinationOffset=default,float directionAngle=0,
-            bool onlyHitPrimaryTarget=false)
+            bool onlyHitPrimaryTarget=false, float forwardLaunchOffset=0, bool useOwnerFacing=false,
+            GameplayProjectileContactMode contactMode=GameplayProjectileContactMode.Swept, float contactStep=.02f,
+            bool continueAfterHit=false)
         {
             Motion=motion??throw new ArgumentNullException(nameof(motion));Speed=speed??throw new ArgumentNullException(nameof(speed));Duration=duration??throw new ArgumentNullException(nameof(duration));
             HitRadius=hitRadius??throw new ArgumentNullException(nameof(hitRadius));MaxRange=maxRange??throw new ArgumentNullException(nameof(maxRange));Height=height??throw new ArgumentNullException(nameof(height));
@@ -85756,6 +85966,10 @@ namespace FRFrame.Gameplay.Standard
             OnHit=GameplaySpatialMath.Actions(onHit);OnArrive=GameplaySpatialMath.Actions(onArrive);OnRange=GameplaySpatialMath.Actions(onRange);OnCancelled=GameplaySpatialMath.Actions(onCancelled);View=view;
             CancelOnAbilityEnd=cancelOnAbilityEnd;LaunchOffset=launchOffset;DestinationOffset=destinationOffset;
             if(!float.IsFinite(directionAngle))throw new ArgumentOutOfRangeException(nameof(directionAngle));DirectionAngle=directionAngle;
+            if (contactMode == GameplayProjectileContactMode.FixedEndpointNearest && (!float.IsFinite(contactStep) || contactStep <= 0))
+                throw new ArgumentOutOfRangeException(nameof(contactStep));
+            ForwardLaunchOffset=forwardLaunchOffset; UseOwnerFacing=useOwnerFacing;
+            ContactMode=contactMode; ContactStep=contactStep; ContinueAfterHit=continueAfterHit;
         }
     }
     /// <summary>World-owned projectile; swept centre geometry prevents tunnelling for each sampled
@@ -85767,7 +85981,9 @@ namespace FRFrame.Gameplay.Standard
         private readonly float _duration,_radius,_range;
         private readonly GameplaySourceId _target;
         private readonly HashSet<GameplaySourceId> _hits=new HashSet<GameplaySourceId>();
-        private double _age;
+        private double _age, _pending;
+        /// <summary>Curve side resolved once at real launch.</summary>
+        public float CurveSign { get; } = 1;
         public float DistanceTravelled {get;private set;}
         public int HitCount=>_hits.Count;
         internal GameplayProjectile(GameplayStandardActor owner,GameplayContext context,GameplayAbilityHandle grant,GameplayProjectileDefinition definition,
@@ -85775,7 +85991,7 @@ namespace FRFrame.Gameplay.Standard
             :base(owner,context,grant,definition.View,definition.CancelOnAbilityEnd)
         {
             _definition=definition;_duration=GameplaySpatialMath.Positive(definition.Duration,owner,context,"Projectile duration");
-            var launch = launchPoint ?? Position;
+            var launch = GameplaySpatialMath.Offset(launchPoint ?? Position, owner.Facing, definition.ForwardLaunchOffset);
             Position=new GameplayPoint(launch.X+definition.LaunchOffset.X,launch.Y+definition.LaunchOffset.Y,launch.Z+definition.LaunchOffset.Z);
             _radius=GameplaySpatialMath.Positive(definition.HitRadius,owner,context,"Hit radius");_range=GameplaySpatialMath.Positive(definition.MaxRange,owner,context,"Max range");
             float speed=GameplaySpatialMath.Positive(definition.Speed,owner,context,"Speed");
@@ -85790,7 +86006,7 @@ namespace FRFrame.Gameplay.Standard
                 !context.TargetData.HasPoint && !owner.World.TryGetActor(_target,out _))
                 throw new InvalidOperationException("Straight captured destination requires an explicit point or target.");
             if(definition.RequiresLiveTarget&&(_target==owner.Id||!owner.World.TryGetActor(_target,out var live)||!live.IsTargetable))throw new InvalidOperationException("Homing projectile requires a live explicit target.");
-            Direction=GameplaySpatialMath.Direction(Position,destination,Direction);
+            Direction=definition.UseOwnerFacing ? owner.Facing : GameplaySpatialMath.Direction(Position,destination,Direction);
             if(definition.DirectionAngle!=0){
                 double radians=definition.DirectionAngle*Math.PI/180,c=Math.Cos(radians),s=Math.Sin(radians);
                 float x=Direction.X,y=Direction.Y,z=Direction.Z;
@@ -85798,42 +86014,85 @@ namespace FRFrame.Gameplay.Standard
                     definition.Plane==GameplaySpatialPlane.XZ?new GameplayDirection((float)(x*c-z*s),y,(float)(x*s+z*c)):
                     new GameplayDirection(x,(float)(y*c-z*s),(float)(y*s+z*c));
             }
-            _motion=definition.Motion.Create(new GameplayProjectileLaunch(Position,destination,Direction,definition.Plane,speed,_duration,height))??throw new InvalidOperationException("Motion definition returned no actual sampler.");
+            if (definition.Motion is GameplayProjectileMotionDefinition curve && curve.Kind == GameplayProjectileMotionKind.Bezier &&
+                curve.BezierControl == GameplayBezierControlMode.RelativeQuadratic)
+                CurveSign = curve.CurveSide switch
+                {
+                    GameplayCurveSide.Negative => -1,
+                    GameplayCurveSide.RandomAtLaunch => owner.World.Random.NextUnitInterval() < .5 ? -1 : 1,
+                    _ => 1
+                };
+            _motion=definition.Motion.Create(new GameplayProjectileLaunch(Position,destination,Direction,definition.Plane,speed,_duration,height,CurveSign))??throw new InvalidOperationException("Motion definition returned no actual sampler.");
         }
         internal override void Advance(float delta)
         {
-            if(Owner.IsDisposed){Finish(GameplaySpatialEndReason.Cancelled);return;}
-            double endpoint=Math.Min(_duration,_age+(double)delta);
-            while(_age<endpoint&&!IsDisposed)
+            if (Owner.IsDisposed) { Finish(GameplaySpatialEndReason.Cancelled); return; }
+            if (_definition.ContactMode == GameplayProjectileContactMode.FixedEndpointNearest)
             {
-                bool linear=_definition.Motion is GameplayProjectileMotionDefinition standard&&(standard.Kind==GameplayProjectileMotionKind.Straight||standard.Kind==GameplayProjectileMotionKind.Homing);
-                double nextAge=linear||endpoint-_age<=1d/60?endpoint:_age+1d/60;
-                float step=(float)(nextAge-_age);
-                GameplayPoint? liveTarget=null;
-                if(_definition.RequiresLiveTarget)
-                {if(!Owner.World.TryGetActor(_target,out var target)||!target.IsTargetable){Finish(GameplaySpatialEndReason.TargetLost);return;}liveTarget=target.Position;}
-                var previous=Position;_age=nextAge;var next=_motion.Sample(_age,step,Position,liveTarget);
-                float distance=GameplaySpatialMath.Distance(previous,next),rangeLeft=_range-DistanceTravelled;
-                bool reachedRange=distance>=rangeLeft;
-                bool rangeClipped=distance>rangeLeft;
-                if(rangeClipped&&distance>0){next=GameplaySpatialMath.Lerp(previous,next,rangeLeft/distance);distance=rangeLeft;}
-                Direction=GameplaySpatialMath.Direction(previous,next,Direction);Position=next;DistanceTravelled+=distance;Notify();
-                var geometry=distance>0?new GameplaySearchGeometry(GameplaySearchShape.Capsule,_definition.Plane,previous,Direction,_radius,length:distance,height:_radius*2):
-                    new GameplaySearchGeometry(GameplaySearchShape.Circle,_definition.Plane,previous,Direction,_radius,height:_radius*2);
-                var selected=Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context,geometry,Owner.Faction,_definition.Faction,_definition.Tags,_definition.LayerMask));
-                foreach(var id in selected.Targets)
+                _pending += delta;
+                while (!IsDisposed && _age < _duration)
                 {
-                    if(IsDisposed)break;
-                    if ((_definition.OnlyHitPrimaryTarget && id != _target) ||
-                        !Owner.World.TryGetActor(id,out var target)||!target.IsTargetable||!_hits.Add(id))continue;
-                    var hit=At(id,target.Position);Run(_definition.OnHit,hit,"Event.Standard.Projectile.Hit",DistanceTravelled);
-                    if(!IsDisposed&&_hits.Count>=_definition.MaxHits)Finish(GameplaySpatialEndReason.HitLimit);
+                    double step = Math.Min(_definition.ContactStep, _duration - _age);
+                    if (_pending + 1e-8 < step) break;
+                    _pending -= step;
+                    AdvanceContact(_age + step, true);
                 }
-                if(IsDisposed)return;
-                if(_motion.Arrived&&!rangeClipped){Finish(GameplaySpatialEndReason.Arrived);return;}
-                if(reachedRange){Finish(GameplaySpatialEndReason.Range);return;}
             }
-            if(!IsDisposed&&_age>=_duration)Finish(GameplaySpatialEndReason.Completed);
+            else
+            {
+                double endpoint = Math.Min(_duration, _age + delta);
+                bool linear = _definition.Motion is GameplayProjectileMotionDefinition standard &&
+                    (standard.Kind == GameplayProjectileMotionKind.Straight || standard.Kind == GameplayProjectileMotionKind.Homing);
+                while (_age < endpoint && !IsDisposed)
+                    AdvanceContact(linear || endpoint - _age <= 1d / 60 ? endpoint : _age + 1d / 60, false);
+            }
+            if (!IsDisposed && _age >= _duration) Finish(GameplaySpatialEndReason.Completed);
+        }
+
+        private void AdvanceContact(double nextAge, bool fixedContacts)
+        {
+            GameplayPoint? liveTarget = null;
+            if (_definition.RequiresLiveTarget)
+            {
+                if (!Owner.World.TryGetActor(_target, out var live) || !live.IsTargetable)
+                { Finish(GameplaySpatialEndReason.TargetLost); return; }
+                liveTarget = live.Position;
+            }
+
+            var previous = Position;
+            float step = (float)(nextAge - _age);
+            _age = nextAge;
+            var next = _motion.Sample(_age, step, Position, liveTarget);
+            float distance = GameplaySpatialMath.Distance(previous, next);
+            float rangeLeft = _range - DistanceTravelled;
+            bool reachedRange = distance >= rangeLeft;
+            bool rangeClipped = !fixedContacts && distance > rangeLeft;
+            if (rangeClipped && distance > 0)
+            { next = GameplaySpatialMath.Lerp(previous, next, rangeLeft / distance); distance = rangeLeft; }
+            Direction = GameplaySpatialMath.Direction(previous, next, Direction);
+            Position = next;
+            DistanceTravelled += distance;
+            Notify();
+
+            var geometry = !fixedContacts && distance > 0
+                ? new GameplaySearchGeometry(GameplaySearchShape.Capsule, _definition.Plane, previous, Direction, _radius, length: distance, height: _radius * 2)
+                : new GameplaySearchGeometry(GameplaySearchShape.Circle, _definition.Plane, Position, Direction, _radius, height: _radius * 2);
+            var selected = Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context, geometry, Owner.Faction, _definition.Faction,
+                _definition.Tags, _definition.LayerMask, maxTargets: fixedContacts ? 1 : int.MaxValue,
+                excluded: fixedContacts ? id => _hits.Contains(id) || _definition.OnlyHitPrimaryTarget && id != _target : null,
+                useActorCenters: fixedContacts));
+            foreach (var id in selected.Targets)
+            {
+                if (IsDisposed) break;
+                if (_definition.OnlyHitPrimaryTarget && id != _target ||
+                    !Owner.World.TryGetActor(id, out var target) || !target.IsTargetable || !_hits.Add(id)) continue;
+                Run(_definition.OnHit, At(id, target.Position), "Event.Standard.Projectile.Hit", DistanceTravelled);
+                if (!IsDisposed && !_definition.ContinueAfterHit && _hits.Count >= _definition.MaxHits)
+                    Finish(GameplaySpatialEndReason.HitLimit);
+            }
+            if (IsDisposed) return;
+            if (_motion.Arrived && !rangeClipped) Finish(GameplaySpatialEndReason.Arrived);
+            else if (reachedRange) Finish(GameplaySpatialEndReason.Range);
         }
         protected override void OnFinished(GameplaySpatialEndReason reason)
         {
@@ -86045,7 +86304,7 @@ namespace FRFrame.Gameplay.Standard
         private readonly GameplayTagQuery _tags;
         private readonly int _layerMask, _maxTargets;
         private readonly GameplayTargetOrder _order;
-        private readonly bool _includeSelf;
+        private readonly bool _includeSelf, _useActorCenters;
         private readonly bool _excludePrimaryTarget, _repeatFromResult;
         private readonly float _repeatMultiplier;
         private readonly float _hopIntervalSeconds;
@@ -86062,7 +86321,7 @@ namespace FRFrame.Gameplay.Standard
             GameplaySearchDirection direction = GameplaySearchDirection.OwnerFacing,
             IGameplayFloatValue directionAngle = null, bool lengthFromTarget = false,GameplayPoint originOffset=default,
             bool excludePrimaryTarget = false, bool repeatFromResult = false, float repeatMultiplier = 1,
-            IEnumerable<IGameplaySkillAction> onBegin = null, float hopIntervalSeconds = 0)
+            IEnumerable<IGameplaySkillAction> onBegin = null, float hopIntervalSeconds = 0, bool useActorCenters = false)
         {
             if (!Enum.IsDefined(typeof(GameplaySearchShape), shape) || !Enum.IsDefined(typeof(GameplaySpatialPlane), plane) ||
                 !Enum.IsDefined(typeof(GameplaySearchOrigin), origin)) throw new ArgumentOutOfRangeException(nameof(shape));
@@ -86084,6 +86343,7 @@ namespace FRFrame.Gameplay.Standard
                 (hopIntervalSeconds > 0 && (!repeatFromResult || shape != GameplaySearchShape.Circle)))
                 throw new ArgumentOutOfRangeException(nameof(hopIntervalSeconds), "A positive hop interval requires repeated circle search.");
             _hopIntervalSeconds = hopIntervalSeconds;
+            _useActorCenters = useActorCenters;
             _each = Copy(each); _completed = Copy(completed); _empty = Copy(empty);
             _onBegin = Copy(onBegin);
             _cells = new List<GameplayPoint>(cells ?? Array.Empty<GameplayPoint>()).AsReadOnly(); _cellSize = cellSize;
@@ -86333,7 +86593,7 @@ namespace FRFrame.Gameplay.Standard
                 _repeatFromResult ? GameplayTargetOrder.Nearest : _order, _includeSelf,
                 _excludePrimaryTarget || visited != null
                     ? id => (_excludePrimaryTarget && id == context.TargetData.PrimaryTargetId) || (visited != null && visited.Contains(id))
-                    : null);
+                    : null, _useActorCenters);
             return true;
         }
     }
@@ -86371,12 +86631,14 @@ namespace FRFrame.Gameplay.Standard
         public int MaxTargets { get; }
         public GameplayTargetOrder Order { get; }
         public bool IncludeSelf { get; }
+        /// <summary>Use registered actor positions independently of the collider backend.</summary>
+        public bool UseActorCenters { get; }
         private readonly Predicate<GameplaySourceId> _excluded;
         public GameplaySpatialSearchRequest(GameplayContext context, GameplaySearchGeometry geometry,
             int sourceFaction, GameplayFactionFilter faction = GameplayFactionFilter.Enemies,
             GameplayTagQuery tags = null, int layerMask = -1, int maxTargets = int.MaxValue,
             GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false,
-            Predicate<GameplaySourceId> excluded = null)
+            Predicate<GameplaySourceId> excluded = null, bool useActorCenters = false)
         {
             Context = context ?? throw new ArgumentNullException(nameof(context));
             Geometry = geometry ?? throw new ArgumentNullException(nameof(geometry));
@@ -86385,7 +86647,7 @@ namespace FRFrame.Gameplay.Standard
                 throw new ArgumentOutOfRangeException(nameof(faction));
             SourceFaction = sourceFaction; Faction = faction; Tags = tags ?? GameplayTagQuery.Empty;
             LayerMask = layerMask; MaxTargets = maxTargets; Order = order; IncludeSelf = includeSelf;
-            _excluded = excluded;
+            _excluded = excluded; UseActorCenters = useActorCenters;
         }
         public GameplayTargetData Select(IEnumerable<IGameplaySpatialActor> candidates)
         {
@@ -86431,6 +86693,100 @@ namespace FRFrame.Gameplay.Standard
 }
 </file>
 
+<file path="Gameplay/Standard/Runtime/Spatial/GameplaySpatialContextRules.cs">
+using System;
+
+namespace FRFrame.Gameplay.Standard
+{
+    /// <summary>Tests one selected point against the actor's facing without selecting another target.</summary>
+    public sealed class GameplayFacingCondition : IGameplaySkillCondition, IGameplaySkillContextCondition
+    {
+        private readonly GameplaySpatialPlane _plane;
+        private readonly float _angle;
+        private readonly double _cosine;
+        private readonly bool _useLiveTarget;
+
+        public GameplayFacingCondition(GameplaySpatialPlane plane, float angle, bool useLiveTarget = false)
+        {
+            if (!Enum.IsDefined(typeof(GameplaySpatialPlane), plane)) throw new ArgumentOutOfRangeException(nameof(plane));
+            if (!(angle > 0 && angle <= 360)) throw new ArgumentOutOfRangeException(nameof(angle));
+            _plane = plane;
+            _angle = angle;
+            _cosine = Math.Cos(angle * Math.PI / 360);
+            _useLiveTarget = useLiveTarget;
+        }
+
+        public bool Evaluate(IGameplaySkillHost host, GameplayEventData triggerEvent) =>
+            EvaluateContext(triggerEvent.Context, host, triggerEvent);
+
+        public bool EvaluateContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent)
+        {
+            if (!(host is GameplayStandardActor actor) || context == null) return false;
+            var data = context.TargetData;
+            GameplayPoint point;
+            if (_useLiveTarget)
+            {
+                if (!actor.World.TryGetActor(data.PrimaryTargetId, out var target) || !target.IsTargetable) return false;
+                point = target.Position;
+            }
+            else
+            {
+                if (!data.HasPoint) return false;
+                point = data.Point;
+            }
+
+            if (_angle == 360) return true;
+            var origin = actor.Position;
+            var facing = actor.Facing;
+            double x = point.X - origin.X, y = _plane == GameplaySpatialPlane.XZ ? 0 : point.Y - origin.Y, z = _plane == GameplaySpatialPlane.XY ? 0 : point.Z - origin.Z;
+            double fx = facing.X, fy = _plane == GameplaySpatialPlane.XZ ? 0 : facing.Y, fz = _plane == GameplaySpatialPlane.XY ? 0 : facing.Z;
+            double length = x * x + y * y + z * z;
+            double facingLength = fx * fx + fy * fy + fz * fz;
+            return length < 1e-6 || facingLength > 0 &&
+                (x * fx + y * fy + z * fz) / Math.Sqrt(length * facingLength) >= _cosine - 1e-7;
+        }
+    }
+
+    /// <summary>Resolves a pure world point once. An explicit point wins over a nearest-actor
+    /// query, which falls back to the caster's current position and facing.</summary>
+    public sealed class GameplayCaptureWorldPointAction : IGameplaySkillAction, IGameplaySkillContextAction
+    {
+        private readonly GameplaySpatialPlane _plane;
+        private readonly IGameplayFloatValue _range;
+        private readonly GameplayFactionFilter _faction;
+
+        public GameplayCaptureWorldPointAction(GameplaySpatialPlane plane, IGameplayFloatValue range, GameplayFactionFilter faction)
+        {
+            _plane = plane;
+            _range = range ?? throw new ArgumentNullException(nameof(range));
+            _faction = faction;
+        }
+
+        public GameplaySkillActionResult Execute(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host) =>
+            ExecuteWithContext(context, triggerEvent, host).Result;
+
+        public GameplaySkillActionExecution ExecuteWithContext(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host)
+        {
+            if (!(host is GameplayStandardActor actor))
+                return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+            var data = context.TargetData;
+            if (data.HasPoint && !data.HasPrimaryTarget)
+                return new GameplaySkillActionExecution(GameplaySkillActionResult.Succeeded, context);
+
+            float range = GameplaySpatialMath.Positive(_range, actor, context, "Point capture range");
+            var geometry = new GameplaySearchGeometry(GameplaySearchShape.Circle, _plane, actor.Position, actor.Facing, range, height: range * 2);
+            var hit = actor.World.Spatial.Query(new GameplaySpatialSearchRequest(context, geometry, actor.Faction, _faction,
+                maxTargets: 1, useActorCenters: true));
+            var point = actor.World.TryGetActor(hit.PrimaryTargetId, out var target)
+                ? target.Position
+                : GameplaySpatialMath.Offset(actor.Position, actor.Facing, range);
+            return new GameplaySkillActionExecution(GameplaySkillActionResult.Succeeded,
+                context.WithTarget(new GameplayTargetData(default, point)));
+        }
+    }
+}
+</file>
+
 <file path="Gameplay/Standard/Runtime/Spatial/GameplaySpatialOperation.cs">
 using System;
 using System.Collections.Generic;
@@ -86439,8 +86795,14 @@ using FRFrame.Gameplay.Extensions;
 namespace FRFrame.Gameplay.Standard
 {
     /// <summary>Preserves the actual event's target snapshot, including captured point and multi-target list.</summary>
-    public sealed class GameplaySkillContextTarget:IGameplaySkillTarget
-    { public GameplayTargetData Resolve(IGameplaySkillHost host,GameplayEventData triggerEvent)=>triggerEvent.Context?.TargetData; }
+    public sealed class GameplaySkillContextTarget : IGameplaySkillTarget, IGameplaySkillContextTarget
+    {
+        private readonly bool _useActionContext;
+        public GameplaySkillContextTarget(bool useActionContext = false) => _useActionContext = useActionContext;
+        public GameplayTargetData Resolve(IGameplaySkillHost host, GameplayEventData triggerEvent) => triggerEvent.Context?.TargetData;
+        public GameplayTargetData ResolveContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent) =>
+            _useActionContext ? context.TargetData : Resolve(host, triggerEvent);
+    }
     /// <summary>Explicit captured world point; absence of an actor target is meaningful.</summary>
     public sealed class GameplaySkillPointTarget:IGameplaySkillTarget
     {private readonly GameplayPoint _point;public GameplaySkillPointTarget(GameplayPoint point)=>_point=point;public GameplayTargetData Resolve(IGameplaySkillHost host,GameplayEventData data)=>new GameplayTargetData(default,_point);}
@@ -86496,7 +86858,11 @@ namespace FRFrame.Gameplay.Standard
         {
             if(Owner.IsDisposed||Owner.World.IsDisposed||(!ending&&IsDisposed))return;
             var data=new GameplayEventData(new GameplayTag(signal),context,magnitude);
-            Owner.RunPresentationCallback(actions,context,data,()=>!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed));
+            var world = Owner.World;
+            if (ending && EndReason == GameplaySpatialEndReason.Arrived && !OwnedByAbility && this is GameplayProjectile projectile)
+                world.RunProjectileArrival(projectile, actions, context, data);
+            else
+                Owner.RunPresentationCallback(actions,context,data,()=>!Owner.IsDisposed&&!world.IsDisposed&&(ending||!IsDisposed));
             if(!Owner.IsDisposed&&!Owner.World.IsDisposed&&(ending||!IsDisposed))Owner.Events.Publish(data);
         }
         public void Finish(GameplaySpatialEndReason reason)
@@ -86517,6 +86883,46 @@ namespace FRFrame.Gameplay.Standard
     public sealed partial class GameplayStandardWorld
     {
         private readonly List<GameplaySpatialOperation> _spatial=new List<GameplaySpatialOperation>();
+        private GameplayProjectile _arrivingProjectile;
+        private GameplayContext _arrivalContext;
+
+        // A detached, genuinely arriving operation can authorize its synchronous authored children.
+        // Publishing the observation is deliberately outside this scope.
+        internal void RunProjectileArrival(GameplayProjectile projectile, IReadOnlyList<IGameplaySkillAction> actions,
+            GameplayContext context, GameplayEventData trigger)
+        {
+            var previousProjectile = _arrivingProjectile;
+            var previousContext = _arrivalContext;
+            _arrivingProjectile = projectile;
+            _arrivalContext = context;
+            try
+            {
+                projectile.Owner.RunPresentationCallback(actions, context, trigger, () => !IsDisposed && !projectile.Owner.IsDisposed);
+            }
+            finally
+            {
+                _arrivingProjectile = previousProjectile;
+                _arrivalContext = previousContext;
+            }
+        }
+
+        internal bool TryResolveAreaOrigin(GameplayStandardActor owner, GameplayContext context, GameplayContext trigger,
+            bool worldOwned, out GameplayContext spawnContext, out GameplayAbilityHandle grant)
+        {
+            spawnContext = context;
+            grant = default;
+            if (IsDisposed || owner.IsDisposed || owner.World != this) return false;
+            if (worldOwned && _arrivingProjectile != null && ReferenceEquals(trigger, _arrivalContext) &&
+                _arrivingProjectile.Owner == owner && context.InstigatorId == trigger.InstigatorId &&
+                context.EffectiveSourceId == trigger.EffectiveSourceId &&
+                context.ActivationSourceId == trigger.ActivationSourceId && context.OriginSourceId == trigger.OriginSourceId)
+            {
+                spawnContext = context.WithTarget(new GameplayTargetData(default, trigger.TargetData.Point));
+                return true;
+            }
+            return GameplayStandardActivation.TryFindGrant(owner, context, out grant);
+        }
+
         public IReadOnlyList<GameplaySpatialOperation> GetSpatialSnapshot()=>_spatial.ToArray();
         internal void DetachSpatial(GameplaySpatialOperation operation)=>_spatial.Remove(operation);
         internal T RegisterSpatial<T>(T operation,GameplayAbilityHandle grant) where T:GameplaySpatialOperation
@@ -87535,7 +87941,7 @@ namespace FRFrame.Gameplay.Standard
             if (_advancing || _publishingCombat) throw new InvalidOperationException("World Advance cannot be nested inside a rule callback.");
             _advancing = true;
             try { AdvanceStep(amount, advanceBorrowedSequences, advanceEffects); }
-            finally { _stepActors.Clear(); _stepSpatial.Clear(); _stepEffects.Clear(); _advancing = false; }
+            finally { _stepActors.Clear(); _stepSpatial.Clear(); _stepEffects.Clear(); _movementWrites.Clear(); _advancing = false; }
         }
         private void AdvanceStep(float amount, Action<float> advanceBorrowedSequences,
             Action<IReadOnlyList<GameplayEffectContainer>,float> advanceEffects)
@@ -94337,6 +94743,118 @@ namespace FRFrame.Tests.Gameplay
     public sealed class GameplayStandardSpatialTests
     {
         [Test]
+        public void FacingConditionDoesNotReplaceNearestRejectedActor()
+        {
+            using var world = new GameplayStandardWorld();
+            var actor = world.CreateActor(default, 1);
+            var rear = world.CreateActor(new GameplayPoint(-1, 0), 2);
+            var front = world.CreateActor(new GameplayPoint(2, 0), 2);
+            actor.Facing = new GameplayDirection(1, 0);
+            var hits = new List<GameplaySourceId>();
+            var test = new GameplaySkillBranchAction(new GameplayFacingCondition(GameplaySpatialPlane.XY, 180),
+                new[] { new Observe(context => hits.Add(context.TargetData.PrimaryTargetId)) }, Array.Empty<IGameplaySkillAction>());
+            var search = new GameplaySearchTargetAction(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.Owner,
+                N(3), N(180), N(1), N(1), N(2), GameplayFactionFilter.Enemies, null, -1, 1, GameplayTargetOrder.Nearest,
+                false, new[] { test }, null, null, useActorCenters: true);
+            var skill = Install(actor, search);
+            Assert.That(skill.TryCast(), Is.True);
+            Assert.That(hits, Is.Empty);
+            Assert.That(skill.Cancel(), Is.True);
+            rear.Position = new GameplayPoint(-4, 0);
+            Assert.That(skill.TryCast(), Is.True);
+            Assert.That(hits, Is.EqualTo(new[] { front.Id }));
+        }
+
+        [Test]
+        public void MovementAuthorityIncludesTheFinalWorldStep()
+        {
+            using var world = new GameplayStandardWorld();
+            var actor = world.CreateActor(default, 1);
+            var skill = Install(actor, new Observe(_ => { }));
+            Assert.That(skill.TryCast(), Is.True);
+            var probe = new MovementProbe(actor);
+            actor.Behaviour = probe;
+            var request = new GameplayDisplacementRequest(skill.LastCastContext, actor.Id, GameplayDisplacementMode.Directional,
+                3, 20, new GameplayDirection(1, 0));
+            world.StartMovement(actor, request, duration: .15f);
+            world.Advance(.2f);
+            Assert.That(probe.Owned, Is.True);
+            Assert.That(actor.Position.X, Is.EqualTo(3).Within(1e-6));
+            Assert.That(actor.Position.Y, Is.Zero);
+            world.Advance(.1f);
+            Assert.That(actor.Position.Y, Is.EqualTo(.1f));
+        }
+
+        [TestCase(4, .25, -1)]
+        [TestCase(6, .75, 1)]
+        public void CapturedCurveHitsAndSpawnsOneAreaAfterEnd(float distance, double roll, float side)
+        {
+            var random = new FixedRoll(roll);
+            using var world = new GameplayStandardWorld(random: random);
+            var actor = world.CreateActor(default, 1);
+            actor.Facing = new GameplayDirection(1, 0);
+            var target = world.CreateActor(new GameplayPoint(distance, 0), 2);
+            var capture = new GameplayCaptureWorldPointAction(GameplaySpatialPlane.XY, N(9), GameplayFactionFilter.Enemies);
+            var callbacks = new List<string>();
+            var area = new GameplayAreaDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.ContextPoint,
+                N(.91f), N(180), N(1), N(1), N(2), N(1), N(1),
+                onEnter: new[] { new Observe(_ => callbacks.Add("area")) }, cancelOnAbilityEnd: false);
+            var spawnArea = new GameplaySpawnAreaAction(area);
+            var motion = new GameplayProjectileMotionDefinition(GameplayProjectileMotionKind.Bezier,
+                bezierControl: GameplayBezierControlMode.RelativeQuadratic, controlAlong: .071f,
+                relativeOffset: new GameplayPoint(0, 6.68f), curveSide: GameplayCurveSide.RandomAtLaunch);
+            var projectile = new GameplayProjectileDefinition(motion, N(12), N(.5f), N(.05f), N(30), N(1),
+                onHit: new[] { new Observe(_ => callbacks.Add("hit")) }, onArrive: new[] { spawnArea }, cancelOnAbilityEnd: false,
+                forwardLaunchOffset: .5f, contactMode: GameplayProjectileContactMode.FixedEndpointNearest, continueAfterHit: true);
+            var launch = new GameplaySequenceSkillStepMarkerDefinition(.3f, Array.Empty<IGameplaySkillCondition>(),
+                new GameplaySkillContextTarget(useActionContext: true), new[] { new GameplaySpawnProjectileAction(projectile) });
+            var skill = Install(actor, capture, new GameplayOwnedSequenceAction(new GameplaySequenceDefinition(.3f, new[] { launch })));
+            Assert.That(skill.TryCast(), Is.True);
+            target.Position = new GameplayPoint(distance + 2, 0);
+            world.CreateActor(new GameplayPoint(distance, 0), 2);
+            world.Advance(.3f);
+            var shot = world.GetSpatialSnapshot().OfType<GameplayProjectile>().Single();
+            Assert.That(shot.Context.TargetData.Point.X, Is.EqualTo(distance));
+            Assert.That(actor.Abilities.End(skill.Grant), Is.True);
+            world.Advance(.24f);
+            const float t = .48f;
+            float controlX = .5f + (distance - .5f) * .071f;
+            Assert.That(shot.Position.X, Is.EqualTo((1-t)*(1-t)*.5f + 2*(1-t)*t*controlX + t*t*distance).Within(1e-5));
+            Assert.That(shot.Position.Y, Is.EqualTo(2*(1-t)*t*6.68f*side).Within(1e-5));
+            Assert.That(random.Reads, Is.EqualTo(1));
+            Assert.That(spawnArea.Execute(shot.Context, new GameplayEventData(new GameplayTag("Event.Standard.Projectile.Arrive"), shot.Context, 1), actor),
+                Is.EqualTo(GameplaySkillActionResult.Rejected));
+            world.Advance(.26f);
+            Assert.That(callbacks, Is.EqualTo(new[] { "hit", "area" }));
+            var child = world.GetSpatialSnapshot().OfType<GameplayAreaOperation>().Single();
+            Assert.That(child.Position.X, Is.EqualTo(distance).Within(1e-5));
+            Assert.That(child.Context.ActivationSourceId, Is.EqualTo(skill.LastCastContext.ActivationSourceId));
+            Assert.That(child.Id, Is.Not.EqualTo(shot.Id));
+        }
+
+        private sealed class MovementProbe : IGameplayBehaviourDriver
+        {
+            private readonly GameplayStandardActor _actor;
+            public bool Owned { get; private set; }
+            public string CurrentState => "Probe";
+            public MovementProbe(GameplayStandardActor actor) => _actor = actor;
+            public bool TryChangeState(string state) => false;
+            public void Advance(float delta)
+            {
+                Owned = _actor.World.ControlsMovement(_actor.Id);
+                if (!Owned) _actor.Position = new GameplayPoint(_actor.Position.X, _actor.Position.Y + delta);
+            }
+            public void Dispose() { }
+        }
+        private sealed class FixedRoll : IGameplayRandomSource
+        {
+            private readonly double _roll;
+            public int Reads { get; private set; }
+            public FixedRoll(double roll) => _roll = roll;
+            public double NextUnitInterval() { Reads++; return _roll; }
+        }
+
+        [Test]
         public void SweptProjectileKeepsCastProvenanceAndDoesNotConsumeItsBirthStep()
         {
             using(var world=new GameplayStandardWorld())
@@ -94701,11 +95219,11 @@ namespace FRFrame.Tests.Gameplay
             { pose = Pose; return true; }
         }
 
-        private static GameplayInstalledSkill Install(GameplayStandardActor actor,IGameplaySkillAction action)
+        private static GameplayInstalledSkill Install(GameplayStandardActor actor,params IGameplaySkillAction[] actions)
         {
             var signal=new GameplayTag("Event.Test.Spatial.Cast");
             return actor.InstallDocument(new GameplaySkillDocumentDefinition(1,new GameplayAbilityDefinition(Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>(),maxLevel:10),
-                new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal),Array.Empty<IGameplaySkillCondition>(),new GameplaySkillSelfTarget(),new[]{action},false),signal),5);
+                new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal),Array.Empty<IGameplaySkillCondition>(),new GameplaySkillSelfTarget(),actions,false),signal),5);
         }
         private sealed class Observe:IGameplaySkillAction
         {

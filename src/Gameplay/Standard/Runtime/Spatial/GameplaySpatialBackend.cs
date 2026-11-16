@@ -28,12 +28,14 @@ namespace FRFrame.Gameplay.Standard
         public int MaxTargets { get; }
         public GameplayTargetOrder Order { get; }
         public bool IncludeSelf { get; }
+        /// <summary>Use registered actor positions independently of the collider backend.</summary>
+        public bool UseActorCenters { get; }
         private readonly Predicate<GameplaySourceId> _excluded;
         public GameplaySpatialSearchRequest(GameplayContext context, GameplaySearchGeometry geometry,
             int sourceFaction, GameplayFactionFilter faction = GameplayFactionFilter.Enemies,
             GameplayTagQuery tags = null, int layerMask = -1, int maxTargets = int.MaxValue,
             GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false,
-            Predicate<GameplaySourceId> excluded = null)
+            Predicate<GameplaySourceId> excluded = null, bool useActorCenters = false)
         {
             Context = context ?? throw new ArgumentNullException(nameof(context));
             Geometry = geometry ?? throw new ArgumentNullException(nameof(geometry));
@@ -42,7 +44,7 @@ namespace FRFrame.Gameplay.Standard
                 throw new ArgumentOutOfRangeException(nameof(faction));
             SourceFaction = sourceFaction; Faction = faction; Tags = tags ?? GameplayTagQuery.Empty;
             LayerMask = layerMask; MaxTargets = maxTargets; Order = order; IncludeSelf = includeSelf;
-            _excluded = excluded;
+            _excluded = excluded; UseActorCenters = useActorCenters;
         }
         public GameplayTargetData Select(IEnumerable<IGameplaySpatialActor> candidates)
         {

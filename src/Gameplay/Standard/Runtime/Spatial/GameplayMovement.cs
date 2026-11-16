@@ -44,6 +44,7 @@ namespace FRFrame.Gameplay.Standard
             if(_duration>0)step=Math.Min(step,Request.Speed*Math.Max(0,_duration-_age));
             _age+=delta;
             // MoveTargets is continuous travel. Hosts use TeleportTo for discrete placement.
+            if (step > 0) Owner.World.MarkMovementWrite(Target.Id);
             Target.Position=GameplaySpatialMath.Offset(Target.Position,Direction,step);Target.Facing=Direction;
             Position=Target.Position;Travelled+=step;Notify();
             if(!IsDisposed&&(Travelled>=_distance||Request.Mode==GameplayDisplacementMode.PullToSource&&GameplaySpatialMath.Distance(Target.Position,Owner.Position)<=_minimumSeparation||_duration>0&&_age>=_duration))Finish(GameplaySpatialEndReason.Arrived);
@@ -58,6 +59,16 @@ namespace FRFrame.Gameplay.Standard
     public sealed partial class GameplayStandardWorld
     {
         private readonly Dictionary<GameplaySourceId,GameplayMovementOperation> _movements=new Dictionary<GameplaySourceId,GameplayMovementOperation>();
+        private readonly HashSet<GameplaySourceId> _movementWrites = new HashSet<GameplaySourceId>();
+
+        /// <summary>True while Standard displacement owns the actor, including the step that wrote its final pose.</summary>
+        public bool ControlsMovement(GameplaySourceId target) => _movements.ContainsKey(target) || _movementWrites.Contains(target);
+
+        internal void MarkMovementWrite(GameplaySourceId target)
+        {
+            if (_advancing) _movementWrites.Add(target);
+        }
+
         internal void DetachMovement(GameplayMovementOperation operation)
         {if(_movements.TryGetValue(operation.Target.Id,out var current)&&ReferenceEquals(current,operation))_movements.Remove(operation.Target.Id);}
         public GameplayMovementOperation StartMovement(GameplayStandardActor owner,GameplayDisplacementRequest request,int priority=10,

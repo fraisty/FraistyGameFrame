@@ -32,7 +32,15 @@ namespace FRFrame.Gameplay.Unity
                 var sequences=actor.Sequences.GetActiveEntriesSnapshot().Select(s=>"Handle="+s.Handle.LocalSequence+" SourceId="+s.Context.EffectiveSourceId+" Elapsed="+s.Elapsed+" Next="+s.NextMarkerIndex+" / Time="+s.NextMarkerTime);
                 var operations=new List<string>();foreach(var operation in spatial)if(ReferenceEquals(operation.Owner,actor)){
                     string line=operation.GetType().Name+" SourceId="+operation.Id+" Root="+operation.Context.OriginSourceId+" Activation="+operation.Context.ActivationSourceId+" Level="+operation.Context.AbilityLevel+" Position=("+operation.Position.X+","+operation.Position.Y+","+operation.Position.Z+")";
-                    if(operation is GameplayProjectile projectile)line+=" Hits="+projectile.HitCount+" Distance="+projectile.DistanceTravelled;
+                    if (operation is GameplayProjectile projectile)
+                    {
+                        line += " Hits="+projectile.HitCount+" Distance="+projectile.DistanceTravelled;
+                        if (projectile.Context.TargetData.HasPoint)
+                        {
+                            var point = projectile.Context.TargetData.Point;
+                            line += " Destination=("+point.X+","+point.Y+","+point.Z+") CurveSign="+projectile.CurveSign;
+                        }
+                    }
                     if(operation is GameplayAreaOperation area)line+=" Inside="+area.InsideCount+" Armed="+area.IsArmed+" Triggers="+area.TriggerCount;
                     if(operation is GameplayHitWindowOperation window)line+=$" Anchor={window.Definition.Anchor.Kind} {window.Geometry?.Shape} Age={window.Age:0.###}/{window.Definition.Duration:0.###} Hits={window.HitCount} Targets={window.DistinctTargets} Samples={window.SampleCount} HitLimitSkips={window.LimitedCandidates}";
                     operations.Add(line);

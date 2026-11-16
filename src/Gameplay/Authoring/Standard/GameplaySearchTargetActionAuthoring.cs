@@ -33,6 +33,8 @@ namespace FRFrame.Gameplay.Authoring
         [Min(1)] public int MaxTargets = 32;
         public GameplayTargetOrder Order = GameplayTargetOrder.Nearest;
         public bool IncludeSelf;
+        [InspectorName("以角色中心匹配"), Tooltip("以逻辑角色位置查询和排序，不使用碰撞体接触点。")]
+        public bool UseActorCenters;
         [Tooltip("跳过输入的主要目标，例如弹体命中后为子弹重选目标。")]
         public bool ExcludePrimaryTarget;
         [Tooltip("每次选最近的未访问目标，再从命中地点重选。目标上限是总次数。")]
@@ -100,7 +102,7 @@ namespace FRFrame.Gameplay.Authoring
                 Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds);
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds, UseActorCenters);
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;

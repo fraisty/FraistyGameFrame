@@ -353,7 +353,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(field=="StraightDestination")return projectile.Motion==Standard.GameplayProjectileMotionKind.Straight;
                 if(field=="DirectionAngle")return projectile.Motion==Standard.GameplayProjectileMotionKind.Straight||projectile.Motion==Standard.GameplayProjectileMotionKind.Arc;
                 if(field=="CurveHeight")return projectile.Motion==Standard.GameplayProjectileMotionKind.Arc||projectile.Motion==Standard.GameplayProjectileMotionKind.Parabolic;
-                if(field=="Control1Offset"||field=="Control2Offset")return projectile.Motion==Standard.GameplayProjectileMotionKind.Bezier;
+                bool bezier = projectile.Motion == Standard.GameplayProjectileMotionKind.Bezier;
+                bool relative = projectile.BezierControl == Standard.GameplayBezierControlMode.RelativeQuadratic;
+                if(field=="BezierControl")return bezier;
+                if(field=="Control1Offset"||field=="Control2Offset")return bezier&&!relative;
+                if(field=="ControlAlong"||field=="RelativeControlOffset"||field=="CurveSide")return bezier&&relative;
+                if(field=="ContactStep")return projectile.ContactMode==Standard.GameplayProjectileContactMode.FixedEndpointNearest;
+                if(field=="MaxHits")return !projectile.ContinueAfterHit;
+                if(field=="UseOwnerFacing")return projectile.Motion==Standard.GameplayProjectileMotionKind.Straight&&
+                    projectile.StraightDestination==Standard.GameplayStraightDestinationMode.Direction;
             }
             if(owner is GameplayAreaDefinitionData area){
                 if(field=="Radius")return area.Shape==GameplayAreaAuthoringShape.Circle||area.Shape==GameplayAreaAuthoringShape.Sector;

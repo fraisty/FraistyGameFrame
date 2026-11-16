@@ -11,6 +11,118 @@ namespace FRFrame.Tests.Gameplay
     public sealed class GameplayStandardSpatialTests
     {
         [Test]
+        public void FacingConditionDoesNotReplaceNearestRejectedActor()
+        {
+            using var world = new GameplayStandardWorld();
+            var actor = world.CreateActor(default, 1);
+            var rear = world.CreateActor(new GameplayPoint(-1, 0), 2);
+            var front = world.CreateActor(new GameplayPoint(2, 0), 2);
+            actor.Facing = new GameplayDirection(1, 0);
+            var hits = new List<GameplaySourceId>();
+            var test = new GameplaySkillBranchAction(new GameplayFacingCondition(GameplaySpatialPlane.XY, 180),
+                new[] { new Observe(context => hits.Add(context.TargetData.PrimaryTargetId)) }, Array.Empty<IGameplaySkillAction>());
+            var search = new GameplaySearchTargetAction(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.Owner,
+                N(3), N(180), N(1), N(1), N(2), GameplayFactionFilter.Enemies, null, -1, 1, GameplayTargetOrder.Nearest,
+                false, new[] { test }, null, null, useActorCenters: true);
+            var skill = Install(actor, search);
+            Assert.That(skill.TryCast(), Is.True);
+            Assert.That(hits, Is.Empty);
+            Assert.That(skill.Cancel(), Is.True);
+            rear.Position = new GameplayPoint(-4, 0);
+            Assert.That(skill.TryCast(), Is.True);
+            Assert.That(hits, Is.EqualTo(new[] { front.Id }));
+        }
+
+        [Test]
+        public void MovementAuthorityIncludesTheFinalWorldStep()
+        {
+            using var world = new GameplayStandardWorld();
+            var actor = world.CreateActor(default, 1);
+            var skill = Install(actor, new Observe(_ => { }));
+            Assert.That(skill.TryCast(), Is.True);
+            var probe = new MovementProbe(actor);
+            actor.Behaviour = probe;
+            var request = new GameplayDisplacementRequest(skill.LastCastContext, actor.Id, GameplayDisplacementMode.Directional,
+                3, 20, new GameplayDirection(1, 0));
+            world.StartMovement(actor, request, duration: .15f);
+            world.Advance(.2f);
+            Assert.That(probe.Owned, Is.True);
+            Assert.That(actor.Position.X, Is.EqualTo(3).Within(1e-6));
+            Assert.That(actor.Position.Y, Is.Zero);
+            world.Advance(.1f);
+            Assert.That(actor.Position.Y, Is.EqualTo(.1f));
+        }
+
+        [TestCase(4, .25, -1)]
+        [TestCase(6, .75, 1)]
+        public void CapturedCurveHitsAndSpawnsOneAreaAfterEnd(float distance, double roll, float side)
+        {
+            var random = new FixedRoll(roll);
+            using var world = new GameplayStandardWorld(random: random);
+            var actor = world.CreateActor(default, 1);
+            actor.Facing = new GameplayDirection(1, 0);
+            var target = world.CreateActor(new GameplayPoint(distance, 0), 2);
+            var capture = new GameplayCaptureWorldPointAction(GameplaySpatialPlane.XY, N(9), GameplayFactionFilter.Enemies);
+            var callbacks = new List<string>();
+            var area = new GameplayAreaDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY, GameplaySearchOrigin.ContextPoint,
+                N(.91f), N(180), N(1), N(1), N(2), N(1), N(1),
+                onEnter: new[] { new Observe(_ => callbacks.Add("area")) }, cancelOnAbilityEnd: false);
+            var spawnArea = new GameplaySpawnAreaAction(area);
+            var motion = new GameplayProjectileMotionDefinition(GameplayProjectileMotionKind.Bezier,
+                bezierControl: GameplayBezierControlMode.RelativeQuadratic, controlAlong: .071f,
+                relativeOffset: new GameplayPoint(0, 6.68f), curveSide: GameplayCurveSide.RandomAtLaunch);
+            var projectile = new GameplayProjectileDefinition(motion, N(12), N(.5f), N(.05f), N(30), N(1),
+                onHit: new[] { new Observe(_ => callbacks.Add("hit")) }, onArrive: new[] { spawnArea }, cancelOnAbilityEnd: false,
+                forwardLaunchOffset: .5f, contactMode: GameplayProjectileContactMode.FixedEndpointNearest, continueAfterHit: true);
+            var launch = new GameplaySequenceSkillStepMarkerDefinition(.3f, Array.Empty<IGameplaySkillCondition>(),
+                new GameplaySkillContextTarget(useActionContext: true), new[] { new GameplaySpawnProjectileAction(projectile) });
+            var skill = Install(actor, capture, new GameplayOwnedSequenceAction(new GameplaySequenceDefinition(.3f, new[] { launch })));
+            Assert.That(skill.TryCast(), Is.True);
+            target.Position = new GameplayPoint(distance + 2, 0);
+            world.CreateActor(new GameplayPoint(distance, 0), 2);
+            world.Advance(.3f);
+            var shot = world.GetSpatialSnapshot().OfType<GameplayProjectile>().Single();
+            Assert.That(shot.Context.TargetData.Point.X, Is.EqualTo(distance));
+            Assert.That(actor.Abilities.End(skill.Grant), Is.True);
+            world.Advance(.24f);
+            const float t = .48f;
+            float controlX = .5f + (distance - .5f) * .071f;
+            Assert.That(shot.Position.X, Is.EqualTo((1-t)*(1-t)*.5f + 2*(1-t)*t*controlX + t*t*distance).Within(1e-5));
+            Assert.That(shot.Position.Y, Is.EqualTo(2*(1-t)*t*6.68f*side).Within(1e-5));
+            Assert.That(random.Reads, Is.EqualTo(1));
+            Assert.That(spawnArea.Execute(shot.Context, new GameplayEventData(new GameplayTag("Event.Standard.Projectile.Arrive"), shot.Context, 1), actor),
+                Is.EqualTo(GameplaySkillActionResult.Rejected));
+            world.Advance(.26f);
+            Assert.That(callbacks, Is.EqualTo(new[] { "hit", "area" }));
+            var child = world.GetSpatialSnapshot().OfType<GameplayAreaOperation>().Single();
+            Assert.That(child.Position.X, Is.EqualTo(distance).Within(1e-5));
+            Assert.That(child.Context.ActivationSourceId, Is.EqualTo(skill.LastCastContext.ActivationSourceId));
+            Assert.That(child.Id, Is.Not.EqualTo(shot.Id));
+        }
+
+        private sealed class MovementProbe : IGameplayBehaviourDriver
+        {
+            private readonly GameplayStandardActor _actor;
+            public bool Owned { get; private set; }
+            public string CurrentState => "Probe";
+            public MovementProbe(GameplayStandardActor actor) => _actor = actor;
+            public bool TryChangeState(string state) => false;
+            public void Advance(float delta)
+            {
+                Owned = _actor.World.ControlsMovement(_actor.Id);
+                if (!Owned) _actor.Position = new GameplayPoint(_actor.Position.X, _actor.Position.Y + delta);
+            }
+            public void Dispose() { }
+        }
+        private sealed class FixedRoll : IGameplayRandomSource
+        {
+            private readonly double _roll;
+            public int Reads { get; private set; }
+            public FixedRoll(double roll) => _roll = roll;
+            public double NextUnitInterval() { Reads++; return _roll; }
+        }
+
+        [Test]
         public void SweptProjectileKeepsCastProvenanceAndDoesNotConsumeItsBirthStep()
         {
             using(var world=new GameplayStandardWorld())
@@ -375,11 +487,11 @@ namespace FRFrame.Tests.Gameplay
             { pose = Pose; return true; }
         }
 
-        private static GameplayInstalledSkill Install(GameplayStandardActor actor,IGameplaySkillAction action)
+        private static GameplayInstalledSkill Install(GameplayStandardActor actor,params IGameplaySkillAction[] actions)
         {
             var signal=new GameplayTag("Event.Test.Spatial.Cast");
             return actor.InstallDocument(new GameplaySkillDocumentDefinition(1,new GameplayAbilityDefinition(Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>(),Array.Empty<GameplayTag>(),maxLevel:10),
-                new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal),Array.Empty<IGameplaySkillCondition>(),new GameplaySkillSelfTarget(),new[]{action},false),signal),5);
+                new GameplaySkillDefinition(new GameplaySkillEventTriggerDefinition(signal),Array.Empty<IGameplaySkillCondition>(),new GameplaySkillSelfTarget(),actions,false),signal),5);
         }
         private sealed class Observe:IGameplaySkillAction
         {

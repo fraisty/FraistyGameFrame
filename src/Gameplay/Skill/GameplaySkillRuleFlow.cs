@@ -13,6 +13,11 @@ namespace FRFrame.Gameplay
     {
         bool EvaluateContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent);
     }
+    /// <summary>Opt-in target resolution for retaining a context captured before a delayed marker.</summary>
+    public interface IGameplaySkillContextTarget
+    {
+        GameplayTargetData ResolveContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent);
+    }
     /// <summary>Successful execution must supply a context; rejection stops the chain without rollback.</summary>
     public readonly struct GameplaySkillActionExecution
     {
