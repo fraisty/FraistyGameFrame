@@ -296,6 +296,51 @@ namespace FRFrame.Tests.Gameplay
             Assert.That(Run(.08f, cancel:true), Is.EqualTo(times.Take(2)));
         }
 
+        [TestCase(.08f)]
+        [TestCase(.01f)]
+        public void HitWindowStopsRehittingWhenSecondContactMovesTheHurtbox(float step)
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            var enemy = world.CreateActor(new GameplayPoint(1, 0), 2);
+            int hits = 0;
+            var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY,
+                default, .08f, maxHitsPerTarget:5, rehitInterval:.015f, onHit:new[] { new Observe(_ =>
+                {
+                    if (++hits == 2) enemy.Hurtbox = new GameplayHurtbox(0, new GameplayPoint(10, 0));
+                }) });
+            Assert.That(Install(owner, new GameplayOpenHitWindowAction(definition)).TryCast(), Is.True);
+            var window = (GameplayHitWindowOperation)world.GetSpatialSnapshot()[0];
+            for (int i = 0; i < Math.Round(.08 / step); i++) world.Advance(step);
+            Assert.That(hits, Is.EqualTo(2));
+            Assert.That(window.EndReason, Is.EqualTo(GameplaySpatialEndReason.Completed));
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public void HitWindowInvalidatesPendingContactsAfterEventSubscriberMovesActors(bool turnOwner)
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            var first = world.CreateActor(new GameplayPoint(1, 0), 2);
+            var waiting = world.CreateActor(new GameplayPoint(4, 0), 2);
+            var hits = new List<GameplaySourceId>();
+            owner.Events.Subscribe(new GameplayTag("Event.Standard.HitWindow.Hit"), data =>
+            {
+                hits.Add(data.TargetId);
+                if (hits.Count != 2) return;
+                if (turnOwner) owner.Facing = new GameplayDirection(-1, 0);
+                else waiting.Position = new GameplayPoint(-4, 0);
+            });
+            var definition = new GameplayHitWindowDefinition(GameplaySearchShape.Sector, GameplaySpatialPlane.XY,
+                default, .16f, angle:10, maxDistinctTargets:2, maxHitsPerTarget:5, rehitInterval:.015f);
+            Assert.That(Install(owner, new GameplayOpenHitWindowAction(definition)).TryCast(), Is.True);
+            waiting.Position = new GameplayPoint(1.25f, 0);
+            world.Advance(.08f);
+            world.Advance(.08f);
+            Assert.That(hits, Is.EqualTo(Enumerable.Repeat(first.Id, turnOwner ? 2 : 5)));
+        }
+
         [Test]
         public void HitBoxAndCanonicalGeometryUseRollWithUnchangedForward()
         {

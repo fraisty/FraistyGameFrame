@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using FRFrame.Gameplay.Extensions;
 
 namespace FRFrame.Gameplay.Standard
 {
@@ -8,23 +9,31 @@ namespace FRFrame.Gameplay.Standard
     {
         private readonly struct TargetSample
         {
-            internal readonly GameplayPoint Center;
+            internal readonly GameplayPoint Position, Center;
             internal readonly float Radius;
             internal readonly long Revision;
             internal TargetSample(GameplayStandardActor actor)
-            { var shape = actor.Hurtbox; Center = shape.Center(actor.Position); Radius = shape.Radius; Revision = actor.HitPoseRevision; }
+            {
+                var shape = actor.Hurtbox;
+                Position = actor.Position;
+                Center = shape.Center(Position);
+                Radius = shape.Radius;
+                Revision = actor.HitPoseRevision;
+            }
+
+            internal bool Matches(TargetSample other) => Revision == other.Revision && Radius == other.Radius &&
+                SamePoint(Position, other.Position) && SamePoint(Center, other.Center);
         }
 
         private readonly struct TargetMotion
         {
             internal readonly GameplayStandardActor Actor;
             internal readonly GameplayPoint Start, End;
-            internal readonly float Radius;
-            internal readonly long Revision;
+            internal readonly TargetSample Sample;
             internal readonly bool Sweep;
 
             internal TargetMotion(GameplayStandardActor actor, GameplayPoint start, GameplayPoint end, TargetSample sample, bool sweep)
-            { Actor = actor; Start = start; End = end; Radius = sample.Radius; Revision = sample.Revision; Sweep = sweep; }
+            { Actor = actor; Start = start; End = end; Sample = sample; Sweep = sweep; }
         }
 
         private readonly struct Hit
@@ -91,13 +100,7 @@ namespace FRFrame.Gameplay.Standard
             if (_scanning || !CanAttack()) return;
             GameplayHitPose actual = _previousPose;
             bool first = SampleCount == 0;
-            if ((first || Definition.FollowAnchor) &&
-                (!Owner.TrySampleHitAnchor(Definition.Anchor, Owner.World.HitSampleTime, out actual) || !Definition.AcceptsPose(actual)))
-            {
-                Diagnose(GameplaySkillTraceStage.ActionRejected, "AnchorUnavailable", Definition.Anchor.Kind + " " + Definition.Anchor.Path + " " + Definition.Anchor.Bone);
-                Finish(GameplaySpatialEndReason.TargetLost);
-                return;
-            }
+            if ((first || Definition.FollowAnchor) && !TryReadAnchor(out actual)) return;
             bool cut = !first && (_previousPose.Revision != actual.Revision || _ownerRevision != Owner.HitPoseRevision);
             if (cut) Diagnose(GameplaySkillTraceStage.ActionSucceeded, "Cut", "Sweep disconnected at pose discontinuity");
             var startPose = first || cut ? actual : _previousPose;
@@ -114,14 +117,14 @@ namespace FRFrame.Gameplay.Standard
                 _previousPose = actual;
                 _ownerRevision = Owner.HitPoseRevision;
                 Notify();
-                while (_contacts.Count != 0)
+                bool ranHit = false;
+                bool ownerMotionIsCurrent = CanAttack() && (_contacts.Count == 0 || RefreshOwnerMotion());
+                while (ownerMotionIsCurrent && _contacts.Count != 0)
                 {
-                    if (!CanAttack() || Owner.HitPoseRevision != _ownerRevision) break;
                     var hit = _contacts.Min;
                     _contacts.Remove(hit);
-                    var target = hit.Target.Actor;
-                    if (target.HitPoseRevision != hit.Target.Revision || !CanTarget(target)) continue;
-                    var id = target.Id;
+                    if (!TargetMotionIsCurrent(hit.Target)) continue;
+                    var id = hit.Target.Actor.Id;
                     bool wasHit = _hits.TryGetValue(id, out var previous);
                     if (!wasHit && _hits.Count >= Definition.MaxDistinctTargets) { LimitedCandidates++; continue; }
                     // Update before invoking authored actions. A cancelled or reentered callback
@@ -131,12 +134,18 @@ namespace FRFrame.Gameplay.Standard
                     HitCount++;
                     var context = At(id, hit.Point);
                     Diagnose(GameplaySkillTraceStage.ActionSucceeded, "Contact",
-                        $"t={hit.Time:0.000}, target={id}, hurtbox={(hit.Target.Radius > 0 ? "Sphere" : "Point")}", context);
+                        $"t={hit.Time:0.000}, target={id}, hurtbox={(hit.Target.Sample.Radius > 0 ? "Sphere" : "Point")}", context);
                     Run(Definition.OnHit, context, "Event.Standard.HitWindow.Hit");
-                    if (count < Definition.MaxHitsPerTarget && !IsDisposed)
+                    ranHit = true;
+                    ownerMotionIsCurrent = CanAttack() && RefreshOwnerMotion();
+                    if (ownerMotionIsCurrent && count < Definition.MaxHitsPerTarget && TargetMotionIsCurrent(hit.Target))
                         QueueContact(hit.Target, motion, delta, hit.Time + Definition.RehitInterval);
                 }
-                if (!IsDisposed) CanAttack();
+                // A callback can also move targets with no queued hit. Sample the resulting
+                // state once for the next step so it never sweeps across the callback's jump.
+                if (ranHit && !IsDisposed)
+                    foreach (var actor in Owner.World.Actors)
+                        if (_previousTargets.ContainsKey(actor.Id)) _previousTargets[actor.Id] = new TargetSample(actor);
             }
             catch
             {
@@ -152,6 +161,36 @@ namespace FRFrame.Gameplay.Standard
 
         private bool CanTarget(GameplayStandardActor actor) =>
             GameplaySpatialSearchRequest.CanTarget(actor, Owner.Id, Owner.Faction, Definition.Faction, Definition.Tags, Definition.LayerMask);
+
+        private bool TargetMotionIsCurrent(TargetMotion target) =>
+            CanTarget(target.Actor) && target.Sample.Matches(new TargetSample(target.Actor));
+
+        private bool TryReadAnchor(out GameplayHitPose pose)
+        {
+            if (Owner.TrySampleHitAnchor(Definition.Anchor, Owner.World.HitSampleTime, out pose) && Definition.AcceptsPose(pose))
+                return true;
+            Diagnose(GameplaySkillTraceStage.ActionRejected, "AnchorUnavailable", Definition.Anchor.Kind + " " + Definition.Anchor.Path + " " + Definition.Anchor.Bone);
+            Finish(GameplaySpatialEndReason.TargetLost);
+            return false;
+        }
+
+        // A mutated anchor cuts the remaining queue. Its new pose seeds the next step
+        // without inferring continuous motion through an edit at callback time.
+        private bool RefreshOwnerMotion()
+        {
+            long revision = Owner.HitPoseRevision;
+            bool sameRevision = revision == _ownerRevision;
+            _ownerRevision = revision;
+            if (!Definition.FollowAnchor) return sameRevision;
+            if (!TryReadAnchor(out var current)) return false;
+            var sampled = _previousPose;
+            _previousPose = current;
+            return sameRevision && sampled.Revision == current.Revision && SamePoint(sampled.Position, current.Position) &&
+                SameDirection(sampled.Forward, current.Forward) && SameDirection(sampled.Up, current.Up);
+        }
+
+        private static bool SamePoint(GameplayPoint a, GameplayPoint b) => a.X == b.X && a.Y == b.Y && a.Z == b.Z;
+        private static bool SameDirection(GameplayDirection a, GameplayDirection b) => a.X == b.X && a.Y == b.Y && a.Z == b.Z;
 
         private void Collect(GameplayHitContact.Motion motion, float delta, float fraction, bool cut)
         {
@@ -190,7 +229,7 @@ namespace FRFrame.Gameplay.Standard
             var from = motion.At(fraction);
             var to = motion.At(1);
             var start = GameplaySpatialMath.Lerp(target.Start, target.End, fraction);
-            bool found = GameplayHitContact.TryFind(Definition, from, to, start, target.End, target.Radius,
+            bool found = GameplayHitContact.TryFind(Definition, from, to, start, target.End, target.Sample.Radius,
                 target.Sweep && fraction < 1, out var t, out var point, out var exhausted);
             if (exhausted) Diagnose(GameplaySkillTraceStage.ActionRejected, "SweepBudget", "Candidate " + target.Actor.Id);
             if (!found) return;
