@@ -88,6 +88,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if (reveal != null && section.Fields.Any(field => OnRevealPath(field.Path))) Remember(section.Key, true);
                     bool heading = top || section.Advanced;
                     if (heading && !Fold(section.Key, section.Title, section.Help, !section.Advanced)) continue;
+                    bool historicalStage = owner is GameplayDamageStageAuthoring stage && GameplayDamageStagePicker.HasHistoricalValue(stage);
+                    if (historicalStage) GUILayout.Label(section.Help, EditorStyles.wordWrappedMiniLabel);
                     foreach (var field in section.Fields)
                     {
                         using var readOnly = new EditorGUI.DisabledScope(field.ReadOnly);
@@ -141,6 +143,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             DrawLeaf(property, field.Label, field.Help, field.Kind == InspectorFieldKind.Reference ||
                                 owner is GameplayFormulaFloatValueAuthoring, field.Choices);
                             if (policy && EditorGUI.EndChangeCheck()) edit.Structural = true;
+                        }
+                        if (historicalStage && field.Name == nameof(GameplayDamageStageAuthoring.Value) &&
+                            GUILayout.Button(GameplayDamageStagePicker.RestoreHistoricalValueTitle, EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                        {
+                            GameplayDamageStagePicker.RestoreHistoricalValue(property);
+                            edit.Paths.Add(field.Path);
                         }
                     }
                     if (top && value is GameplayEffectDefinitionData effect &&

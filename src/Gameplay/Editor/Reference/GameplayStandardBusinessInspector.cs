@@ -120,9 +120,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if(value is GameplayDamageStageAuthoring stage)
             {
-                yield return stage.Source == GameplayDamageStageSource.Extension
+                var group = stage.Source == GameplayDamageStageSource.Extension
                     ? Group("阶段参数",null,"Extension")
                     : Group("阶段参数",null,"Value");
+                if (GameplayDamageStagePicker.HasHistoricalValue(stage))
+                {
+                    group = Group(GameplayDamageStagePicker.HistoricalValueTitle,
+                        GameplayDamageStagePicker.HistoricalValueNote(stage), nameof(stage.Value));
+                    group.Advanced = true;
+                    group.Labels[nameof(stage.Value)] = "历史 Value";
+                }
+                yield return group;
             }
             else if(value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring)
                 yield return Group("结算数值",value is GameplayHealExecutionAuthoring?"治疗受实际 MaxHealth 限制，结果保留溢出。":"瞬时增加实际 Shield；本动作不提供按来源的时限护盾。","Amount");

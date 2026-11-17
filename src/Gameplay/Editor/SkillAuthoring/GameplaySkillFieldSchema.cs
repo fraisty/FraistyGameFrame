@@ -339,9 +339,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 if (field == nameof(stage.Source) || field == nameof(stage.Kind)) return false;
                 if (field == nameof(stage.Extension)) return stage.Source == GameplayDamageStageSource.Extension;
-                if (field == nameof(stage.Value)) return stage.Source == GameplayDamageStageSource.Builtin &&
-                    (stage.Kind == Standard.GameplayDamageStageKind.Critical || stage.Kind == Standard.GameplayDamageStageKind.Minimum ||
-                     stage.Kind == Standard.GameplayDamageStageKind.Scale);
+                if (field == nameof(stage.Value)) return stage.Source == GameplayDamageStageSource.Builtin;
             }
             if (owner is GameplayHitWindowData window)
             {

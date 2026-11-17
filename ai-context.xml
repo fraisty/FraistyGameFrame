@@ -65697,19 +65697,27 @@ namespace FRFrame.Gameplay.Editor
     {
         public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
         {
-            float height = EditorGUIUtility.singleLineHeight;
+            float line = EditorGUIUtility.singleLineHeight;
+            float height = line;
             if (property.isExpanded)
+            {
+                if (GameplayDamageStagePicker.HasHistoricalValue((GameplayDamageStageAuthoring)property.boxedValue)) height += 2 * (line + 2);
                 foreach (var parameter in Parameters(property)) height += GameplayAuthoringInspector.PropertyHeight(parameter) + 2;
+            }
             return height;
         }
 
         public override void OnGUI(Rect rect, SerializedProperty property, GUIContent label)
         {
             var stage = (GameplayDamageStageAuthoring)property.boxedValue;
+            bool historical = GameplayDamageStagePicker.HasHistoricalValue(stage);
             float line = EditorGUIUtility.singleLineHeight;
             var heading = new Rect(rect.x, rect.y, rect.width - 76, line);
             EditorGUI.BeginProperty(rect, label, property);
-            property.isExpanded = EditorGUI.Foldout(heading, property.isExpanded, GameplayDamageStagePicker.Caption(stage), true);
+            string caption = GameplayDamageStagePicker.Caption(stage);
+            property.isExpanded = EditorGUI.Foldout(heading, property.isExpanded, historical
+                ? new GUIContent(caption + " · " + GameplayDamageStagePicker.HistoricalValueTitle, GameplayDamageStagePicker.HistoricalValueNote(stage))
+                : new GUIContent(caption), true);
             if (GUI.Button(new Rect(rect.xMax - 74, rect.y, 74, line), new GUIContent("换类型", "替换整条阶段配置，可撤销。"), EditorStyles.miniButton))
             {
                 string path = property.propertyPath;
@@ -65720,6 +65728,13 @@ namespace FRFrame.Gameplay.Editor
             if (property.isExpanded)
             {
                 float y = rect.y + line + 2;
+                if (historical)
+                {
+                    string note = stage.Kind == Standard.GameplayDamageStageKind.Defense ? "历史参数仍作配置校验" : "历史参数仍会校验及求值";
+                    EditorGUI.LabelField(new Rect(rect.x + 12, y, rect.width - 12, line),
+                        new GUIContent(note, GameplayDamageStagePicker.HistoricalValueNote(stage)), EditorStyles.miniLabel);
+                    y += line + 2;
+                }
                 foreach (var parameter in Parameters(property))
                 {
                     float height = GameplayAuthoringInspector.PropertyHeight(parameter);
@@ -65727,6 +65742,8 @@ namespace FRFrame.Gameplay.Editor
                         parameter, GameplayAuthoringInspector.Label(parameter));
                     y += height + 2;
                 }
+                if (historical && GUI.Button(new Rect(rect.x + 12, y, 100, line), GameplayDamageStagePicker.RestoreHistoricalValueTitle, EditorStyles.miniButton))
+                    GameplayDamageStagePicker.RestoreHistoricalValue(property.FindPropertyRelative(nameof(stage.Value)));
             }
             EditorGUI.EndProperty();
         }
@@ -67167,9 +67184,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             else if(value is GameplayDamageStageAuthoring stage)
             {
-                yield return stage.Source == GameplayDamageStageSource.Extension
+                var group = stage.Source == GameplayDamageStageSource.Extension
                     ? Group("阶段参数",null,"Extension")
                     : Group("阶段参数",null,"Value");
+                if (GameplayDamageStagePicker.HasHistoricalValue(stage))
+                {
+                    group = Group(GameplayDamageStagePicker.HistoricalValueTitle,
+                        GameplayDamageStagePicker.HistoricalValueNote(stage), nameof(stage.Value));
+                    group.Advanced = true;
+                    group.Labels[nameof(stage.Value)] = "历史 Value";
+                }
+                yield return group;
             }
             else if(value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring)
                 yield return Group("结算数值",value is GameplayHealExecutionAuthoring?"治疗受实际 MaxHealth 限制，结果保留溢出。":"瞬时增加实际 Shield；本动作不提供按来源的时限护盾。","Amount");
@@ -69737,6 +69762,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
 <file path="Gameplay/Editor/SkillAuthoring/GameplayDamageStagePicker.cs">
 using System;
+using System.Linq;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Standard;
 using UnityEditor;
@@ -69747,6 +69773,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     /// <summary>Stages use the existing searchable menu and the same serialized row in both skill inspectors.</summary>
     internal static class GameplayDamageStagePicker
     {
+        internal const string HistoricalValueTitle = "高级 / 历史 Value";
+        internal const string RestoreHistoricalValueTitle = "恢复默认 1";
+
         private static readonly string[] Names = { "免疫", "未命中", "防御", "暴击", "护盾", "最低伤害", "伤害倍率" };
         private static readonly string[] Notes =
         {
@@ -69763,6 +69792,21 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             return kind >= 0 && kind < Names.Length ? Names[kind] : "未知阶段";
         }
 
+        internal static bool HasHistoricalValue(GameplayDamageStageAuthoring stage) =>
+            stage.Source == GameplayDamageStageSource.Builtin &&
+            stage.Kind is not (GameplayDamageStageKind.Critical or GameplayDamageStageKind.Minimum or GameplayDamageStageKind.Scale);
+
+        internal static string HistoricalValueNote(GameplayDamageStageAuthoring stage) =>
+            stage.Kind == GameplayDamageStageKind.Defense
+                ? "防御阶段读取对应防御属性。历史 Value 仍作配置校验，运行时不求值。"
+                : "历史 Value 不参与阶段计算，但仍会校验和求值。缺少数值来源或运行时 Caller 等输入会导致失败。";
+
+        internal static void RestoreHistoricalValue(SerializedProperty value)
+        {
+            value.managedReferenceValue = new GameplayConstantFloatValueAuthoring { Value = 1 };
+            GUI.changed = true;
+        }
+
         internal static void Show(SerializedProperty stages, int index)
         {
             var serialized = stages.serializedObject;
@@ -69775,6 +69819,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var window = EditorWindow.focusedWindow;
             if (window == null) return;
             string scope = document?.AuthoringGraph.Scope;
+            var expected = index < 0 ? null : StageOrder(stages);
+            var content = index < 0 ? default : stages.contentHash;
             GameplaySkillCreationMenu.Show(window.rootVisualElement, index < 0 ? "添加结算阶段" : "替换结算阶段 · 可撤销", menu =>
             {
                 foreach (GameplayDamageStageKind kind in Enum.GetValues(typeof(GameplayDamageStageKind)))
@@ -69798,10 +69844,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
             void Write(GameplayDamageStageAuthoring stage)
             {
-                if (sourceGuard != null && !sourceGuard()) return;
-                if (stage.Extension != null && !stage.Extension.IsAvailableInScope(document?.AuthoringGraph.Scope)) return;
+                if (!source || sourceGuard != null && !sourceGuard() || document?.AuthoringGraph.Scope != scope ||
+                    !handle.TryResolve(out string path))
+                {
+                    NotifyExpired();
+                    return;
+                }
                 using var editing = new SerializedObject(source);
-                var array = editing.FindProperty(handle.ResolvePath());
+                var array = editing.FindProperty(path);
+                if (index >= 0 && (index >= array.arraySize || array.contentHash != content ||
+                    !expected.SequenceEqual(StageOrder(array))))
+                {
+                    NotifyExpired();
+                    return;
+                }
                 int at = index < 0 ? array.arraySize++ : index;
                 var row = array.GetArrayElementAtIndex(at);
                 row.FindPropertyRelative(nameof(stage.Source)).enumValueIndex = (int)stage.Source;
@@ -69812,6 +69868,27 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if (document != null) GameplaySkillFieldSchema.ApplyFields(editing, document);
                 else if (editing.ApplyModifiedProperties()) GameplayAuthoringSourceChanges.Notify(source);
             }
+
+            void NotifyExpired()
+            {
+                if (window) window.ShowNotification(new GUIContent("原结算阶段或来源已改变，请重新选择。"));
+            }
+        }
+
+        // Rows are inline. Child reference IDs detect reordered or replaced rows even when
+        // their payload types and field values are identical.
+        private static (int Source, int Kind, long Value, long Extension)[] StageOrder(SerializedProperty stages)
+        {
+            var order = new (int, int, long, long)[stages.arraySize];
+            for (int i = 0; i < order.Length; i++)
+            {
+                var row = stages.GetArrayElementAtIndex(i);
+                order[i] = (row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Source)).intValue,
+                    row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Kind)).intValue,
+                    row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Value)).managedReferenceId,
+                    row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Extension)).managedReferenceId);
+            }
+            return order;
         }
     }
 }
@@ -72773,9 +72850,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 if (field == nameof(stage.Source) || field == nameof(stage.Kind)) return false;
                 if (field == nameof(stage.Extension)) return stage.Source == GameplayDamageStageSource.Extension;
-                if (field == nameof(stage.Value)) return stage.Source == GameplayDamageStageSource.Builtin &&
-                    (stage.Kind == Standard.GameplayDamageStageKind.Critical || stage.Kind == Standard.GameplayDamageStageKind.Minimum ||
-                     stage.Kind == Standard.GameplayDamageStageKind.Scale);
+                if (field == nameof(stage.Value)) return stage.Source == GameplayDamageStageSource.Builtin;
             }
             if (owner is GameplayHitWindowData window)
             {
@@ -72987,6 +73062,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if (reveal != null && section.Fields.Any(field => OnRevealPath(field.Path))) Remember(section.Key, true);
                     bool heading = top || section.Advanced;
                     if (heading && !Fold(section.Key, section.Title, section.Help, !section.Advanced)) continue;
+                    bool historicalStage = owner is GameplayDamageStageAuthoring stage && GameplayDamageStagePicker.HasHistoricalValue(stage);
+                    if (historicalStage) GUILayout.Label(section.Help, EditorStyles.wordWrappedMiniLabel);
                     foreach (var field in section.Fields)
                     {
                         using var readOnly = new EditorGUI.DisabledScope(field.ReadOnly);
@@ -73040,6 +73117,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             DrawLeaf(property, field.Label, field.Help, field.Kind == InspectorFieldKind.Reference ||
                                 owner is GameplayFormulaFloatValueAuthoring, field.Choices);
                             if (policy && EditorGUI.EndChangeCheck()) edit.Structural = true;
+                        }
+                        if (historicalStage && field.Name == nameof(GameplayDamageStageAuthoring.Value) &&
+                            GUILayout.Button(GameplayDamageStagePicker.RestoreHistoricalValueTitle, EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                        {
+                            GameplayDamageStagePicker.RestoreHistoricalValue(property);
+                            edit.Paths.Add(field.Path);
                         }
                     }
                     if (top && value is GameplayEffectDefinitionData effect &&

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Standard;
 using UnityEditor;
@@ -9,6 +10,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     /// <summary>Stages use the existing searchable menu and the same serialized row in both skill inspectors.</summary>
     internal static class GameplayDamageStagePicker
     {
+        internal const string HistoricalValueTitle = "高级 / 历史 Value";
+        internal const string RestoreHistoricalValueTitle = "恢复默认 1";
+
         private static readonly string[] Names = { "免疫", "未命中", "防御", "暴击", "护盾", "最低伤害", "伤害倍率" };
         private static readonly string[] Notes =
         {
@@ -25,6 +29,21 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             return kind >= 0 && kind < Names.Length ? Names[kind] : "未知阶段";
         }
 
+        internal static bool HasHistoricalValue(GameplayDamageStageAuthoring stage) =>
+            stage.Source == GameplayDamageStageSource.Builtin &&
+            stage.Kind is not (GameplayDamageStageKind.Critical or GameplayDamageStageKind.Minimum or GameplayDamageStageKind.Scale);
+
+        internal static string HistoricalValueNote(GameplayDamageStageAuthoring stage) =>
+            stage.Kind == GameplayDamageStageKind.Defense
+                ? "防御阶段读取对应防御属性。历史 Value 仍作配置校验，运行时不求值。"
+                : "历史 Value 不参与阶段计算，但仍会校验和求值。缺少数值来源或运行时 Caller 等输入会导致失败。";
+
+        internal static void RestoreHistoricalValue(SerializedProperty value)
+        {
+            value.managedReferenceValue = new GameplayConstantFloatValueAuthoring { Value = 1 };
+            GUI.changed = true;
+        }
+
         internal static void Show(SerializedProperty stages, int index)
         {
             var serialized = stages.serializedObject;
@@ -37,6 +56,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var window = EditorWindow.focusedWindow;
             if (window == null) return;
             string scope = document?.AuthoringGraph.Scope;
+            var expected = index < 0 ? null : StageOrder(stages);
+            var content = index < 0 ? default : stages.contentHash;
             GameplaySkillCreationMenu.Show(window.rootVisualElement, index < 0 ? "添加结算阶段" : "替换结算阶段 · 可撤销", menu =>
             {
                 foreach (GameplayDamageStageKind kind in Enum.GetValues(typeof(GameplayDamageStageKind)))
@@ -60,10 +81,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
             void Write(GameplayDamageStageAuthoring stage)
             {
-                if (sourceGuard != null && !sourceGuard()) return;
-                if (stage.Extension != null && !stage.Extension.IsAvailableInScope(document?.AuthoringGraph.Scope)) return;
+                if (!source || sourceGuard != null && !sourceGuard() || document?.AuthoringGraph.Scope != scope ||
+                    !handle.TryResolve(out string path))
+                {
+                    NotifyExpired();
+                    return;
+                }
                 using var editing = new SerializedObject(source);
-                var array = editing.FindProperty(handle.ResolvePath());
+                var array = editing.FindProperty(path);
+                if (index >= 0 && (index >= array.arraySize || array.contentHash != content ||
+                    !expected.SequenceEqual(StageOrder(array))))
+                {
+                    NotifyExpired();
+                    return;
+                }
                 int at = index < 0 ? array.arraySize++ : index;
                 var row = array.GetArrayElementAtIndex(at);
                 row.FindPropertyRelative(nameof(stage.Source)).enumValueIndex = (int)stage.Source;
@@ -74,6 +105,27 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if (document != null) GameplaySkillFieldSchema.ApplyFields(editing, document);
                 else if (editing.ApplyModifiedProperties()) GameplayAuthoringSourceChanges.Notify(source);
             }
+
+            void NotifyExpired()
+            {
+                if (window) window.ShowNotification(new GUIContent("原结算阶段或来源已改变，请重新选择。"));
+            }
+        }
+
+        // Rows are inline. Child reference IDs detect reordered or replaced rows even when
+        // their payload types and field values are identical.
+        private static (int Source, int Kind, long Value, long Extension)[] StageOrder(SerializedProperty stages)
+        {
+            var order = new (int, int, long, long)[stages.arraySize];
+            for (int i = 0; i < order.Length; i++)
+            {
+                var row = stages.GetArrayElementAtIndex(i);
+                order[i] = (row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Source)).intValue,
+                    row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Kind)).intValue,
+                    row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Value)).managedReferenceId,
+                    row.FindPropertyRelative(nameof(GameplayDamageStageAuthoring.Extension)).managedReferenceId);
+            }
+            return order;
         }
     }
 }

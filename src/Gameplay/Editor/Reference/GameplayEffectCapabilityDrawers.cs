@@ -73,19 +73,27 @@ namespace FRFrame.Gameplay.Editor
     {
         public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
         {
-            float height = EditorGUIUtility.singleLineHeight;
+            float line = EditorGUIUtility.singleLineHeight;
+            float height = line;
             if (property.isExpanded)
+            {
+                if (GameplayDamageStagePicker.HasHistoricalValue((GameplayDamageStageAuthoring)property.boxedValue)) height += 2 * (line + 2);
                 foreach (var parameter in Parameters(property)) height += GameplayAuthoringInspector.PropertyHeight(parameter) + 2;
+            }
             return height;
         }
 
         public override void OnGUI(Rect rect, SerializedProperty property, GUIContent label)
         {
             var stage = (GameplayDamageStageAuthoring)property.boxedValue;
+            bool historical = GameplayDamageStagePicker.HasHistoricalValue(stage);
             float line = EditorGUIUtility.singleLineHeight;
             var heading = new Rect(rect.x, rect.y, rect.width - 76, line);
             EditorGUI.BeginProperty(rect, label, property);
-            property.isExpanded = EditorGUI.Foldout(heading, property.isExpanded, GameplayDamageStagePicker.Caption(stage), true);
+            string caption = GameplayDamageStagePicker.Caption(stage);
+            property.isExpanded = EditorGUI.Foldout(heading, property.isExpanded, historical
+                ? new GUIContent(caption + " · " + GameplayDamageStagePicker.HistoricalValueTitle, GameplayDamageStagePicker.HistoricalValueNote(stage))
+                : new GUIContent(caption), true);
             if (GUI.Button(new Rect(rect.xMax - 74, rect.y, 74, line), new GUIContent("换类型", "替换整条阶段配置，可撤销。"), EditorStyles.miniButton))
             {
                 string path = property.propertyPath;
@@ -96,6 +104,13 @@ namespace FRFrame.Gameplay.Editor
             if (property.isExpanded)
             {
                 float y = rect.y + line + 2;
+                if (historical)
+                {
+                    string note = stage.Kind == Standard.GameplayDamageStageKind.Defense ? "历史参数仍作配置校验" : "历史参数仍会校验及求值";
+                    EditorGUI.LabelField(new Rect(rect.x + 12, y, rect.width - 12, line),
+                        new GUIContent(note, GameplayDamageStagePicker.HistoricalValueNote(stage)), EditorStyles.miniLabel);
+                    y += line + 2;
+                }
                 foreach (var parameter in Parameters(property))
                 {
                     float height = GameplayAuthoringInspector.PropertyHeight(parameter);
@@ -103,6 +118,8 @@ namespace FRFrame.Gameplay.Editor
                         parameter, GameplayAuthoringInspector.Label(parameter));
                     y += height + 2;
                 }
+                if (historical && GUI.Button(new Rect(rect.x + 12, y, 100, line), GameplayDamageStagePicker.RestoreHistoricalValueTitle, EditorStyles.miniButton))
+                    GameplayDamageStagePicker.RestoreHistoricalValue(property.FindPropertyRelative(nameof(stage.Value)));
             }
             EditorGUI.EndProperty();
         }
