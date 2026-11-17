@@ -394,7 +394,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
 
         private GameplayAuthoringValidationContext Validation(string id)
         {
-            var v = new GameplayAuthoringValidationContext();
+            var v = new GameplayAuthoringValidationContext { DamageStageScope = _graph.Scope };
             v.GraphAssetValidation = (asset, path) =>
             {
                 if (_scopes.Count == 0) return false;

@@ -70,10 +70,27 @@ namespace FRFrame.Gameplay.Standard
     {
         public GameplayDamageStageKind Kind { get; }
         public IGameplayFloatValue Value { get; }
+        internal IGameplayDamageCalculation Calculation { get; }
+        internal IReadOnlyList<IGameplayFloatValue> Parameters { get; }
+        internal bool ReplacesDefense { get; }
         public GameplayDamageStage(GameplayDamageStageKind kind, IGameplayFloatValue value = null)
         {
             if (!Enum.IsDefined(typeof(GameplayDamageStageKind), kind)) throw new ArgumentOutOfRangeException(nameof(kind));
             Kind = kind; Value = value ?? new GameplayConstantFloatValue(kind == GameplayDamageStageKind.Critical ? 2 : 1);
+        }
+
+        /// <summary>Appends a pure calculation to the same pipeline. Defense replacements consume mapped
+        /// defense, skip True damage and are mutually exclusive with other defense stages.</summary>
+        public GameplayDamageStage(IGameplayDamageCalculation calculation, bool replacesDefense = false,
+            params IGameplayFloatValue[] parameters)
+        {
+            Calculation = calculation ?? throw new ArgumentNullException(nameof(calculation));
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+            for (int i = 0; i < parameters.Length; i++)
+                if (!GameplayValueEvaluator.IsReadOnlyExpression(parameters[i]))
+                    throw new ArgumentException($"Damage calculation parameter [{i}] requires a built-in read-only value expression.", nameof(parameters));
+            Parameters = Array.AsReadOnly((IGameplayFloatValue[])parameters.Clone());
+            ReplacesDefense = replacesDefense;
         }
     }
     /// <summary>Official damage Effect execution on the existing DamagePipeline. Stages are pure;
@@ -98,8 +115,17 @@ namespace FRFrame.Gameplay.Standard
             if(!Enum.IsDefined(typeof(GameplayDamageType),damageType))throw new ArgumentOutOfRangeException(nameof(damageType));DamageType=damageType;
             var copy = new List<GameplayDamageStage>(stages ?? throw new ArgumentNullException(nameof(stages)));
             if (copy.Contains(null)) throw new ArgumentException("Damage stage is null.");
-            int shields = 0; foreach (var stage in copy) if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
+            int shields = 0, defenses = 0, replacements = 0;
+            foreach (var stage in copy)
+            {
+                if (stage.ReplacesDefense) replacements++;
+                if (stage.Calculation != null) continue;
+                if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
+                if (stage.Kind == GameplayDamageStageKind.Defense) defenses++;
+            }
             if (shields > 1) throw new ArgumentException("Only one shield stage may consume the captured capacity.");
+            if (replacements > 0 && replacements + defenses > 1)
+                throw new ArgumentException("A defense replacement must be the only defense stage.");
             _stages = copy.AsReadOnly(); _immunity = immunity ?? GameplayTagQuery.Empty;
             if (healInstigatorAmount != null) _healInstigator = new GameplayHealExecution(healInstigatorAmount);
         }
@@ -111,6 +137,12 @@ namespace FRFrame.Gameplay.Standard
             var pipeline = new DamagePipeline();
             foreach (var stage in _stages)
             {
+                if (stage.Calculation != null)
+                {
+                    if (!stage.ReplacesDefense || DamageType != GameplayDamageType.True)
+                        pipeline.AddModifier(new CalculationModifier(stage, application, DamageType));
+                    continue;
+                }
                 if (stage.Kind == GameplayDamageStageKind.Defense)
                 {
                     if(DamageType==GameplayDamageType.True)continue;
@@ -154,6 +186,32 @@ namespace FRFrame.Gameplay.Standard
                     heal.Values.AsSetByCallerValues(), instigator.Attributes, instigator.Id, instigatorTarget: instigator));
             }
             shieldBreakCallbacks?.Invoke();
+        }
+        private sealed class CalculationModifier : IDamageModifier
+        {
+            private readonly GameplayDamageStage _stage;
+            private readonly GameplayEffectApplicationContext _application;
+            private readonly GameplayDamageType _type;
+
+            internal CalculationModifier(GameplayDamageStage stage, GameplayEffectApplicationContext application, GameplayDamageType type)
+            { _stage = stage; _application = application; _type = type; }
+
+            public float Modify(DamageContext context, float currentDamage)
+            {
+                float? defense = null;
+                if (_stage.ReplacesDefense)
+                {
+                    var map = ((GameplayStandardActor)_application.Target).CombatAttributes;
+                    var key = _type == GameplayDamageType.Magical ? map.MagicDefense : map.Defense;
+                    if (!key.IsValid) throw new InvalidOperationException("Damage-type defense mapping is missing.");
+                    defense = context.TargetAttributes.GetCurrentValue(key);
+                }
+                var values = new float[_stage.Parameters.Count];
+                for (int i = 0; i < values.Length; i++)
+                    values[i] = GameplayValueEvaluator.Evaluate(_stage.Parameters[i], _application);
+                return _stage.Calculation.Calculate(new GameplayDamageCalculationInput(context.BaseDamage, currentDamage,
+                    _type, _application.Context.AbilityLevel, defense, values));
+            }
         }
         private sealed class Stage : IDamageResultModifier
         {

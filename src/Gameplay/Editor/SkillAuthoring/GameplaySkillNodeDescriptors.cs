@@ -127,6 +127,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
         public GameplaySkillNodeEditorDescriptor Describe(Type type, SerializedProperty property)
         {
+            if (type == typeof(GameplayFixedBlockStageAuthoring))
+                return new GameplaySkillNodeEditorDescriptor("固定格挡", "伤害/结算阶段",
+                    "从当前伤害减去非负数值，最少为零。之后的最低伤害仍可抬升结果。");
+            if (type == typeof(GameplayArmorPenetrationStageAuthoring))
+                return new GameplaySkillNodeEditorDescriptor("护甲穿透", "伤害/结算阶段",
+                    "替代普通防御。先按百分比降低防御，再减固定值。物理读取防御，魔法读取魔防，真实伤害跳过。");
             string name = type.Name == "GameplaySkillEventTriggerAuthoring" ? "事件触发" :
                 type.Name == "GameplaySkillOwnerEventCountTriggerAuthoring" ? "事件计数触发" :
                 type.Name == "GameplaySkillIntervalTriggerAuthoring" ? "定时触发" :

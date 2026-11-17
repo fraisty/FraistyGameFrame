@@ -8,6 +8,45 @@ namespace FRFrame.Tests.Gameplay
 {
     public sealed class GameplayShieldContributionTests
     {
+        [TestCase(10, true)]
+        [TestCase(30, false)]
+        public void PureStageFailureCannotCommitPendingShieldConsumption(float amount, bool fullyAbsorbed)
+        {
+            using var world = new GameplayStandardWorld();
+            var caster = world.CreateActor(default);
+            var target = world.CreateActor(default);
+            var hp = new GameplayAttributeId("Health");
+            var max = new GameplayAttributeId("MaxHealth");
+            var shield = new GameplayAttributeId("Shield");
+            target.Attributes.Register(hp, 100);
+            target.Attributes.Register(max, 100);
+            target.Attributes.Register(shield, 0);
+            target.CombatAttributes = new GameplayCombatAttributeMap(hp, max, shield, default);
+            var context = new GameplayContext(caster.Id, new GameplayTargetData(target.Id));
+            new GameplayGrantTimedShieldAction(N(20), N(4)).Execute(context, default, caster);
+            var contribution = target.Shields.Snapshot()[0];
+            var hit = new GameplayEffectApplicationContext(context, target, GameplaySetByCallerValues.Empty);
+            var damage = new GameplayDamageExecution(N(amount), new[]
+            {
+                new GameplayDamageStage(GameplayDamageStageKind.Shield),
+                new GameplayDamageStage(new InvalidCalculation())
+            });
+
+            if (fullyAbsorbed) damage.Execute(hit);
+            else Assert.Throws<InvalidOperationException>(() => damage.Execute(hit));
+
+            Assert.That(target.Attributes.GetCurrentValue(hp), Is.EqualTo(100));
+            Assert.That(target.Attributes.GetCurrentValue(shield), Is.EqualTo(fullyAbsorbed ? 10 : 20));
+            Assert.That(contribution.Remaining, Is.EqualTo(fullyAbsorbed ? 10 : 20));
+            Assert.That(target.LastCombatOutcome.HasValue, Is.EqualTo(true), "The initial shield grant has an outcome.");
+            Assert.That(target.LastCombatOutcome.Value.Kind, Is.EqualTo(fullyAbsorbed ? GameplayCombatOutcomeKind.Damage : GameplayCombatOutcomeKind.Shield));
+        }
+
+        private sealed class InvalidCalculation : IGameplayDamageCalculation
+        {
+            public float Calculate(in GameplayDamageCalculationInput input) => float.NaN;
+        }
+
         /// <summary>Prevents expired/cancelled shields from subtracting later or unowned capacity;
         /// a failing hit must leave both actual balance and per-source remaining amounts intact.</summary>
         [Test]

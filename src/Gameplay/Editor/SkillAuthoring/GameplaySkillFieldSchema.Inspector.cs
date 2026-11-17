@@ -157,6 +157,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if (OnRevealPath(property.propertyPath)) Remember(uiKey, true);
                     int count = property.arraySize;
                     var elementType = type?.GetElementType();
+                    bool damageStages = elementType == typeof(GameplayDamageStageAuthoring);
                     var add = new InspectorAction(InspectorCommand.Add, "添加", "添加 " + label);
                     if (count == 0)
                     {
@@ -182,13 +183,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             bool open = true;
                             using (new EditorGUILayout.HorizontalScope())
                             {
-                                var title = new GUIContent(item.Title, item.Title);
+                                var title = damageStages && entry.boxedValue is GameplayDamageStageAuthoring stage
+                                    ? new GUIContent((index + 1) + " · " + GameplayDamageStagePicker.Caption(stage))
+                                    : new GUIContent(item.Title, item.Title);
                                 if (structured)
                                 {
                                     open = EditorGUILayout.Foldout(!ClosedSections.Contains(item.Key), title, true);
                                     Remember(item.Key, open);
                                 }
                                 else GUILayout.Label(title, EditorStyles.miniBoldLabel);
+                                if (damageStages && GUILayout.Button(new GUIContent("换类型", "替换整条阶段配置，一次 Undo 可还原。"),
+                                    EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                                    GameplayDamageStagePicker.Show(property, index);
                                 foreach (var action in item.Actions)
                                     if (GameplayInspectorIMGUI.Button(action))
                                     {
@@ -210,6 +216,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if (property.propertyType == SerializedPropertyType.ManagedReference)
                 {
                     object current = property.managedReferenceValue;
+                    if (type == typeof(GameplayDamageCalculationStageAuthoring))
+                    {
+                        if (current != null) DrawChildren(property, current, path, uiKey, false);
+                        else EditorGUILayout.HelpBox("阶段类型丢失，请用本行的换类型修复。", MessageType.Error);
+                        return;
+                    }
                     bool item = label.Length == 0;
                     string typeName = current == null ? "未配置" : GameplaySkillNodeDescriptors.Get(current.GetType()).DisplayName;
                     if (!item)
@@ -253,6 +265,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
             void RunArray(SerializedProperty property, int index, Type type, InspectorAction action, string listKey)
             {
+                if (type == typeof(GameplayDamageStageAuthoring) && action.Command == InspectorCommand.Add)
+                {
+                    GameplayDamageStagePicker.Show(property, -1);
+                    return;
+                }
                 if (!GameplayInspectorOperations.Array(serialized, document, ownerId, property.propertyPath, index, type, action)) return;
                 Open.RemoveWhere(candidate => candidate.StartsWith(listKey + "/index:", StringComparison.Ordinal));
                 ClosedSections.RemoveWhere(candidate => candidate.StartsWith(listKey + "/index:", StringComparison.Ordinal));

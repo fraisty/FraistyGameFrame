@@ -21,6 +21,21 @@ namespace FRFrame.Gameplay
     /// <summary>统一进行 null 和有限值校验的规则数值入口。</summary>
     public static class GameplayValueEvaluator
     {
+        /// <summary>Checks whether a value tree contains only the built-in read-only expressions.
+        /// Hosts that admit pure calculations can reject delegates and custom evaluators before
+        /// evaluating parameters with the ordinary Effect application context.</summary>
+        public static bool IsReadOnlyExpression(IGameplayFloatValue value) => value switch
+        {
+            GameplayConstantFloatValue or GameplaySetByCallerFloatValue or GameplayContextFloatValue or
+            GameplayAttributeFloatValue or GameplayResourceFloatValue or GameplayStackCountFloatValue or
+            GameplayAbilityLevelFloatValue or GameplayLevelTableFloatValue => true,
+            GameplayBinaryFloatValue binary => IsReadOnlyExpression(binary.Left) && IsReadOnlyExpression(binary.Right),
+            GameplayClampFloatValue clamp => IsReadOnlyExpression(clamp.Value) &&
+                IsReadOnlyExpression(clamp.Minimum) && IsReadOnlyExpression(clamp.Maximum),
+            GameplayCurveFloatValue curve => IsReadOnlyExpression(curve.Input),
+            _ => false
+        };
+
         public static float Evaluate(IGameplayFloatValue value, GameplayEffectApplicationContext application = null)
         {
             if (value == null) throw new ArgumentNullException(nameof(value));

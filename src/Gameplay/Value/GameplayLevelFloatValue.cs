@@ -10,6 +10,7 @@ namespace FRFrame.Gameplay
     {
         private readonly KeyValuePair<float,float>[] _keys;
         private readonly IGameplayFloatValue _input;
+        internal IGameplayFloatValue Input => _input;
         public bool RequiresApplicationContext=>_input.RequiresApplicationContext;
         public GameplayCurveFloatValue(IGameplayFloatValue input,IEnumerable<KeyValuePair<float,float>> keys)
         {

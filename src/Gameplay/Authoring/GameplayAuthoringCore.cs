@@ -22,6 +22,7 @@ namespace FRFrame.Gameplay.Authoring
     public sealed class GameplayAuthoringValidationContext
     {
         internal Func<GameplayDefinitionAsset, string, bool> GraphAssetValidation;
+        internal string DamageStageScope;
         private readonly List<GameplayAuthoringValidationIssue> _issues = new List<GameplayAuthoringValidationIssue>();
         private readonly HashSet<GameplayDefinitionAsset> _active = new HashSet<GameplayDefinitionAsset>();
         private readonly HashSet<(GameplayDefinitionAsset, string)> _validated = new HashSet<(GameplayDefinitionAsset, string)>();

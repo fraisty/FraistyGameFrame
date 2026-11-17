@@ -114,13 +114,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 var damage=Group("伤害数值与类型","物理伤害读取防御，魔法伤害读取魔防。真实伤害跳过防御阶段。","DamageType","Amount");
                 damage.Labels["Amount"]="伤害数值";yield return damage;
-                yield return Group("结算阶段与免疫","阶段按列表顺序执行。暴击和未命中可以读取施放时捕获的输入。","Stages","Immunity");
+                yield return Group("结算阶段与免疫","阶段按列表顺序计算。免疫、未命中和护盾全吸收会停止后续阶段。固定格挡只减当前伤害，后续最低伤害仍可抬升。","Stages","Immunity");
                 yield return Group("结算后治疗","只在本次实际扣除 HP 后求值。公式可读取 Context.Data.Standard.Combat.AppliedDamage。",
                     "HealInstigatorAmount");
             }
-            else if(value is GameplayDamageStageAuthoring)
+            else if(value is GameplayDamageStageAuthoring stage)
             {
-                var stage=Group("阶段参数",null,"Kind","Value");stage.Labels["Kind"]="阶段类型";yield return stage;
+                yield return stage.Source == GameplayDamageStageSource.Extension
+                    ? Group("阶段参数",null,"Extension")
+                    : Group("阶段参数",null,"Value");
             }
             else if(value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring)
                 yield return Group("结算数值",value is GameplayHealExecutionAuthoring?"治疗受实际 MaxHealth 限制，结果保留溢出。":"瞬时增加实际 Shield；本动作不提供按来源的时限护盾。","Amount");

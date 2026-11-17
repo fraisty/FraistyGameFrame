@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using FRFrame.Gameplay.Standard;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -19,11 +18,14 @@ namespace FRFrame.Gameplay.Authoring
     }
     [Serializable]
     public sealed class GameplayInitialAttributeAuthoring { public GameplayAttributeReference Attribute; public float Value; }
+    public enum GameplayDamageStageSource { Builtin, Extension }
     [Serializable, Preserve]
     public sealed class GameplayDamageStageAuthoring
     {
         public GameplayDamageStageKind Kind;
         [SerializeReference] public GameplayFloatValueAuthoring Value = new GameplayConstantFloatValueAuthoring { Value = 1 };
+        public GameplayDamageStageSource Source;
+        [SerializeReference] public GameplayDamageCalculationStageAuthoring Extension;
     }
     [Serializable, Preserve]
     public sealed class GameplayDamageExecutionAuthoring : GameplayEffectExecutionAuthoring
@@ -47,21 +49,60 @@ namespace FRFrame.Gameplay.Authoring
             Immunity?.Validate(v, p + ".Immunity");
             HealInstigatorAmount?.Validate(v, p + ".HealInstigatorAmount");
             if (Stages == null) { v.Error(p + ".Stages", "Missing stage list."); return; }
-            int shields = 0;
+            int shields = 0, defenses = 0, replacements = 0;
             for (int i = 0; i < Stages.Length; i++)
             {
-                if (Stages[i] == null) { v.Error(p + $".Stages[{i}]", "Missing stage."); continue; }
-                v.Enum(Stages[i].Kind, p + $".Stages[{i}].Kind");
-                if (Stages[i].Kind == GameplayDamageStageKind.Shield) shields++;
-                if (Stages[i].Value == null) v.Error(p + $".Stages[{i}].Value", "Missing stage value.");
-                else Stages[i].Value.Validate(v, p + $".Stages[{i}].Value");
+                string path = p + $".Stages[{i}]";
+                var stage = Stages[i];
+                if (stage == null) { v.Error(path, "Missing stage."); continue; }
+                v.Enum(stage.Source, path + ".Source");
+                if (stage.Source == GameplayDamageStageSource.Extension)
+                {
+                    var extension = stage.Extension;
+                    if (extension == null) { v.Error(path + ".Extension", "缺少扩展阶段或其已序列化类型。"); continue; }
+                    if (!extension.IsAvailableInScope(v.DamageStageScope))
+                        v.Error(path + ".Extension", "此阶段只可内嵌在 " + extension.RequiredScope + " Scope 的技能中。");
+                    extension.Validate(v, path + ".Extension");
+                    if (extension.ReplacesDefense) replacements++;
+                    continue;
+                }
+                v.Enum(stage.Kind, path + ".Kind");
+                if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
+                if (stage.Kind == GameplayDamageStageKind.Defense) defenses++;
+                if (stage.Value == null) v.Error(path + ".Value", "Missing stage value.");
+                else stage.Value.Validate(v, path + ".Value");
             }
             if (shields > 1) v.Error(p + ".Stages", "Shield stage must not appear twice.");
+            if (replacements > 0 && replacements + defenses > 1)
+                v.Error(p + ".Stages", "护甲穿透替代防御，整条管线只保留一个防御阶段。");
         }
         public override IGameplayEffectExecution Build()
         {
-            var stages = new List<GameplayDamageStage>(); foreach (var stage in Stages) stages.Add(new GameplayDamageStage(stage.Kind, stage.Value.Build()));
-            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(),DamageType,HealInstigatorAmount?.Build());
+            var stages = new GameplayDamageStage[Stages.Length];
+            for (int i = 0; i < Stages.Length; i++)
+            {
+                var stage = Stages[i];
+                switch (stage.Source)
+                {
+                    case GameplayDamageStageSource.Builtin:
+                        stages[i] = new GameplayDamageStage(stage.Kind, stage.Value.Build());
+                        break;
+                    case GameplayDamageStageSource.Extension:
+                        var extension = stage.Extension ?? throw new InvalidOperationException($"Stages[{i}].Extension: missing stage type.");
+                        try
+                        {
+                            stages[i] = new GameplayDamageStage(extension.BuildCalculation(), extension.ReplacesDefense, extension.BuildParameters());
+                        }
+                        catch (Exception error) when (error is ArgumentException || error is InvalidOperationException)
+                        {
+                            throw new InvalidOperationException($"Stages[{i}].Extension: {error.Message}", error);
+                        }
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Stages[{i}].Source: unsupported damage stage source.");
+                }
+            }
+            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(), DamageType, HealInstigatorAmount?.Build());
         }
     }
     [Serializable, Preserve]

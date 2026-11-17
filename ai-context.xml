@@ -447,6 +447,7 @@ Gameplay/
       GameplayCaptureValueActionAuthoring.cs
       GameplayCombatAuthoring.cs
       GameplayCooldownActionAuthoring.cs
+      GameplayDamageCalculationStageAuthoring.cs
       GameplayDispelEffectsActionAuthoring.cs
       GameplayGrantTimedShieldActionAuthoring.cs
       GameplayHitWindowDefinitionAsset.cs
@@ -539,6 +540,7 @@ Gameplay/
       GameplayBehaviorGraphView.PortPresentation.cs
       GameplayBehaviorGraphView.Refresh.cs
       GameplayBehaviorGraphView.TimelinePresentation.cs
+      GameplayDamageStagePicker.cs
       GameplayInspectorIMGUI.cs
       GameplayInspectorOperations.cs
       GameplayInspectorPresentationSpec.cs
@@ -701,6 +703,7 @@ Gameplay/
       Combat/
         GameplayCombat.cs
         GameplayCombatRandom.cs
+        GameplayDamageCalculation.cs
         GameplayShieldContributions.cs
       Spatial/
         GameplayArea.cs
@@ -60487,7 +60490,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
 
         private GameplayAuthoringValidationContext Validation(string id)
         {
-            var v = new GameplayAuthoringValidationContext();
+            var v = new GameplayAuthoringValidationContext { DamageStageScope = _graph.Scope };
             v.GraphAssetValidation = (asset, path) =>
             {
                 if (_scopes.Count == 0) return false;
@@ -61650,7 +61653,6 @@ namespace FRFrame.Gameplay.Authoring
 
 <file path="Gameplay/Authoring/Standard/GameplayCombatAuthoring.cs">
 using System;
-using System.Collections.Generic;
 using FRFrame.Gameplay.Standard;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -61670,11 +61672,14 @@ namespace FRFrame.Gameplay.Authoring
     }
     [Serializable]
     public sealed class GameplayInitialAttributeAuthoring { public GameplayAttributeReference Attribute; public float Value; }
+    public enum GameplayDamageStageSource { Builtin, Extension }
     [Serializable, Preserve]
     public sealed class GameplayDamageStageAuthoring
     {
         public GameplayDamageStageKind Kind;
         [SerializeReference] public GameplayFloatValueAuthoring Value = new GameplayConstantFloatValueAuthoring { Value = 1 };
+        public GameplayDamageStageSource Source;
+        [SerializeReference] public GameplayDamageCalculationStageAuthoring Extension;
     }
     [Serializable, Preserve]
     public sealed class GameplayDamageExecutionAuthoring : GameplayEffectExecutionAuthoring
@@ -61698,21 +61703,60 @@ namespace FRFrame.Gameplay.Authoring
             Immunity?.Validate(v, p + ".Immunity");
             HealInstigatorAmount?.Validate(v, p + ".HealInstigatorAmount");
             if (Stages == null) { v.Error(p + ".Stages", "Missing stage list."); return; }
-            int shields = 0;
+            int shields = 0, defenses = 0, replacements = 0;
             for (int i = 0; i < Stages.Length; i++)
             {
-                if (Stages[i] == null) { v.Error(p + $".Stages[{i}]", "Missing stage."); continue; }
-                v.Enum(Stages[i].Kind, p + $".Stages[{i}].Kind");
-                if (Stages[i].Kind == GameplayDamageStageKind.Shield) shields++;
-                if (Stages[i].Value == null) v.Error(p + $".Stages[{i}].Value", "Missing stage value.");
-                else Stages[i].Value.Validate(v, p + $".Stages[{i}].Value");
+                string path = p + $".Stages[{i}]";
+                var stage = Stages[i];
+                if (stage == null) { v.Error(path, "Missing stage."); continue; }
+                v.Enum(stage.Source, path + ".Source");
+                if (stage.Source == GameplayDamageStageSource.Extension)
+                {
+                    var extension = stage.Extension;
+                    if (extension == null) { v.Error(path + ".Extension", "缺少扩展阶段或其已序列化类型。"); continue; }
+                    if (!extension.IsAvailableInScope(v.DamageStageScope))
+                        v.Error(path + ".Extension", "此阶段只可内嵌在 " + extension.RequiredScope + " Scope 的技能中。");
+                    extension.Validate(v, path + ".Extension");
+                    if (extension.ReplacesDefense) replacements++;
+                    continue;
+                }
+                v.Enum(stage.Kind, path + ".Kind");
+                if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
+                if (stage.Kind == GameplayDamageStageKind.Defense) defenses++;
+                if (stage.Value == null) v.Error(path + ".Value", "Missing stage value.");
+                else stage.Value.Validate(v, path + ".Value");
             }
             if (shields > 1) v.Error(p + ".Stages", "Shield stage must not appear twice.");
+            if (replacements > 0 && replacements + defenses > 1)
+                v.Error(p + ".Stages", "护甲穿透替代防御，整条管线只保留一个防御阶段。");
         }
         public override IGameplayEffectExecution Build()
         {
-            var stages = new List<GameplayDamageStage>(); foreach (var stage in Stages) stages.Add(new GameplayDamageStage(stage.Kind, stage.Value.Build()));
-            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(),DamageType,HealInstigatorAmount?.Build());
+            var stages = new GameplayDamageStage[Stages.Length];
+            for (int i = 0; i < Stages.Length; i++)
+            {
+                var stage = Stages[i];
+                switch (stage.Source)
+                {
+                    case GameplayDamageStageSource.Builtin:
+                        stages[i] = new GameplayDamageStage(stage.Kind, stage.Value.Build());
+                        break;
+                    case GameplayDamageStageSource.Extension:
+                        var extension = stage.Extension ?? throw new InvalidOperationException($"Stages[{i}].Extension: missing stage type.");
+                        try
+                        {
+                            stages[i] = new GameplayDamageStage(extension.BuildCalculation(), extension.ReplacesDefense, extension.BuildParameters());
+                        }
+                        catch (Exception error) when (error is ArgumentException || error is InvalidOperationException)
+                        {
+                            throw new InvalidOperationException($"Stages[{i}].Extension: {error.Message}", error);
+                        }
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Stages[{i}].Source: unsupported damage stage source.");
+                }
+            }
+            return new GameplayDamageExecution(Amount.Build(), stages, Immunity?.Build(), DamageType, HealInstigatorAmount?.Build());
         }
     }
     [Serializable, Preserve]
@@ -61750,6 +61794,72 @@ namespace FRFrame.Gameplay.Authoring
         public override void Validate(GameplayAuthoringValidationContext v,string p)
         {if(SkillId<0)v.Error(p+".SkillId","SkillId=0为当前cast，正数为当前角色已安装技能。");v.Enum(Operation,p+".Operation");if(Operation!=GameplayCooldownOperation.Restart){if(Value==null)v.Error(p+".Value","Missing cooldown value.");else Value.Validate(v,p+".Value");}}
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)=>new GameplayCooldownAction(SkillId,Operation,Operation==GameplayCooldownOperation.Restart?new GameplayConstantFloatValue(0):Value.Build());
+    }
+}
+</file>
+
+<file path="Gameplay/Authoring/Standard/GameplayDamageCalculationStageAuthoring.cs">
+using System;
+using FRFrame.Gameplay.Standard;
+using UnityEngine;
+using UnityEngine.Scripting;
+
+namespace FRFrame.Gameplay.Authoring
+{
+    /// <summary>Serialized inputs and factory for an immutable damage calculation. A scoped stage
+    /// is usable only inside a formal graph of that scope. Shared effects accept common stages.</summary>
+    [Serializable]
+    public abstract class GameplayDamageCalculationStageAuthoring
+    {
+        public virtual string RequiredScope => null;
+        public virtual bool ReplacesDefense => false;
+        /// <summary>Shared by Editor discovery and validation of the persisted graph in Player.</summary>
+        public bool IsAvailableInScope(string scope) => string.IsNullOrEmpty(RequiredScope) || RequiredScope == scope;
+        public abstract void Validate(GameplayAuthoringValidationContext validation, string path);
+        public abstract IGameplayDamageCalculation BuildCalculation();
+        public virtual IGameplayFloatValue[] BuildParameters() => Array.Empty<IGameplayFloatValue>();
+
+        /// <summary>Validates the existing numeric authoring source and checks known constants at edit time.</summary>
+        protected static void ValidateParameter(GameplayFloatValueAuthoring value, GameplayAuthoringValidationContext validation,
+            string path, float max = float.MaxValue)
+        {
+            if (value == null) validation.Error(path, "缺少数值来源。");
+            else if (value is GameplayConstantFloatValueAuthoring constant)
+            {
+                if (!(constant.Value >= 0 && constant.Value <= max))
+                    validation.Error(path, max == 1 ? "数值必须在 0 到 1 之间。" : "数值必须有限且非负。");
+            }
+            else value.Validate(validation, path);
+        }
+    }
+
+    [Serializable, Preserve]
+    public sealed class GameplayFixedBlockStageAuthoring : GameplayDamageCalculationStageAuthoring
+    {
+        [SerializeReference, InspectorName("固定减伤量")]
+        public GameplayFloatValueAuthoring Amount = new GameplayConstantFloatValueAuthoring { Value = 20 };
+
+        public override void Validate(GameplayAuthoringValidationContext v, string p) => ValidateParameter(Amount, v, p + ".Amount");
+        public override IGameplayDamageCalculation BuildCalculation() => new GameplayFixedBlockCalculation();
+        public override IGameplayFloatValue[] BuildParameters() => new[] { Amount.Build() };
+    }
+
+    [Serializable, Preserve]
+    public sealed class GameplayArmorPenetrationStageAuthoring : GameplayDamageCalculationStageAuthoring
+    {
+        [SerializeReference, InspectorName("百分比穿透（0～1）")]
+        public GameplayFloatValueAuthoring Percent = new GameplayConstantFloatValueAuthoring();
+        [SerializeReference, InspectorName("固定穿透")]
+        public GameplayFloatValueAuthoring Flat = new GameplayConstantFloatValueAuthoring();
+        public override bool ReplacesDefense => true;
+
+        public override void Validate(GameplayAuthoringValidationContext v, string p)
+        {
+            ValidateParameter(Percent, v, p + ".Percent", 1);
+            ValidateParameter(Flat, v, p + ".Flat");
+        }
+        public override IGameplayDamageCalculation BuildCalculation() => new GameplayArmorPenetrationCalculation();
+        public override IGameplayFloatValue[] BuildParameters() => new[] { Percent.Build(), Flat.Build() };
     }
 }
 </file>
@@ -62518,6 +62628,7 @@ namespace FRFrame.Gameplay.Authoring
     public sealed class GameplayAuthoringValidationContext
     {
         internal Func<GameplayDefinitionAsset, string, bool> GraphAssetValidation;
+        internal string DamageStageScope;
         private readonly List<GameplayAuthoringValidationIssue> _issues = new List<GameplayAuthoringValidationIssue>();
         private readonly HashSet<GameplayDefinitionAsset> _active = new HashSet<GameplayDefinitionAsset>();
         private readonly HashSet<(GameplayDefinitionAsset, string)> _validated = new HashSet<(GameplayDefinitionAsset, string)>();
@@ -64986,7 +65097,9 @@ namespace FRFrame.Gameplay.Editor
         // nested action arrays editable, but route removal through the same audited command.
         private static bool OwnedArray(SerializedProperty property)
         {
-            if(!property.isArray||property.propertyType==SerializedPropertyType.String||property.arraySize==0)return false;
+            if(!property.isArray||property.propertyType==SerializedPropertyType.String)return false;
+            if(property.arrayElementType==nameof(GameplayDamageStageAuthoring))return true;
+            if(property.arraySize==0)return false;
             var first=property.GetArrayElementAtIndex(0);
             if(first.propertyType!=SerializedPropertyType.ManagedReference)return false;
             string type=first.managedReferenceFieldTypename;
@@ -65021,8 +65134,10 @@ namespace FRFrame.Gameplay.Editor
             if(!OwnedArray(property)){EditorGUI.PropertyField(rect,property,caption,true);return;}
             float line=EditorGUIUtility.singleLineHeight;
             property.isExpanded=EditorGUI.Foldout(new Rect(rect.x,rect.y,rect.width-30,line),property.isExpanded,new GUIContent(caption.text+" · "+property.arraySize,caption.tooltip),true);
-            string appendReason=GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,property.arraySize,null);
+            bool damageStages=property.arrayElementType==nameof(GameplayDamageStageAuthoring);
+            string appendReason=damageStages?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,property.arraySize,null);
             using(new EditorGUI.DisabledScope(appendReason!=null))if(GUI.Button(new Rect(rect.xMax-26,rect.y,26,line),new GUIContent("+",appendReason))){
+                if(damageStages){GameplayDamageStagePicker.Show(property,-1);return;}
                 int at=property.arraySize;property.InsertArrayElementAtIndex(at);property.GetArrayElementAtIndex(at).managedReferenceValue=null;
                 property.serializedObject.ApplyModifiedProperties();GameplayAuthoringSourceChanges.Notify(property.serializedObject.targetObject);
                 return;
@@ -65034,11 +65149,12 @@ namespace FRFrame.Gameplay.Editor
                 // Reserve a small Inspector toolbar, not a permanent right gutter through every
                 // nested field. Otherwise completion Effect references collapse to a few pixels.
                 EditorGUI.LabelField(new Rect(rect.x+12,y,Mathf.Max(0,rect.width-94),line),"顺序 / 删除",EditorStyles.miniLabel);
-                string up=i==0?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i-1,item.managedReferenceValue,i);
-                string down=i+1==property.arraySize?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i+2,item.managedReferenceValue,i);
+                string up=i==0||damageStages?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i-1,item.managedReferenceValue,i);
+                string down=i+1==property.arraySize||damageStages?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i+2,item.managedReferenceValue,i);
                 using(new EditorGUI.DisabledScope(i==0||up!=null))if(GUI.Button(new Rect(rect.xMax-78,y,24,line),new GUIContent("↑",up))){property.MoveArrayElement(i,i-1);return;}
                 using(new EditorGUI.DisabledScope(i+1==property.arraySize||down!=null))if(GUI.Button(new Rect(rect.xMax-52,y,24,line),new GUIContent("↓",down))){property.MoveArrayElement(i,i+1);return;}
-                using(new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode))if(GUI.Button(new Rect(rect.xMax-26,y,26,line),new GUIContent("×","删除动作 / 事件并检查独占素材…"))){
+                using(new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode))if(GUI.Button(new Rect(rect.xMax-26,y,26,line),new GUIContent("×",damageStages?"删除结算阶段":"删除动作 / 事件并检查独占素材…"))){
+                    if(damageStages){property.DeleteArrayElementAtIndex(i);return;}
                     var source=property.serializedObject.targetObject;var handle=GameplaySourceHandle.Capture(source,item.propertyPath);
                     property.serializedObject.ApplyModifiedProperties();
                     EditorApplication.delayCall+=()=>{
@@ -65507,7 +65623,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
 <file path="Gameplay/Editor/Reference/GameplayEffectCapabilityDrawers.cs">
 using System;
+using System.Collections.Generic;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
 
@@ -65573,6 +65691,61 @@ namespace FRFrame.Gameplay.Editor
     public sealed class GameplayEffectOverflowDrawer : GameplayEffectCapabilityDrawer { protected override Type NodeType => typeof(GameplayEffectOverflowAuthoring); }
     [CustomPropertyDrawer(typeof(GameplayEffectStackingAuthoring))]
     public sealed class GameplayEffectStackingDrawer : GameplayEffectCapabilityDrawer { protected override Type NodeType => typeof(GameplayEffectStackingAuthoring); }
+
+    [CustomPropertyDrawer(typeof(GameplayDamageStageAuthoring))]
+    public sealed class GameplayDamageStageDrawer : PropertyDrawer
+    {
+        public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
+        {
+            float height = EditorGUIUtility.singleLineHeight;
+            if (property.isExpanded)
+                foreach (var parameter in Parameters(property)) height += GameplayAuthoringInspector.PropertyHeight(parameter) + 2;
+            return height;
+        }
+
+        public override void OnGUI(Rect rect, SerializedProperty property, GUIContent label)
+        {
+            var stage = (GameplayDamageStageAuthoring)property.boxedValue;
+            float line = EditorGUIUtility.singleLineHeight;
+            var heading = new Rect(rect.x, rect.y, rect.width - 76, line);
+            EditorGUI.BeginProperty(rect, label, property);
+            property.isExpanded = EditorGUI.Foldout(heading, property.isExpanded, GameplayDamageStagePicker.Caption(stage), true);
+            if (GUI.Button(new Rect(rect.xMax - 74, rect.y, 74, line), new GUIContent("换类型", "替换整条阶段配置，可撤销。"), EditorStyles.miniButton))
+            {
+                string path = property.propertyPath;
+                int field = path.LastIndexOf(".Array.data[", StringComparison.Ordinal);
+                int index = int.Parse(path.Substring(field + ".Array.data[".Length).TrimEnd(']'));
+                GameplayDamageStagePicker.Show(property.serializedObject.FindProperty(path.Substring(0, field)), index);
+            }
+            if (property.isExpanded)
+            {
+                float y = rect.y + line + 2;
+                foreach (var parameter in Parameters(property))
+                {
+                    float height = GameplayAuthoringInspector.PropertyHeight(parameter);
+                    GameplayAuthoringInspector.DrawProperty(new Rect(rect.x + 12, y, rect.width - 12, height),
+                        parameter, GameplayAuthoringInspector.Label(parameter));
+                    y += height + 2;
+                }
+            }
+            EditorGUI.EndProperty();
+        }
+
+        private static IEnumerable<SerializedProperty> Parameters(SerializedProperty property)
+        {
+            var stage = (GameplayDamageStageAuthoring)property.boxedValue;
+            if (GameplaySkillFieldSchema.Visible(stage, nameof(stage.Value))) yield return property.FindPropertyRelative(nameof(stage.Value));
+            if (stage.Source != GameplayDamageStageSource.Extension || stage.Extension == null) yield break;
+            var field = property.FindPropertyRelative(nameof(stage.Extension));
+            var end = field.GetEndProperty();
+            if (!field.NextVisible(true)) yield break;
+            do
+            {
+                if (SerializedProperty.EqualContents(field, end)) yield break;
+                yield return field.Copy();
+            } while (field.NextVisible(false));
+        }
+    }
 }
 </file>
 
@@ -66988,13 +67161,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 var damage=Group("伤害数值与类型","物理伤害读取防御，魔法伤害读取魔防。真实伤害跳过防御阶段。","DamageType","Amount");
                 damage.Labels["Amount"]="伤害数值";yield return damage;
-                yield return Group("结算阶段与免疫","阶段按列表顺序执行。暴击和未命中可以读取施放时捕获的输入。","Stages","Immunity");
+                yield return Group("结算阶段与免疫","阶段按列表顺序计算。免疫、未命中和护盾全吸收会停止后续阶段。固定格挡只减当前伤害，后续最低伤害仍可抬升。","Stages","Immunity");
                 yield return Group("结算后治疗","只在本次实际扣除 HP 后求值。公式可读取 Context.Data.Standard.Combat.AppliedDamage。",
                     "HealInstigatorAmount");
             }
-            else if(value is GameplayDamageStageAuthoring)
+            else if(value is GameplayDamageStageAuthoring stage)
             {
-                var stage=Group("阶段参数",null,"Kind","Value");stage.Labels["Kind"]="阶段类型";yield return stage;
+                yield return stage.Source == GameplayDamageStageSource.Extension
+                    ? Group("阶段参数",null,"Extension")
+                    : Group("阶段参数",null,"Value");
             }
             else if(value is GameplayHealExecutionAuthoring || value is GameplayShieldExecutionAuthoring)
                 yield return Group("结算数值",value is GameplayHealExecutionAuthoring?"治疗受实际 MaxHealth 限制，结果保留溢出。":"瞬时增加实际 Shield；本动作不提供按来源的时限护盾。","Amount");
@@ -69555,6 +69730,88 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }else if(key==GameplayGraphEffectCallbacks.Completion||key==GameplayGraphEffectCallbacks.Overflow)
                 port.portName=role=="冷却"?"＋ 冷却到期":key==GameplayGraphEffectCallbacks.Completion?"＋ 到期效果":"＋ 溢出效果";
             port.tooltip=port.portName+"\n"+port.tooltip;
+        }
+    }
+}
+</file>
+
+<file path="Gameplay/Editor/SkillAuthoring/GameplayDamageStagePicker.cs">
+using System;
+using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Standard;
+using UnityEditor;
+using UnityEngine;
+
+namespace FRFrame.Gameplay.Editor.SkillAuthoring
+{
+    /// <summary>Stages use the existing searchable menu and the same serialized row in both skill inspectors.</summary>
+    internal static class GameplayDamageStagePicker
+    {
+        private static readonly string[] Names = { "免疫", "未命中", "防御", "暴击", "护盾", "最低伤害", "伤害倍率" };
+        private static readonly string[] Notes =
+        {
+            "命中免疫时停止后续阶段。", "未命中时停止后续阶段。", "读取伤害类型对应的防御。真实伤害跳过。",
+            "读取已捕获的暴击值，有效时按指定倍率计算。", "最多一次。全吸收后停止，结算成功后才提交护盾。",
+            "尚未停止时可抬升当前伤害，包括已经被固定格挡减到零的伤害。", "将当前伤害乘以指定数值。"
+        };
+
+        internal static string Caption(GameplayDamageStageAuthoring stage)
+        {
+            if (stage.Source == GameplayDamageStageSource.Extension)
+                return stage.Extension == null ? "扩展类型丢失" : GameplaySkillNodeDescriptors.Get(stage.Extension.GetType()).DisplayName;
+            int kind = (int)stage.Kind;
+            return kind >= 0 && kind < Names.Length ? Names[kind] : "未知阶段";
+        }
+
+        internal static void Show(SerializedProperty stages, int index)
+        {
+            var serialized = stages.serializedObject;
+            var source = serialized.targetObject;
+            var document = source as GameplaySkillDocumentAsset;
+            if (document != null && !GameplayInspectorOperations.Flush(serialized, document)) return;
+            if (document == null) serialized.ApplyModifiedProperties();
+            var handle = GameplaySourceHandle.Capture(source, stages.propertyPath);
+            var sourceGuard = GameplaySkillFieldSchema.CurrentSourceGuard;
+            var window = EditorWindow.focusedWindow;
+            if (window == null) return;
+            string scope = document?.AuthoringGraph.Scope;
+            GameplaySkillCreationMenu.Show(window.rootVisualElement, index < 0 ? "添加结算阶段" : "替换结算阶段 · 可撤销", menu =>
+            {
+                foreach (GameplayDamageStageKind kind in Enum.GetValues(typeof(GameplayDamageStageKind)))
+                {
+                    menu.AddItem(new GUIContent("标准阶段/" + Names[(int)kind], Notes[(int)kind]), false,
+                        () => Write(new GameplayDamageStageAuthoring
+                        {
+                            Kind = kind,
+                            Value = new GameplayConstantFloatValueAuthoring { Value = kind == GameplayDamageStageKind.Critical ? 2 : 1 }
+                        }));
+                }
+                foreach (var type in GameplayAuthoringTypeCatalog.Types(typeof(GameplayDamageCalculationStageAuthoring)))
+                {
+                    var extension = (GameplayDamageCalculationStageAuthoring)Activator.CreateInstance(type);
+                    if (!extension.IsAvailableInScope(scope)) continue;
+                    var description = GameplaySkillNodeDescriptors.Get(type);
+                    menu.AddItem(new GUIContent("计算扩展/" + description.DisplayName, description.Summary), false,
+                        () => Write(new GameplayDamageStageAuthoring { Source = GameplayDamageStageSource.Extension, Extension = extension }));
+                }
+            });
+
+            void Write(GameplayDamageStageAuthoring stage)
+            {
+                if (sourceGuard != null && !sourceGuard()) return;
+                if (stage.Extension != null && !stage.Extension.IsAvailableInScope(document?.AuthoringGraph.Scope)) return;
+                using var editing = new SerializedObject(source);
+                var array = editing.FindProperty(handle.ResolvePath());
+                int at = index < 0 ? array.arraySize++ : index;
+                var row = array.GetArrayElementAtIndex(at);
+                row.FindPropertyRelative(nameof(stage.Source)).enumValueIndex = (int)stage.Source;
+                row.FindPropertyRelative(nameof(stage.Kind)).enumValueIndex = (int)stage.Kind;
+                row.FindPropertyRelative(nameof(stage.Value)).managedReferenceValue = stage.Value;
+                row.FindPropertyRelative(nameof(stage.Extension)).managedReferenceValue = stage.Extension;
+                Undo.SetCurrentGroupName(index < 0 ? "添加结算阶段" : "替换结算阶段");
+                if (document != null) GameplaySkillFieldSchema.ApplyFields(editing, document);
+                else if (editing.ApplyModifiedProperties()) GameplayAuthoringSourceChanges.Notify(source);
+            }
         }
     }
 }
@@ -72512,6 +72769,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         internal static bool Visible(object owner,string field)
         {
+            if (owner is GameplayDamageStageAuthoring stage)
+            {
+                if (field == nameof(stage.Source) || field == nameof(stage.Kind)) return false;
+                if (field == nameof(stage.Extension)) return stage.Source == GameplayDamageStageSource.Extension;
+                if (field == nameof(stage.Value)) return stage.Source == GameplayDamageStageSource.Builtin &&
+                    (stage.Kind == Standard.GameplayDamageStageKind.Critical || stage.Kind == Standard.GameplayDamageStageKind.Minimum ||
+                     stage.Kind == Standard.GameplayDamageStageKind.Scale);
+            }
             if (owner is GameplayHitWindowData window)
             {
                 if(field=="AnchorPath")return window.AnchorKind!=Standard.GameplayHitAnchorKind.OwnerRoot;
@@ -72791,6 +73056,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if (OnRevealPath(property.propertyPath)) Remember(uiKey, true);
                     int count = property.arraySize;
                     var elementType = type?.GetElementType();
+                    bool damageStages = elementType == typeof(GameplayDamageStageAuthoring);
                     var add = new InspectorAction(InspectorCommand.Add, "添加", "添加 " + label);
                     if (count == 0)
                     {
@@ -72816,13 +73082,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             bool open = true;
                             using (new EditorGUILayout.HorizontalScope())
                             {
-                                var title = new GUIContent(item.Title, item.Title);
+                                var title = damageStages && entry.boxedValue is GameplayDamageStageAuthoring stage
+                                    ? new GUIContent((index + 1) + " · " + GameplayDamageStagePicker.Caption(stage))
+                                    : new GUIContent(item.Title, item.Title);
                                 if (structured)
                                 {
                                     open = EditorGUILayout.Foldout(!ClosedSections.Contains(item.Key), title, true);
                                     Remember(item.Key, open);
                                 }
                                 else GUILayout.Label(title, EditorStyles.miniBoldLabel);
+                                if (damageStages && GUILayout.Button(new GUIContent("换类型", "替换整条阶段配置，一次 Undo 可还原。"),
+                                    EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                                    GameplayDamageStagePicker.Show(property, index);
                                 foreach (var action in item.Actions)
                                     if (GameplayInspectorIMGUI.Button(action))
                                     {
@@ -72844,6 +73115,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if (property.propertyType == SerializedPropertyType.ManagedReference)
                 {
                     object current = property.managedReferenceValue;
+                    if (type == typeof(GameplayDamageCalculationStageAuthoring))
+                    {
+                        if (current != null) DrawChildren(property, current, path, uiKey, false);
+                        else EditorGUILayout.HelpBox("阶段类型丢失，请用本行的换类型修复。", MessageType.Error);
+                        return;
+                    }
                     bool item = label.Length == 0;
                     string typeName = current == null ? "未配置" : GameplaySkillNodeDescriptors.Get(current.GetType()).DisplayName;
                     if (!item)
@@ -72887,6 +73164,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
             void RunArray(SerializedProperty property, int index, Type type, InspectorAction action, string listKey)
             {
+                if (type == typeof(GameplayDamageStageAuthoring) && action.Command == InspectorCommand.Add)
+                {
+                    GameplayDamageStagePicker.Show(property, -1);
+                    return;
+                }
                 if (!GameplayInspectorOperations.Array(serialized, document, ownerId, property.propertyPath, index, type, action)) return;
                 Open.RemoveWhere(candidate => candidate.StartsWith(listKey + "/index:", StringComparison.Ordinal));
                 ClosedSections.RemoveWhere(candidate => candidate.StartsWith(listKey + "/index:", StringComparison.Ordinal));
@@ -73342,6 +73624,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 
         public GameplaySkillNodeEditorDescriptor Describe(Type type, SerializedProperty property)
         {
+            if (type == typeof(GameplayFixedBlockStageAuthoring))
+                return new GameplaySkillNodeEditorDescriptor("固定格挡", "伤害/结算阶段",
+                    "从当前伤害减去非负数值，最少为零。之后的最低伤害仍可抬升结果。");
+            if (type == typeof(GameplayArmorPenetrationStageAuthoring))
+                return new GameplaySkillNodeEditorDescriptor("护甲穿透", "伤害/结算阶段",
+                    "替代普通防御。先按百分比降低防御，再减固定值。物理读取防御，魔法读取魔防，真实伤害跳过。");
             string name = type.Name == "GameplaySkillEventTriggerAuthoring" ? "事件触发" :
                 type.Name == "GameplaySkillOwnerEventCountTriggerAuthoring" ? "事件计数触发" :
                 type.Name == "GameplaySkillIntervalTriggerAuthoring" ? "定时触发" :
@@ -84202,10 +84490,27 @@ namespace FRFrame.Gameplay.Standard
     {
         public GameplayDamageStageKind Kind { get; }
         public IGameplayFloatValue Value { get; }
+        internal IGameplayDamageCalculation Calculation { get; }
+        internal IReadOnlyList<IGameplayFloatValue> Parameters { get; }
+        internal bool ReplacesDefense { get; }
         public GameplayDamageStage(GameplayDamageStageKind kind, IGameplayFloatValue value = null)
         {
             if (!Enum.IsDefined(typeof(GameplayDamageStageKind), kind)) throw new ArgumentOutOfRangeException(nameof(kind));
             Kind = kind; Value = value ?? new GameplayConstantFloatValue(kind == GameplayDamageStageKind.Critical ? 2 : 1);
+        }
+
+        /// <summary>Appends a pure calculation to the same pipeline. Defense replacements consume mapped
+        /// defense, skip True damage and are mutually exclusive with other defense stages.</summary>
+        public GameplayDamageStage(IGameplayDamageCalculation calculation, bool replacesDefense = false,
+            params IGameplayFloatValue[] parameters)
+        {
+            Calculation = calculation ?? throw new ArgumentNullException(nameof(calculation));
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+            for (int i = 0; i < parameters.Length; i++)
+                if (!GameplayValueEvaluator.IsReadOnlyExpression(parameters[i]))
+                    throw new ArgumentException($"Damage calculation parameter [{i}] requires a built-in read-only value expression.", nameof(parameters));
+            Parameters = Array.AsReadOnly((IGameplayFloatValue[])parameters.Clone());
+            ReplacesDefense = replacesDefense;
         }
     }
     /// <summary>Official damage Effect execution on the existing DamagePipeline. Stages are pure;
@@ -84230,8 +84535,17 @@ namespace FRFrame.Gameplay.Standard
             if(!Enum.IsDefined(typeof(GameplayDamageType),damageType))throw new ArgumentOutOfRangeException(nameof(damageType));DamageType=damageType;
             var copy = new List<GameplayDamageStage>(stages ?? throw new ArgumentNullException(nameof(stages)));
             if (copy.Contains(null)) throw new ArgumentException("Damage stage is null.");
-            int shields = 0; foreach (var stage in copy) if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
+            int shields = 0, defenses = 0, replacements = 0;
+            foreach (var stage in copy)
+            {
+                if (stage.ReplacesDefense) replacements++;
+                if (stage.Calculation != null) continue;
+                if (stage.Kind == GameplayDamageStageKind.Shield) shields++;
+                if (stage.Kind == GameplayDamageStageKind.Defense) defenses++;
+            }
             if (shields > 1) throw new ArgumentException("Only one shield stage may consume the captured capacity.");
+            if (replacements > 0 && replacements + defenses > 1)
+                throw new ArgumentException("A defense replacement must be the only defense stage.");
             _stages = copy.AsReadOnly(); _immunity = immunity ?? GameplayTagQuery.Empty;
             if (healInstigatorAmount != null) _healInstigator = new GameplayHealExecution(healInstigatorAmount);
         }
@@ -84243,6 +84557,12 @@ namespace FRFrame.Gameplay.Standard
             var pipeline = new DamagePipeline();
             foreach (var stage in _stages)
             {
+                if (stage.Calculation != null)
+                {
+                    if (!stage.ReplacesDefense || DamageType != GameplayDamageType.True)
+                        pipeline.AddModifier(new CalculationModifier(stage, application, DamageType));
+                    continue;
+                }
                 if (stage.Kind == GameplayDamageStageKind.Defense)
                 {
                     if(DamageType==GameplayDamageType.True)continue;
@@ -84286,6 +84606,32 @@ namespace FRFrame.Gameplay.Standard
                     heal.Values.AsSetByCallerValues(), instigator.Attributes, instigator.Id, instigatorTarget: instigator));
             }
             shieldBreakCallbacks?.Invoke();
+        }
+        private sealed class CalculationModifier : IDamageModifier
+        {
+            private readonly GameplayDamageStage _stage;
+            private readonly GameplayEffectApplicationContext _application;
+            private readonly GameplayDamageType _type;
+
+            internal CalculationModifier(GameplayDamageStage stage, GameplayEffectApplicationContext application, GameplayDamageType type)
+            { _stage = stage; _application = application; _type = type; }
+
+            public float Modify(DamageContext context, float currentDamage)
+            {
+                float? defense = null;
+                if (_stage.ReplacesDefense)
+                {
+                    var map = ((GameplayStandardActor)_application.Target).CombatAttributes;
+                    var key = _type == GameplayDamageType.Magical ? map.MagicDefense : map.Defense;
+                    if (!key.IsValid) throw new InvalidOperationException("Damage-type defense mapping is missing.");
+                    defense = context.TargetAttributes.GetCurrentValue(key);
+                }
+                var values = new float[_stage.Parameters.Count];
+                for (int i = 0; i < values.Length; i++)
+                    values[i] = GameplayValueEvaluator.Evaluate(_stage.Parameters[i], _application);
+                return _stage.Calculation.Calculate(new GameplayDamageCalculationInput(context.BaseDamage, currentDamage,
+                    _type, _application.Context.AbilityLevel, defense, values));
+            }
         }
         private sealed class Stage : IDamageResultModifier
         {
@@ -84392,6 +84738,67 @@ namespace FRFrame.Gameplay.Standard
             if(chance<=0)return false;if(chance>=1)return true;
             double value=source.NextUnitInterval();if(!double.IsFinite(value)||value<0||value>=1)throw new ArithmeticException("Random source must return [0,1).");
             return value<chance;
+        }
+    }
+}
+</file>
+
+<file path="Gameplay/Standard/Runtime/Combat/GameplayDamageCalculation.cs">
+using System;
+
+namespace FRFrame.Gameplay.Standard
+{
+    /// <summary>Read-only numeric inputs captured for one stage. Parameters are evaluated through the
+    /// standard value system. MappedDefense is available to defense replacements on physical/magical hits.</summary>
+    public readonly ref struct GameplayDamageCalculationInput
+    {
+        public float BaseDamage { get; }
+        public float CurrentDamage { get; }
+        public GameplayDamageType DamageType { get; }
+        public int AbilityLevel { get; }
+        public float? MappedDefense { get; }
+        public ReadOnlySpan<float> Parameters { get; }
+
+        internal GameplayDamageCalculationInput(float baseDamage, float currentDamage, GameplayDamageType damageType,
+            int abilityLevel, float? mappedDefense, ReadOnlySpan<float> parameters)
+        {
+            BaseDamage = baseDamage;
+            CurrentDamage = currentDamage;
+            DamageType = damageType;
+            AbilityLevel = abilityLevel;
+            MappedDefense = mappedDefense;
+            Parameters = parameters;
+        }
+    }
+
+    /// <summary>Immutable, reusable math strategy. Return finite, nonnegative damage. Resource settlement,
+    /// result flags and stopping the pipeline belong to Standard, outside this calculation.</summary>
+    public interface IGameplayDamageCalculation
+    {
+        float Calculate(in GameplayDamageCalculationInput input);
+    }
+
+    /// <summary>Subtracts a nonnegative amount, bounded at zero before subsequent stages.</summary>
+    public sealed class GameplayFixedBlockCalculation : IGameplayDamageCalculation
+    {
+        public float Calculate(in GameplayDamageCalculationInput input)
+        {
+            float amount = input.Parameters[0];
+            if (amount < 0) throw new ArithmeticException("Fixed block must be nonnegative.");
+            return Math.Max(0, input.CurrentDamage - amount);
+        }
+    }
+
+    /// <summary>Applies percentage penetration first, then subtracts flat penetration from mapped defense.</summary>
+    public sealed class GameplayArmorPenetrationCalculation : IGameplayDamageCalculation
+    {
+        public float Calculate(in GameplayDamageCalculationInput input)
+        {
+            float percent = input.Parameters[0], flat = input.Parameters[1];
+            if (percent < 0 || percent > 1 || flat < 0)
+                throw new ArithmeticException("Armor penetration requires percent in [0, 1] and nonnegative flat penetration.");
+            double effective = Math.Max(0d, Math.Max(0d, input.MappedDefense.Value) * (1d - percent) - flat);
+            return (float)(input.CurrentDamage * 100d / (100d + effective));
         }
     }
 }
@@ -88447,6 +88854,21 @@ namespace FRFrame.Gameplay
     /// <summary>统一进行 null 和有限值校验的规则数值入口。</summary>
     public static class GameplayValueEvaluator
     {
+        /// <summary>Checks whether a value tree contains only the built-in read-only expressions.
+        /// Hosts that admit pure calculations can reject delegates and custom evaluators before
+        /// evaluating parameters with the ordinary Effect application context.</summary>
+        public static bool IsReadOnlyExpression(IGameplayFloatValue value) => value switch
+        {
+            GameplayConstantFloatValue or GameplaySetByCallerFloatValue or GameplayContextFloatValue or
+            GameplayAttributeFloatValue or GameplayResourceFloatValue or GameplayStackCountFloatValue or
+            GameplayAbilityLevelFloatValue or GameplayLevelTableFloatValue => true,
+            GameplayBinaryFloatValue binary => IsReadOnlyExpression(binary.Left) && IsReadOnlyExpression(binary.Right),
+            GameplayClampFloatValue clamp => IsReadOnlyExpression(clamp.Value) &&
+                IsReadOnlyExpression(clamp.Minimum) && IsReadOnlyExpression(clamp.Maximum),
+            GameplayCurveFloatValue curve => IsReadOnlyExpression(curve.Input),
+            _ => false
+        };
+
         public static float Evaluate(IGameplayFloatValue value, GameplayEffectApplicationContext application = null)
         {
             if (value == null) throw new ArgumentNullException(nameof(value));
@@ -88723,6 +89145,7 @@ namespace FRFrame.Gameplay
     {
         private readonly KeyValuePair<float,float>[] _keys;
         private readonly IGameplayFloatValue _input;
+        internal IGameplayFloatValue Input => _input;
         public bool RequiresApplicationContext=>_input.RequiresApplicationContext;
         public GameplayCurveFloatValue(IGameplayFloatValue input,IEnumerable<KeyValuePair<float,float>> keys)
         {
@@ -93861,6 +94284,45 @@ namespace FRFrame.Tests.Gameplay
 {
     public sealed class GameplayShieldContributionTests
     {
+        [TestCase(10, true)]
+        [TestCase(30, false)]
+        public void PureStageFailureCannotCommitPendingShieldConsumption(float amount, bool fullyAbsorbed)
+        {
+            using var world = new GameplayStandardWorld();
+            var caster = world.CreateActor(default);
+            var target = world.CreateActor(default);
+            var hp = new GameplayAttributeId("Health");
+            var max = new GameplayAttributeId("MaxHealth");
+            var shield = new GameplayAttributeId("Shield");
+            target.Attributes.Register(hp, 100);
+            target.Attributes.Register(max, 100);
+            target.Attributes.Register(shield, 0);
+            target.CombatAttributes = new GameplayCombatAttributeMap(hp, max, shield, default);
+            var context = new GameplayContext(caster.Id, new GameplayTargetData(target.Id));
+            new GameplayGrantTimedShieldAction(N(20), N(4)).Execute(context, default, caster);
+            var contribution = target.Shields.Snapshot()[0];
+            var hit = new GameplayEffectApplicationContext(context, target, GameplaySetByCallerValues.Empty);
+            var damage = new GameplayDamageExecution(N(amount), new[]
+            {
+                new GameplayDamageStage(GameplayDamageStageKind.Shield),
+                new GameplayDamageStage(new InvalidCalculation())
+            });
+
+            if (fullyAbsorbed) damage.Execute(hit);
+            else Assert.Throws<InvalidOperationException>(() => damage.Execute(hit));
+
+            Assert.That(target.Attributes.GetCurrentValue(hp), Is.EqualTo(100));
+            Assert.That(target.Attributes.GetCurrentValue(shield), Is.EqualTo(fullyAbsorbed ? 10 : 20));
+            Assert.That(contribution.Remaining, Is.EqualTo(fullyAbsorbed ? 10 : 20));
+            Assert.That(target.LastCombatOutcome.HasValue, Is.EqualTo(true), "The initial shield grant has an outcome.");
+            Assert.That(target.LastCombatOutcome.Value.Kind, Is.EqualTo(fullyAbsorbed ? GameplayCombatOutcomeKind.Damage : GameplayCombatOutcomeKind.Shield));
+        }
+
+        private sealed class InvalidCalculation : IGameplayDamageCalculation
+        {
+            public float Calculate(in GameplayDamageCalculationInput input) => float.NaN;
+        }
+
         /// <summary>Prevents expired/cancelled shields from subtracting later or unowned capacity;
         /// a failing hit must leave both actual balance and per-source remaining amounts intact.</summary>
         [Test]
@@ -95398,6 +95860,59 @@ namespace FRFrame.Tests.Gameplay
 {
     public sealed class GameplayTypedCombatTests
     {
+        [TestCase(GameplayDamageType.Physical, .5f, false, 36.6667f)]
+        [TestCase(GameplayDamageType.Physical, .5f, true, 43.3333f)]
+        [TestCase(GameplayDamageType.Physical, 0, false, 20f)]
+        [TestCase(GameplayDamageType.Magical, .5f, false, 10f)]
+        [TestCase(GameplayDamageType.True, .5f, false, 70f)]
+        public void DamageCalculationsRespectStageOrderAndDefenseRouting(GameplayDamageType type, float percent,
+            bool blockFirst, float expected)
+        {
+            using var world = new GameplayStandardWorld();
+            var caster = world.CreateActor(default);
+            var target = world.CreateActor(default);
+            var hp = new GameplayAttributeId("Health");
+            var max = new GameplayAttributeId("MaxHealth");
+            var shield = new GameplayAttributeId("Shield");
+            var defense = new GameplayAttributeId("Defense");
+            var magic = new GameplayAttributeId("MagicDefense");
+            target.Attributes.Register(hp, 100);
+            target.Attributes.Register(max, 100);
+            target.Attributes.Register(shield, 10);
+            target.Attributes.Register(defense, 100);
+            target.Attributes.Register(magic, 300);
+            target.CombatAttributes = new GameplayCombatAttributeMap(hp, max, shield, defense, magic);
+            var context = new GameplayContext(caster.Id, new GameplayTargetData(target.Id));
+            var application = new GameplayEffectApplicationContext(context, target, GameplaySetByCallerValues.Empty);
+
+            var penetration = new GameplayDamageStage(new GameplayArmorPenetrationCalculation(), true, N(percent), N(0));
+            var block = new GameplayDamageStage(new GameplayFixedBlockCalculation(), false, N(20));
+            var stages = new[] { blockFirst ? block : penetration, blockFirst ? penetration : block,
+                new GameplayDamageStage(GameplayDamageStageKind.Shield) };
+            new GameplayDamageExecution(N(100), stages, damageType: type).Execute(application);
+
+            Assert.That(target.LastCombatOutcome.Value.Applied, Is.EqualTo(expected).Within(.001f));
+            Assert.That(target.LastCombatOutcome.Value.Damage.AbsorbedDamage, Is.EqualTo(10));
+            Assert.That(target.Attributes.GetCurrentValue(shield), Is.Zero);
+            Assert.That(target.Attributes.GetCurrentValue(defense), Is.EqualTo(100));
+            Assert.That(target.Attributes.GetCurrentValue(magic), Is.EqualTo(300));
+        }
+
+        [Test]
+        public void DamageParametersAcceptFormalExpressionsButRejectNestedCustomEvaluators()
+        {
+            var block = new GameplayFixedBlockCalculation();
+            Assert.DoesNotThrow(() => new GameplayDamageStage(block, false, GameplayFormula.Compile("Caster.Attack * Level")));
+            var custom = new GameplayCustomFloatValue(new ApplicationReader());
+            var composed = new GameplayBinaryFloatValue(GameplayBinaryFloatOperation.Add, N(10), custom);
+            Assert.Throws<ArgumentException>(() => new GameplayDamageStage(block, false, composed));
+        }
+
+        private sealed class ApplicationReader : IGameplayCustomFloatCalculation
+        {
+            public float Calculate(GameplayValueEvaluationContext context) => context.RequireApplication().StackCount;
+        }
+
         [Test]
         public void DamageTypeRoutesDefenseAndRandomCaptureDoesNotRerollExplicitInputs()
         {

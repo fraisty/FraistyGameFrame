@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
 
@@ -65,4 +67,59 @@ namespace FRFrame.Gameplay.Editor
     public sealed class GameplayEffectOverflowDrawer : GameplayEffectCapabilityDrawer { protected override Type NodeType => typeof(GameplayEffectOverflowAuthoring); }
     [CustomPropertyDrawer(typeof(GameplayEffectStackingAuthoring))]
     public sealed class GameplayEffectStackingDrawer : GameplayEffectCapabilityDrawer { protected override Type NodeType => typeof(GameplayEffectStackingAuthoring); }
+
+    [CustomPropertyDrawer(typeof(GameplayDamageStageAuthoring))]
+    public sealed class GameplayDamageStageDrawer : PropertyDrawer
+    {
+        public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
+        {
+            float height = EditorGUIUtility.singleLineHeight;
+            if (property.isExpanded)
+                foreach (var parameter in Parameters(property)) height += GameplayAuthoringInspector.PropertyHeight(parameter) + 2;
+            return height;
+        }
+
+        public override void OnGUI(Rect rect, SerializedProperty property, GUIContent label)
+        {
+            var stage = (GameplayDamageStageAuthoring)property.boxedValue;
+            float line = EditorGUIUtility.singleLineHeight;
+            var heading = new Rect(rect.x, rect.y, rect.width - 76, line);
+            EditorGUI.BeginProperty(rect, label, property);
+            property.isExpanded = EditorGUI.Foldout(heading, property.isExpanded, GameplayDamageStagePicker.Caption(stage), true);
+            if (GUI.Button(new Rect(rect.xMax - 74, rect.y, 74, line), new GUIContent("换类型", "替换整条阶段配置，可撤销。"), EditorStyles.miniButton))
+            {
+                string path = property.propertyPath;
+                int field = path.LastIndexOf(".Array.data[", StringComparison.Ordinal);
+                int index = int.Parse(path.Substring(field + ".Array.data[".Length).TrimEnd(']'));
+                GameplayDamageStagePicker.Show(property.serializedObject.FindProperty(path.Substring(0, field)), index);
+            }
+            if (property.isExpanded)
+            {
+                float y = rect.y + line + 2;
+                foreach (var parameter in Parameters(property))
+                {
+                    float height = GameplayAuthoringInspector.PropertyHeight(parameter);
+                    GameplayAuthoringInspector.DrawProperty(new Rect(rect.x + 12, y, rect.width - 12, height),
+                        parameter, GameplayAuthoringInspector.Label(parameter));
+                    y += height + 2;
+                }
+            }
+            EditorGUI.EndProperty();
+        }
+
+        private static IEnumerable<SerializedProperty> Parameters(SerializedProperty property)
+        {
+            var stage = (GameplayDamageStageAuthoring)property.boxedValue;
+            if (GameplaySkillFieldSchema.Visible(stage, nameof(stage.Value))) yield return property.FindPropertyRelative(nameof(stage.Value));
+            if (stage.Source != GameplayDamageStageSource.Extension || stage.Extension == null) yield break;
+            var field = property.FindPropertyRelative(nameof(stage.Extension));
+            var end = field.GetEndProperty();
+            if (!field.NextVisible(true)) yield break;
+            do
+            {
+                if (SerializedProperty.EqualContents(field, end)) yield break;
+                yield return field.Copy();
+            } while (field.NextVisible(false));
+        }
+    }
 }

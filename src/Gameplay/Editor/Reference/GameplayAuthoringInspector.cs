@@ -244,7 +244,9 @@ namespace FRFrame.Gameplay.Editor
         // nested action arrays editable, but route removal through the same audited command.
         private static bool OwnedArray(SerializedProperty property)
         {
-            if(!property.isArray||property.propertyType==SerializedPropertyType.String||property.arraySize==0)return false;
+            if(!property.isArray||property.propertyType==SerializedPropertyType.String)return false;
+            if(property.arrayElementType==nameof(GameplayDamageStageAuthoring))return true;
+            if(property.arraySize==0)return false;
             var first=property.GetArrayElementAtIndex(0);
             if(first.propertyType!=SerializedPropertyType.ManagedReference)return false;
             string type=first.managedReferenceFieldTypename;
@@ -279,8 +281,10 @@ namespace FRFrame.Gameplay.Editor
             if(!OwnedArray(property)){EditorGUI.PropertyField(rect,property,caption,true);return;}
             float line=EditorGUIUtility.singleLineHeight;
             property.isExpanded=EditorGUI.Foldout(new Rect(rect.x,rect.y,rect.width-30,line),property.isExpanded,new GUIContent(caption.text+" · "+property.arraySize,caption.tooltip),true);
-            string appendReason=GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,property.arraySize,null);
+            bool damageStages=property.arrayElementType==nameof(GameplayDamageStageAuthoring);
+            string appendReason=damageStages?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,property.arraySize,null);
             using(new EditorGUI.DisabledScope(appendReason!=null))if(GUI.Button(new Rect(rect.xMax-26,rect.y,26,line),new GUIContent("+",appendReason))){
+                if(damageStages){GameplayDamageStagePicker.Show(property,-1);return;}
                 int at=property.arraySize;property.InsertArrayElementAtIndex(at);property.GetArrayElementAtIndex(at).managedReferenceValue=null;
                 property.serializedObject.ApplyModifiedProperties();GameplayAuthoringSourceChanges.Notify(property.serializedObject.targetObject);
                 return;
@@ -292,11 +296,12 @@ namespace FRFrame.Gameplay.Editor
                 // Reserve a small Inspector toolbar, not a permanent right gutter through every
                 // nested field. Otherwise completion Effect references collapse to a few pixels.
                 EditorGUI.LabelField(new Rect(rect.x+12,y,Mathf.Max(0,rect.width-94),line),"顺序 / 删除",EditorStyles.miniLabel);
-                string up=i==0?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i-1,item.managedReferenceValue,i);
-                string down=i+1==property.arraySize?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i+2,item.managedReferenceValue,i);
+                string up=i==0||damageStages?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i-1,item.managedReferenceValue,i);
+                string down=i+1==property.arraySize||damageStages?null:GameplayActionOrderValidation.PlacementReason(property.serializedObject.targetObject,property.propertyPath,i+2,item.managedReferenceValue,i);
                 using(new EditorGUI.DisabledScope(i==0||up!=null))if(GUI.Button(new Rect(rect.xMax-78,y,24,line),new GUIContent("↑",up))){property.MoveArrayElement(i,i-1);return;}
                 using(new EditorGUI.DisabledScope(i+1==property.arraySize||down!=null))if(GUI.Button(new Rect(rect.xMax-52,y,24,line),new GUIContent("↓",down))){property.MoveArrayElement(i,i+1);return;}
-                using(new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode))if(GUI.Button(new Rect(rect.xMax-26,y,26,line),new GUIContent("×","删除动作 / 事件并检查独占素材…"))){
+                using(new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode))if(GUI.Button(new Rect(rect.xMax-26,y,26,line),new GUIContent("×",damageStages?"删除结算阶段":"删除动作 / 事件并检查独占素材…"))){
+                    if(damageStages){property.DeleteArrayElementAtIndex(i);return;}
                     var source=property.serializedObject.targetObject;var handle=GameplaySourceHandle.Capture(source,item.propertyPath);
                     property.serializedObject.ApplyModifiedProperties();
                     EditorApplication.delayCall+=()=>{
