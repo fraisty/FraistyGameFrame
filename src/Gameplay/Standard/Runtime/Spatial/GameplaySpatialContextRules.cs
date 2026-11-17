@@ -52,18 +52,23 @@ namespace FRFrame.Gameplay.Standard
     }
 
     /// <summary>Resolves a pure world point once. An explicit point wins over a nearest-actor
-    /// query, which falls back to the caster's current position and facing.</summary>
+    /// query, which falls back to the caster's current position and facing. Narrowing
+    /// the search angle filters by facing before choosing the nearest actor.</summary>
     public sealed class GameplayCaptureWorldPointAction : IGameplaySkillAction, IGameplaySkillContextAction
     {
         private readonly GameplaySpatialPlane _plane;
         private readonly IGameplayFloatValue _range;
         private readonly GameplayFactionFilter _faction;
+        private readonly float _angle;
 
-        public GameplayCaptureWorldPointAction(GameplaySpatialPlane plane, IGameplayFloatValue range, GameplayFactionFilter faction)
+        public GameplayCaptureWorldPointAction(GameplaySpatialPlane plane, IGameplayFloatValue range,
+            GameplayFactionFilter faction, float angle = 360)
         {
             _plane = plane;
             _range = range ?? throw new ArgumentNullException(nameof(range));
             _faction = faction;
+            if (!(angle > 0 && angle <= 360)) throw new ArgumentOutOfRangeException(nameof(angle));
+            _angle = angle;
         }
 
         public GameplaySkillActionResult Execute(GameplayContext context, GameplayEventData triggerEvent, IGameplaySkillHost host) =>
@@ -78,7 +83,8 @@ namespace FRFrame.Gameplay.Standard
                 return new GameplaySkillActionExecution(GameplaySkillActionResult.Succeeded, context);
 
             float range = GameplaySpatialMath.Positive(_range, actor, context, "Point capture range");
-            var geometry = new GameplaySearchGeometry(GameplaySearchShape.Circle, _plane, actor.Position, actor.Facing, range, height: range * 2);
+            var shape = _angle == 360 ? GameplaySearchShape.Circle : GameplaySearchShape.Sector;
+            var geometry = new GameplaySearchGeometry(shape, _plane, actor.Position, actor.Facing, range, _angle, height: range * 2);
             var hit = actor.World.Spatial.Query(new GameplaySpatialSearchRequest(context, geometry, actor.Faction, _faction,
                 maxTargets: 1, useActorCenters: true));
             var point = actor.World.TryGetActor(hit.PrimaryTargetId, out var target)

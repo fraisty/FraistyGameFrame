@@ -30,7 +30,9 @@ namespace FRFrame.Gameplay.Standard
     public interface IGameplayProjectileMotion
     {GameplayPoint Sample(double age,float delta,GameplayPoint current,GameplayPoint? liveTarget);bool Arrived {get;}}
     public interface IGameplayProjectileMotionDefinition { IGameplayProjectileMotion Create(GameplayProjectileLaunch launch); }
-    /// <summary>Actual standard straight/homing and planar arc/world-up parabola/cubic Bezier sampling.</summary>
+    /// <summary>Standard straight, homing, planar arc, world-up parabola and Bezier sampling.
+    /// Positive relative height scale replaces the quadratic control point's fixed Y offset
+    /// with a clamped proportion of the launch-to-destination distance.</summary>
     public sealed class GameplayProjectileMotionDefinition:IGameplayProjectileMotionDefinition
     {
         public GameplayProjectileMotionKind Kind {get;}
@@ -41,13 +43,16 @@ namespace FRFrame.Gameplay.Standard
         public GameplayCurveSide CurveSide {get;}
         public float ControlAlong {get;}
         public GameplayPoint RelativeOffset {get;}
+        private readonly float _relativeHeightScale, _relativeHeightMin, _relativeHeightMax;
         public GameplayProjectileMotionDefinition(GameplayProjectileMotionKind kind,GameplayPoint control1Offset=default,GameplayPoint control2Offset=default,
             GameplayStraightDestinationMode straightDestination=GameplayStraightDestinationMode.Direction,
             GameplayBezierControlMode bezierControl=GameplayBezierControlMode.FixedOffsets,float controlAlong=.5f,
-            GameplayPoint relativeOffset=default,GameplayCurveSide curveSide=GameplayCurveSide.Positive)
+            GameplayPoint relativeOffset=default,GameplayCurveSide curveSide=GameplayCurveSide.Positive,
+            float relativeHeightScale=0,float relativeHeightMin=0,float relativeHeightMax=0)
         {if(!Enum.IsDefined(typeof(GameplayProjectileMotionKind),kind)||!Enum.IsDefined(typeof(GameplayStraightDestinationMode),straightDestination))throw new ArgumentOutOfRangeException(nameof(kind));Kind=kind;Control1Offset=control1Offset;Control2Offset=control2Offset;StraightDestination=straightDestination;
             if (!(controlAlong >= 0 && controlAlong <= 1)) throw new ArgumentOutOfRangeException(nameof(controlAlong));
             BezierControl=bezierControl; ControlAlong=controlAlong; RelativeOffset=relativeOffset; CurveSide=curveSide;
+            _relativeHeightScale=relativeHeightScale; _relativeHeightMin=relativeHeightMin; _relativeHeightMax=relativeHeightMax;
         }
         public IGameplayProjectileMotion Create(GameplayProjectileLaunch launch)=>new Motion(this,launch);
         private sealed class Motion:IGameplayProjectileMotion
@@ -66,7 +71,10 @@ namespace FRFrame.Gameplay.Standard
                 {
                     var q = GameplaySpatialMath.Lerp(a, d, definition.ControlAlong);
                     var offset = definition.RelativeOffset;
-                    q = new GameplayPoint(q.X + offset.X * launch.CurveSign, q.Y + offset.Y * launch.CurveSign, q.Z + offset.Z * launch.CurveSign);
+                    float height = definition._relativeHeightScale > 0
+                        ? Math.Clamp(GameplaySpatialMath.Distance(a, d) * definition._relativeHeightScale, definition._relativeHeightMin, definition._relativeHeightMax)
+                        : offset.Y;
+                    q = new GameplayPoint(q.X + offset.X * launch.CurveSign, q.Y + height * launch.CurveSign, q.Z + offset.Z * launch.CurveSign);
                     _control1 = GameplaySpatialMath.Lerp(a, q, 2f / 3);
                     _control2 = GameplaySpatialMath.Lerp(d, q, 2f / 3);
                 }
@@ -134,6 +142,8 @@ namespace FRFrame.Gameplay.Standard
         public IReadOnlyList<IGameplaySkillAction> OnCancelled {get;}
         public IGameplaySpatialViewFactory View {get;}
         public bool CancelOnAbilityEnd {get;}
+        /// <summary>Ends a launched projectile when its owner is no longer targetable, even if the World owns it.</summary>
+        public bool EndOnOwnerDeath {get;}
         public GameplayPoint LaunchOffset {get;}
         public GameplayPoint DestinationOffset {get;}
         public float DirectionAngle {get;}
@@ -149,7 +159,7 @@ namespace FRFrame.Gameplay.Standard
             bool cancelOnAbilityEnd=true,GameplayPoint launchOffset=default,GameplayPoint destinationOffset=default,float directionAngle=0,
             bool onlyHitPrimaryTarget=false, float forwardLaunchOffset=0, bool useOwnerFacing=false,
             GameplayProjectileContactMode contactMode=GameplayProjectileContactMode.Swept, float contactStep=.02f,
-            bool continueAfterHit=false)
+            bool continueAfterHit=false, bool endOnOwnerDeath=false)
         {
             Motion=motion??throw new ArgumentNullException(nameof(motion));Speed=speed??throw new ArgumentNullException(nameof(speed));Duration=duration??throw new ArgumentNullException(nameof(duration));
             HitRadius=hitRadius??throw new ArgumentNullException(nameof(hitRadius));MaxRange=maxRange??throw new ArgumentNullException(nameof(maxRange));Height=height??throw new ArgumentNullException(nameof(height));
@@ -158,6 +168,7 @@ namespace FRFrame.Gameplay.Standard
             OnlyHitPrimaryTarget = onlyHitPrimaryTarget;
             OnHit=GameplaySpatialMath.Actions(onHit);OnArrive=GameplaySpatialMath.Actions(onArrive);OnRange=GameplaySpatialMath.Actions(onRange);OnCancelled=GameplaySpatialMath.Actions(onCancelled);View=view;
             CancelOnAbilityEnd=cancelOnAbilityEnd;LaunchOffset=launchOffset;DestinationOffset=destinationOffset;
+            EndOnOwnerDeath=endOnOwnerDeath;
             if(!float.IsFinite(directionAngle))throw new ArgumentOutOfRangeException(nameof(directionAngle));DirectionAngle=directionAngle;
             if (contactMode == GameplayProjectileContactMode.FixedEndpointNearest && (!float.IsFinite(contactStep) || contactStep <= 0))
                 throw new ArgumentOutOfRangeException(nameof(contactStep));
@@ -220,6 +231,7 @@ namespace FRFrame.Gameplay.Standard
         internal override void Advance(float delta)
         {
             if (Owner.IsDisposed) { Finish(GameplaySpatialEndReason.Cancelled); return; }
+            if (_definition.EndOnOwnerDeath && !Owner.IsTargetable) { Finish(GameplaySpatialEndReason.Died); return; }
             if (_definition.ContactMode == GameplayProjectileContactMode.FixedEndpointNearest)
             {
                 _pending += delta;
@@ -322,7 +334,7 @@ namespace FRFrame.Gameplay.Standard
         }
         public GameplaySkillActionResult Execute(GameplayContext context,GameplayEventData triggerEvent,IGameplaySkillHost host)
         {
-            if (!(host is GameplayStandardActor actor) ||
+            if (!(host is GameplayStandardActor actor) || Definition.EndOnOwnerDeath && !actor.IsTargetable ||
                 ((Definition.RequiresLiveTarget || Definition.OnlyHitPrimaryTarget) &&
                  (!actor.World.TryGetActor(context.TargetData.PrimaryTargetId, out var target) || !target.IsTargetable || target == actor)))
                 return GameplaySkillActionResult.Rejected;

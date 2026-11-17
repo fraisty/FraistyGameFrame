@@ -27,14 +27,17 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference, InspectorName("搜索与空场前向距离")]
         public GameplayFloatValueAuthoring Range = new GameplayConstantFloatValueAuthoring { Value = 9 };
         [InspectorName("自动搜索阵营")] public GameplayFactionFilter Faction = GameplayFactionFilter.Enemies;
+        [InspectorName("自动搜索全角"), Range(1, 360), Tooltip("360° 为全方向。缩小角度后，仅从面向范围内选择最近目标。没有候选时沿朝向取空场落点。")]
+        public float SearchAngle = 360;
         public override void Validate(GameplayAuthoringValidationContext v, string p)
         {
             v.Enum(Plane, p + ".Plane");
             v.Enum(Faction, p + ".Faction");
+            if (!(SearchAngle > 0 && SearchAngle <= 360)) v.Error(p + ".SearchAngle", "搜索全角必须大于 0 且不超过 360°。");
             GameplaySpatialAuthoringUtility.Value(Range, v, p + ".Range");
         }
         public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context) =>
-            new GameplayCaptureWorldPointAction(Plane, Range.Build(), Faction);
+            new GameplayCaptureWorldPointAction(Plane, Range.Build(), Faction, SearchAngle);
     }
 
     [Serializable,Preserve]public sealed class GameplaySkillPointTargetAuthoring:GameplaySkillTargetAuthoring

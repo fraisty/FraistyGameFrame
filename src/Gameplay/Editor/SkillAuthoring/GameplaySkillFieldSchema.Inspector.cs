@@ -25,14 +25,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             EditorGUILayout.LabelField("轨迹预览 · 终点距离 6", EditorStyles.miniLabel);
             var rect = GUILayoutUtility.GetRect(100, 90, GUILayout.ExpandWidth(true));
-            if (Event.current.type != EventType.Repaint || !float.IsFinite(curve.ControlAlong)) return;
+            if (Event.current.type != EventType.Repaint || !(curve.ControlAlong >= 0 && curve.ControlAlong <= 1)) return;
             bool xz = curve.Plane == Standard.GameplaySpatialPlane.XZ;
             var offset = curve.RelativeControlOffset;
             if (!float.IsFinite(offset.x) || !float.IsFinite(offset.y) || !float.IsFinite(offset.z)) return;
-            var definition = new Standard.GameplayProjectileMotionDefinition(Standard.GameplayProjectileMotionKind.Bezier,
-                bezierControl: Standard.GameplayBezierControlMode.RelativeQuadratic, controlAlong: Mathf.Clamp01(curve.ControlAlong),
-                relativeOffset: new GameplayPoint(offset.x, offset.y, offset.z));
-            float scale = Mathf.Min((rect.width - 20) / (6 + Mathf.Abs(offset.x)), (rect.height - 12) / Mathf.Max(2, Mathf.Abs(xz ? offset.z : offset.y)));
+            if (curve.RelativeHeightScale > 0 &&
+                (!float.IsFinite(curve.RelativeHeightScale) || !float.IsFinite(curve.RelativeHeightMin) ||
+                 !float.IsFinite(curve.RelativeHeightMax) || curve.RelativeHeightMin < 0 || curve.RelativeHeightMax < curve.RelativeHeightMin)) return;
+            var definition = curve.BuildMotion();
+            float height = xz ? offset.z : curve.RelativeHeightScale > 0
+                ? Mathf.Clamp(6 * curve.RelativeHeightScale, curve.RelativeHeightMin, curve.RelativeHeightMax) : offset.y;
+            float scale = Mathf.Min((rect.width - 20) / (6 + Mathf.Abs(offset.x)), (rect.height - 12) / Mathf.Max(2, Mathf.Abs(height)));
             Handles.BeginGUI();
             var previous = Handles.color;
             for (int sign = -1; sign <= 1; sign += 2)

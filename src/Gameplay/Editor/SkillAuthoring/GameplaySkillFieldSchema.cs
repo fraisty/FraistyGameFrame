@@ -357,7 +357,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 bool relative = projectile.BezierControl == Standard.GameplayBezierControlMode.RelativeQuadratic;
                 if(field=="BezierControl")return bezier;
                 if(field=="Control1Offset"||field=="Control2Offset")return bezier&&!relative;
-                if(field=="ControlAlong"||field=="RelativeControlOffset"||field=="CurveSide")return bezier&&relative;
+                if(field=="ControlAlong"||field=="RelativeControlOffset"||field=="RelativeHeightScale"||field=="CurveSide")return bezier&&relative;
+                if(field=="RelativeHeightMin"||field=="RelativeHeightMax")return bezier&&relative&&projectile.RelativeHeightScale>0;
                 if(field=="ContactStep")return projectile.ContactMode==Standard.GameplayProjectileContactMode.FixedEndpointNearest;
                 if(field=="MaxHits")return !projectile.ContinueAfterHit;
                 if(field=="UseOwnerFacing")return projectile.Motion==Standard.GameplayProjectileMotionKind.Straight&&

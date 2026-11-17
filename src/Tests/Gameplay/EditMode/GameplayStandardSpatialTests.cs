@@ -10,6 +10,52 @@ namespace FRFrame.Tests.Gameplay
 {
     public sealed class GameplayStandardSpatialTests
     {
+        [TestCase(360, -1f)]
+        [TestCase(120, 4f)]
+        public void CapturedPointFiltersByFacingBeforeSelectingTheNearestActor(float angle, float expectedX)
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            owner.Facing = new GameplayDirection(1, 0);
+            var rear = world.CreateActor(new GameplayPoint(-1, 0), 2);
+            var front = world.CreateActor(new GameplayPoint(4, 0), 2);
+            var capture = new GameplayCaptureWorldPointAction(GameplaySpatialPlane.XY, N(9), GameplayFactionFilter.Enemies, angle);
+            var context = new GameplayContext(owner.Id, new GameplayTargetData(front.Id, front.Position));
+
+            var result = capture.ExecuteWithContext(context, default, owner).Context.TargetData;
+            Assert.That(result.Point.X, Is.EqualTo(expectedX));
+            Assert.That(result.HasPrimaryTarget, Is.False);
+
+            rear.TeleportTo(new GameplayPoint(-15, 0));
+            front.TeleportTo(new GameplayPoint(15, 0));
+            owner.Facing = new GameplayDirection(-1, 0);
+            result = capture.ExecuteWithContext(context, default, owner).Context.TargetData;
+            Assert.That(result.Point.X, Is.EqualTo(-9f));
+        }
+
+        [TestCase(1f, .225f)]
+        [TestCase(5f, .9f)]
+        public void RelativeBezierHeightScalesWithLaunchDistanceAndKeepsBothSides(float distance, float expectedHeight)
+        {
+            var scaled = new GameplayProjectileMotionDefinition(GameplayProjectileMotionKind.Bezier,
+                bezierControl: GameplayBezierControlMode.RelativeQuadratic, relativeOffset: new GameplayPoint(0, 6.68f),
+                relativeHeightScale: .45f, relativeHeightMin: .25f, relativeHeightMax: 1.8f);
+            var legacy = new GameplayProjectileMotionDefinition(GameplayProjectileMotionKind.Bezier,
+                bezierControl: GameplayBezierControlMode.RelativeQuadratic, relativeOffset: new GameplayPoint(0, 6.68f));
+            var end = new GameplayPoint(distance, 0);
+            var direction = new GameplayDirection(1, 0);
+            var up = new GameplayProjectileLaunch(default, end, direction, GameplaySpatialPlane.XY, 1, .5f, 1);
+            var down = new GameplayProjectileLaunch(default, end, direction, GameplaySpatialPlane.XY, 1, .5f, 1, -1);
+            var motion = scaled.Create(up);
+            var midpoint = motion.Sample(.25, .25f, default, null);
+            Assert.That(midpoint.X, Is.EqualTo(distance / 2).Within(.0001f));
+            Assert.That(midpoint.Y, Is.EqualTo(expectedHeight).Within(.0001f));
+            Assert.That(scaled.Create(down).Sample(.25, .25f, default, null).Y, Is.EqualTo(-expectedHeight).Within(.0001f));
+            Assert.That(legacy.Create(up).Sample(.25, .25f, default, null).Y, Is.EqualTo(3.34f).Within(.0001f));
+            Assert.That(motion.Sample(.5, .25f, midpoint, null), Is.EqualTo(end));
+            Assert.That(motion.Arrived, Is.True);
+        }
+
         [Test]
         public void FacingConditionDoesNotReplaceNearestRejectedActor()
         {

@@ -18,6 +18,7 @@ namespace FRFrame.Gameplay.Authoring
         public GameplayStraightDestinationMode StraightDestination;
         public GameplaySpatialPlane Plane;
         public bool CancelOnAbilityEnd=true;
+        [InspectorName("施法者倒下时结束弹体")] public bool EndOnOwnerDeath;
         public Vector3 LaunchOffset,DestinationOffset;
         public float DirectionAngle;
         [InspectorName("沿角色朝向的发射偏移")] public float ForwardLaunchOffset;
@@ -27,7 +28,10 @@ namespace FRFrame.Gameplay.Authoring
         [InspectorName("命中后继续飞行")] public bool ContinueAfterHit;
         [InspectorName("贝塞尔控制方式")] public GameplayBezierControlMode BezierControl;
         [InspectorName("相对控制点比例"), Range(0,1)] public float ControlAlong = .5f;
-        [InspectorName("相对控制点世界偏移")] public Vector3 RelativeControlOffset = Vector3.up;
+        [InspectorName("相对控制点世界偏移"), Tooltip("启用距离自适应时，Y 分量由距离和下方范围决定。")] public Vector3 RelativeControlOffset = Vector3.up;
+        [InspectorName("控制点随距离增高"), Min(0), Tooltip("每单位起终点距离对应的世界 Y 偏移。0 使用固定世界偏移。")] public float RelativeHeightScale;
+        [InspectorName("控制点高度下限"), Min(0)] public float RelativeHeightMin;
+        [InspectorName("控制点高度上限"), Min(0)] public float RelativeHeightMax = 1.8f;
         [InspectorName("偏移方向")] public GameplayCurveSide CurveSide;
         [SerializeReference] public GameplayFloatValueAuthoring Speed=new GameplayConstantFloatValueAuthoring{Value=8};
         [SerializeReference] public GameplayFloatValueAuthoring Duration=new GameplayConstantFloatValueAuthoring{Value=3};
@@ -45,13 +49,17 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference] public GameplaySkillActionAuthoring[] OnArrive=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnRange=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference] public GameplaySkillActionAuthoring[] OnCancelled=Array.Empty<GameplaySkillActionAuthoring>();
-        public GameplayProjectileDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>new GameplayProjectileDefinition(
+        /// <summary>Creates the same motion definition for the workbench trajectory and the actual projectile.</summary>
+        public GameplayProjectileMotionDefinition BuildMotion() =>
             new GameplayProjectileMotionDefinition(Motion,new GameplayPoint(Control1Offset.x,Control1Offset.y,Control1Offset.z),new GameplayPoint(Control2Offset.x,Control2Offset.y,Control2Offset.z),StraightDestination,BezierControl,ControlAlong,
-                new GameplayPoint(RelativeControlOffset.x,RelativeControlOffset.y,RelativeControlOffset.z),CurveSide),
+                new GameplayPoint(RelativeControlOffset.x,RelativeControlOffset.y,RelativeControlOffset.z),CurveSide,
+                RelativeHeightScale,RelativeHeightMin,RelativeHeightMax);
+        public GameplayProjectileDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>new GameplayProjectileDefinition(
+            BuildMotion(),
             Speed.Build(),Duration.Build(),HitRadius.Build(),MaxRange.Build(),CurveHeight.Build(),Plane,Faction,Tags?.Build(),LayerMask,MaxHits,Motion==GameplayProjectileMotionKind.Homing,
             GameplaySpatialAuthoringUtility.Build(OnHit,context),GameplaySpatialAuthoringUtility.Build(OnArrive,context),GameplaySpatialAuthoringUtility.Build(OnRange,context),GameplaySpatialAuthoringUtility.Build(OnCancelled,context),CreateView(context),
             CancelOnAbilityEnd,new GameplayPoint(LaunchOffset.x,LaunchOffset.y,LaunchOffset.z),new GameplayPoint(DestinationOffset.x,DestinationOffset.y,DestinationOffset.z),DirectionAngle,OnlyHitPrimaryTarget,
-            ForwardLaunchOffset,UseOwnerFacing,ContactMode,ContactStep,ContinueAfterHit));
+            ForwardLaunchOffset,UseOwnerFacing,ContactMode,ContactStep,ContinueAfterHit,EndOnOwnerDeath));
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {
@@ -80,6 +88,12 @@ namespace FRFrame.Gameplay.Authoring
                     v.Finite(RelativeControlOffset.x,p+".RelativeControlOffset.x");
                     v.Finite(RelativeControlOffset.y,p+".RelativeControlOffset.y");
                     v.Finite(RelativeControlOffset.z,p+".RelativeControlOffset.z");
+                    if (!float.IsFinite(RelativeHeightScale) || RelativeHeightScale < 0)
+                        v.Error(p+".RelativeHeightScale","随距离增高的比例必须有限且非负。");
+                    if (RelativeHeightScale > 0 &&
+                        (!float.IsFinite(RelativeHeightMin) || !float.IsFinite(RelativeHeightMax) ||
+                         RelativeHeightMin < 0 || RelativeHeightMax < RelativeHeightMin))
+                        v.Error(p+".RelativeHeightMax","控制点高度上下限必须有限、非负且有序。");
                 }
             }
             foreach(var offset in new[]{Control1Offset,Control2Offset,LaunchOffset,DestinationOffset})if(!float.IsFinite(offset.x)||!float.IsFinite(offset.y)||!float.IsFinite(offset.z))v.Error(p,"Projectile offsets must be finite.");
