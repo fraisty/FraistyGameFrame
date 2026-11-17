@@ -10,7 +10,7 @@ namespace FRFrame.Gameplay.Unity
     {
         private readonly List<CueLease> _cues=new List<CueLease>();
         private readonly Queue<(GameplayPresentationCueDefinition Definition, Vector3 Point, Transform Parent,
-            Vector3? End, bool Mirror, GameplayEffectApplicationContext Application)> _committedEffectCues = new();
+            Vector3? End, bool Mirror, GameplayEffectApplicationContext Application, GameplayUnityAnimationController Target)> _committedEffectCues = new();
         private GameObjectPoolModule _ownedPool;
         private AudioManager _ownedAudio;
         /// <summary>Optional existing application services. When absent, standalone Labs instantiate
@@ -60,11 +60,11 @@ namespace FRFrame.Gameplay.Unity
         private bool PlayResolvedCue(GameplayPresentationCueDefinition definition, GameplayContext context,
             GameplayPoint? segment, GameplayAbilityHandle grant)
         {
-            if (!TryResolveCuePose(definition, context, Actor, segment, out var point, out var parent, out var end)) return false;
+            if (!TryResolveCuePose(definition, context, Actor, segment, out var point, out var parent, out var end, out var target)) return false;
             var application = definition.RecycleWhenParticlesFinish && definition.Intensity == null ? null : PresentationValueContext(context);
             float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, application);
-            return PlayCueAt(definition, point, parent, end, duration, Subject.transform.localScale.x < 0,
-                CueIntensity(definition, application), grant);
+            return PlayCueAt(definition, point, parent, end, duration, Actor.Facing.X < 0,
+                CueIntensity(definition, application), grant, target);
         }
 
         internal bool TryQueueEffectCue(GameplayPresentationCueDefinition definition, GameplayContext context, GameplayEffectLifecycleEvent lifecycle)
@@ -72,10 +72,9 @@ namespace FRFrame.Gameplay.Unity
             if (_disposed || Subject == null || Actor.IsDisposed || !lifecycle.IsExecuting ||
                 !ReferenceEquals(lifecycle.Application.Target, Actor) || context.TargetData.PrimaryTargetId != Actor.Id) return false;
             Actor.World.TryGetActor(lifecycle.Application.Context.InstigatorId, out var instigator);
-            if (!TryResolveCuePose(definition, context, instigator, null, out var point, out var parent, out var end)) return false;
-            var subject = (instigator?.Presentation as GameplayUnityAnimationController)?.Subject;
-            bool mirror = (subject != null ? subject : Subject).transform.localScale.x < 0;
-            _committedEffectCues.Enqueue((definition, point, parent, end, mirror, lifecycle.Application));
+            if (!TryResolveCuePose(definition, context, instigator, null, out var point, out var parent, out var end, out var target)) return false;
+            bool mirror = (instigator ?? Actor).Facing.X < 0;
+            _committedEffectCues.Enqueue((definition, point, parent, end, mirror, lifecycle.Application, target));
             return true;
         }
 
@@ -86,8 +85,10 @@ namespace FRFrame.Gameplay.Unity
                 try
                 {
                     float duration = cue.Definition.RecycleWhenParticlesFinish ? 0 : CueDuration(cue.Definition, cue.Application);
-                    PlayCueAt(cue.Definition, cue.Point, cue.Parent, cue.End, duration, cue.Mirror,
-                        CueIntensity(cue.Definition, cue.Application));
+                    if (!PlayCueAt(cue.Definition, cue.Point, cue.Parent, cue.End, duration, cue.Mirror,
+                        CueIntensity(cue.Definition, cue.Application), tintTarget: cue.Target))
+                        Actor.RecordSkillTrace(new GameplaySkillTraceRecord(Actor.Id, cue.Application.Context, default,
+                            GameplaySkillTraceStage.ActionRejected, "EffectCue", detail: "效果表现的渲染目标不再可用。"));
                 }
                 catch (Exception error) { Debug.LogException(error, Subject); }
             }
@@ -104,9 +105,12 @@ namespace FRFrame.Gameplay.Unity
             definition.Intensity == null ? 1 : Mathf.Max(0, GameplayValueEvaluator.Evaluate(definition.Intensity, application));
 
         private bool TryResolveCuePose(GameplayPresentationCueDefinition definition, GameplayContext context,
-            GameplayStandardActor owner, GameplayPoint? segment, out Vector3 point, out Transform parent, out Vector3? end)
+            GameplayStandardActor owner, GameplayPoint? segment, out Vector3 point, out Transform parent, out Vector3? end,
+            out GameplayUnityAnimationController visual)
         {
-            point=default;parent=null;end=null;
+            point=default;parent=null;end=null;visual=null;
+            bool tint = definition.Kind == GameplayPresentationCueAsset.CueKind.Tint;
+            if (tint && definition.Origin is not (GameplayPresentationCueAsset.PositionSource.Owner or GameplayPresentationCueAsset.PositionSource.PrimaryTarget)) return false;
             if (definition.Origin == GameplayPresentationCueAsset.PositionSource.CallbackSegment ||
                 definition.Origin == GameplayPresentationCueAsset.PositionSource.TargetToOwner)
             {
@@ -132,15 +136,21 @@ namespace FRFrame.Gameplay.Unity
                 if(definition.Origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget)Actor.World.TryGetActor(context.TargetData.PrimaryTargetId,out target);
                 if(target==null)return false;
                 var p=target.Position;point=new Vector3(p.X,p.Y,p.Z);
-                parent=(target.Presentation as GameplayUnityAnimationController)?.Subject?.transform;
-                if(parent!=null&&!string.IsNullOrEmpty(definition.Binding)){parent=parent.Find(definition.Binding)??parent;point=parent.position;}
+                visual=target.Presentation as GameplayUnityAnimationController;
+                parent=visual?.Subject?.transform;
+                if(parent!=null&&!string.IsNullOrEmpty(definition.Binding))
+                {
+                    var binding=parent.Find(definition.Binding);
+                    if (tint && !binding) return false;
+                    parent=binding??parent;point=parent.position;
+                }
             }
             return true;
         }
         private static Vector3 ToVector(GameplayPoint point) => new Vector3(point.X, point.Y, point.Z);
 
         private bool PlayCueAt(GameplayPresentationCueDefinition definition, Vector3 point, Transform parent, Vector3? end,
-            float duration, bool mirror, float intensity, GameplayAbilityHandle grant=default)
+            float duration, bool mirror, float intensity, GameplayAbilityHandle grant=default, GameplayUnityAnimationController tintTarget=null)
         {
             var cue=new CueLease(this,grant,duration,definition.RecycleWhenParticlesFinish);
             try
@@ -154,13 +164,14 @@ namespace FRFrame.Gameplay.Unity
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
                     var pose = ResolveCueGeometry(point, end, definition.Offset, definition.Scale, definition.MirrorFacing && mirror, intensity);
-                    view.transform.SetParent(definition.Follow ? parent : null, false);
+                    view.transform.SetParent(null, false);
                     view.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
                     view.transform.localScale = pose.Scale;
+                    if (definition.Follow && parent) view.transform.SetParent(parent, true);
                     cue.Particles=view.GetComponentsInChildren<ParticleSystem>();
                     foreach(var particles in cue.Particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);particles.Play(false);particles.Pause(false);}
                 }
-                else
+                else if(definition.Kind==GameplayPresentationCueAsset.CueKind.Audio)
                 {
                     if(definition.Clip==null)throw new InvalidOperationException("Audio clip is missing.");
                     WarmPresentationAudio();
@@ -168,6 +179,23 @@ namespace FRFrame.Gameplay.Unity
                     cue.Audio=audio.Play(definition.Clip,new AudioPlayOptions{Loop=definition.AudioLoop,Volume=Mathf.Clamp01(definition.Volume*intensity),Pitch=definition.Pitch,Position=point+definition.Offset,FollowTarget=definition.Follow?parent:null});
                     if(!cue.Audio.IsValid){cue.Dispose();return false;}
                 }
+                else if(definition.Kind==GameplayPresentationCueAsset.CueKind.Tint)
+                {
+                    if (tintTarget == null || tintTarget._disposed || !tintTarget.Actor.IsTargetable || !parent) return false;
+                    float fadeIn = definition.TintFadeIn, fadeOut = definition.TintFadeOut;
+                    var color = definition.TintColor;
+                    if (!(fadeIn >= 0 && fadeOut >= 0 && fadeIn + fadeOut <= duration + .000001f) ||
+                        !float.IsFinite(color.r) || !float.IsFinite(color.g) || !float.IsFinite(color.b) || !float.IsFinite(color.a))
+                        throw new ArithmeticException("Tint color must be finite and its fades must fit the Cue duration.");
+                    tintTarget._activeTint?.Dispose();
+                    var paint = CaptureTint(parent, color);
+                    if (paint == null) return false;
+                    cue.TintTarget = tintTarget;
+                    cue.PaintTint = time => paint(TintWeight(time, duration, fadeIn, fadeOut) * intensity);
+                    tintTarget._activeTint = cue;
+                    cue.PaintTint(0);
+                }
+                else return false;
                 _cues.Add(cue);
                 if(grant.IsValid&&definition.OwnedByAbility&&!Actor.Abilities.TryOwnLifetime(grant,cue)){cue.Dispose();return false;}
                 return true;
@@ -204,11 +232,14 @@ namespace FRFrame.Gameplay.Unity
             internal ResourceKey Key;
             internal string Location;
             internal AudioHandle Audio;
+            internal GameplayUnityAnimationController TintTarget;
+            internal Action<float> PaintTint;
             internal CueLease(GameplayUnityAnimationController owner,GameplayAbilityHandle grant,float duration,bool recycleWhenParticlesFinish)
             {_owner=owner;_grant=grant;_duration=duration;_recycleWhenParticlesFinish=recycleWhenParticlesFinish;}
             internal void Advance(float delta)
             {
                 if(_disposed)return;
+                if (TintTarget != null && !TintTarget.Actor.IsTargetable) { Dispose(); return; }
                 bool finished=true;
                 if(View!=null&&Particles!=null)foreach(var particles in Particles){
                     if(particles==null)continue;
@@ -222,12 +253,14 @@ namespace FRFrame.Gameplay.Unity
                     if(finished)Dispose();
                     return;
                 }
-                _elapsed+=delta;if(_elapsed>=_duration)Dispose();
+                _elapsed+=delta;if(_elapsed>=_duration)Dispose();else PaintTint?.Invoke((float)_elapsed);
             }
             public void Dispose()
             {
                 if(_disposed)return;_disposed=true;_owner._cues.Remove(this);if(_grant.IsValid)_owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);
                 Audio.Stop();
+                if (TintTarget != null && ReferenceEquals(TintTarget._activeTint, this))
+                { TintTarget._activeTint=null; PaintTint?.Invoke(_duration); }
                 if(View!=null){foreach(var particles in Particles??Array.Empty<ParticleSystem>())if(particles!=null)particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);Pool.Release(Key,Location,View);View=null;}
             }
         }

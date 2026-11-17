@@ -31,11 +31,13 @@ namespace FRFrame.Gameplay.Unity
         [SerializeReference] public GameplayFloatValueAuthoring Intensity;
         public GameplayPresentationCueAsset.OutcomeRequirement Outcome;
         public GameplayTagQueryAuthoring TargetRequirements;
+        public Color TintColor = new Color(1, .15f, .15f, 1);
+        [Min(0)] public float TintFadeIn = .10f, TintFadeOut = .15f;
         private bool UsesParticleCompletion=>Kind==GameplayPresentationCueAsset.CueKind.Vfx&&RecycleWhenParticlesFinish;
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>
             new GameplayPresentationCueDefinition(Kind,Prefab,Clip,Origin,Offset,Follow,Volume,Pitch,AudioLoop,
                 UsesParticleCompletion?null:Duration.Build(),OwnedByAbility,Binding,Scale,MirrorFacing,UsesParticleCompletion,
-                Intensity?.Build(),Outcome,TargetRequirements?.Build()));
+                Intensity?.Build(),Outcome,TargetRequirements?.Build(),TintColor,TintFadeIn,TintFadeOut));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation,string path)
         {
             if(!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.CueKind),Kind)||!Enum.IsDefined(typeof(global::FRFrame.Gameplay.Unity.GameplayPresentationCueAsset.PositionSource),Origin))validation.Error(path,"Invalid cue policy.");
@@ -55,6 +57,17 @@ namespace FRFrame.Gameplay.Unity
                 }
             }else if(Duration==null)validation.Error(path+".Duration","Duration is required.");
             else Duration.Validate(validation,path+".Duration");
+            if (Kind == GameplayPresentationCueAsset.CueKind.Tint)
+            {
+                if (Origin is not (GameplayPresentationCueAsset.PositionSource.Owner or GameplayPresentationCueAsset.PositionSource.PrimaryTarget))
+                    validation.Error(path+".Origin", "角色闪色需要施法者或实际目标。");
+                if (!float.IsFinite(TintColor.r) || !float.IsFinite(TintColor.g) || !float.IsFinite(TintColor.b) || !float.IsFinite(TintColor.a))
+                    validation.Error(path+".TintColor", "闪色颜色必须有限。");
+                if (!float.IsFinite(TintFadeIn) || !float.IsFinite(TintFadeOut) || TintFadeIn < 0 || TintFadeOut < 0)
+                    validation.Error(path+".TintFadeIn", "淡入和淡出时间必须有限且非负。");
+                if (Duration is GameplayConstantFloatValueAuthoring time && (time.Value <= 0 || time.Value + .000001f < TintFadeIn + TintFadeOut))
+                    validation.Error(path+".Duration", "总时长须为正且至少覆盖淡入和淡出。");
+            }
             if(!float.IsFinite(Volume)||Volume<0||Volume>1||!float.IsFinite(Pitch)||Pitch<=0)validation.Error(path,"Invalid volume/pitch.");
             if(!float.IsFinite(Offset.x)||!float.IsFinite(Offset.y)||!float.IsFinite(Offset.z))validation.Error(path+".Offset","Offset must be finite.");
             if(!float.IsFinite(Scale.x)||!float.IsFinite(Scale.y)||!float.IsFinite(Scale.z))validation.Error(path+".Scale","Scale must be finite.");

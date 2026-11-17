@@ -8,8 +8,17 @@ namespace FRFrame.Gameplay.Unity
     {
         private readonly Queue<(GameplayEffectHandle Handle, GameplayEffectDefinition Definition, int Stacks)> _effectChanges = new();
         private readonly Dictionary<GameplayEffectHandle, EffectViewLease> _effectViews = new();
-        private readonly Dictionary<GameplayEffectDefinition, EffectViewLease> _effectBadges = new();
+        private readonly Dictionary<object, EffectViewLease> _effectBadges = new();
         private bool _statusVisible;
+
+        /// <summary>Whether an active authored badge already presents a granted status to this host.</summary>
+        public bool ShowsEffectStatus(GameplayTag tag)
+        {
+            foreach (var view in _effectViews.Values)
+                foreach (var granted in view.Definition.GrantedTags)
+                    if (granted == tag) return true;
+            return false;
+        }
 
         private void ObserveEffectState(GameplayEffectPresentationState state)
         {
@@ -64,19 +73,20 @@ namespace FRFrame.Gameplay.Unity
             if (_effectViews.Count == 0) return;
             _effectBadges.Clear();
             foreach (var lease in _effectViews.Values)
-                if (!_effectBadges.TryGetValue(lease.Definition, out var current) || lease.Stacks > current.Stacks)
-                    _effectBadges[lease.Definition] = lease;
+                if (!_effectBadges.TryGetValue(lease.DisplayKey, out var current) || lease.Stacks > current.Stacks)
+                    _effectBadges[lease.DisplayKey] = lease;
             var point = Actor.Position;
             foreach (var lease in _effectViews.Values)
             {
-                lease.View.transform.position = new Vector3(point.X, point.Y, point.Z);
-                lease.View.Advance(amount, ReferenceEquals(_effectBadges[lease.Definition], lease));
+                lease.View.transform.position = (lease.Anchor ? lease.Anchor.position : new Vector3(point.X, point.Y, point.Z)) + lease.Offset;
+                lease.View.Advance(amount, ReferenceEquals(_effectBadges[lease.DisplayKey], lease));
             }
         }
 
         private EffectViewLease CreateEffectView(GameplayEffectHandle handle, GameplayEffectDefinition definition, GameplayUnityEffectPresentation presentation)
         {
-            var lease = new EffectViewLease(definition, presentation.StatusPrefab, SpatialViewPool);
+            var anchor = string.IsNullOrEmpty(presentation.Binding) ? null : Subject.transform.Find(presentation.Binding);
+            var lease = new EffectViewLease(definition, presentation, anchor, SpatialViewPool);
             ApplyViewRenderLayer(lease.View.gameObject);
             _effectViews.Add(handle, lease);
             return lease;
@@ -104,11 +114,18 @@ namespace FRFrame.Gameplay.Unity
             private readonly string _name;
             internal readonly GameplayEffectDefinition Definition;
             internal readonly GameplayEffectStatusView View;
+            internal readonly Transform Anchor;
+            internal readonly Vector3 Offset;
+            internal readonly object DisplayKey;
             internal int Stacks { get; private set; }
 
-            internal EffectViewLease(GameplayEffectDefinition definition, GameObject prefab, GameObjectPoolModule pool)
+            internal EffectViewLease(GameplayEffectDefinition definition, GameplayUnityEffectPresentation presentation,
+                Transform anchor, GameObjectPoolModule pool)
             {
                 Definition = definition;
+                Anchor = anchor; Offset = presentation.Offset;
+                DisplayKey = string.IsNullOrWhiteSpace(presentation.DisplayGroup) ? definition : presentation.DisplayGroup;
+                var prefab = presentation.StatusPrefab;
                 _pool = pool;
                 _name = prefab.name;
                 _key = new ResourceKey("Gameplay.DirectPrefab", prefab.GetInstanceID().ToString(CultureInfo.InvariantCulture));

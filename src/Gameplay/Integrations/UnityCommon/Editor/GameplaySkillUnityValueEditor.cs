@@ -41,7 +41,9 @@ namespace FRFrame.Gameplay.Unity.Editor
                 serialized.UpdateIfRequiredOrScript();
                 var prefab = change.newValue as GameObject;
                 var source = serialized.FindProperty(path);
-                source.managedReferenceValue = prefab == null ? null : new GameplayUnityEffectPresentationAuthoring { StatusPrefab = prefab };
+                if (prefab != null && source.managedReferenceValue is GameplayUnityEffectPresentationAuthoring)
+                    source.FindPropertyRelative(nameof(GameplayUnityEffectPresentationAuthoring.StatusPrefab)).objectReferenceValue=prefab;
+                else source.managedReferenceValue = prefab == null ? null : new GameplayUnityEffectPresentationAuthoring { StatusPrefab = prefab };
                 GameplaySkillCardFields.Apply(serialized, document, path, out string error);
                 issue.text = error ?? "";
                 Sync();
@@ -75,8 +77,10 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(values is GameplayUnityAnimationData){yield return new GameplaySkillCardField("Clip","动画剪辑");yield return new GameplaySkillCardField("StateName","状态名");}
             if(values is GameplayPresentationCueData cue){
                 bool audio=cue.Kind==GameplayPresentationCueAsset.CueKind.Audio;
-                yield return audio?new GameplaySkillCardField("Clip","音频片段"):new GameplaySkillCardField("Prefab","特效预制体");
-                if(!audio)yield return new GameplaySkillCardField("RecycleWhenParticlesFinish","播完回收");
+                bool tint=cue.Kind==GameplayPresentationCueAsset.CueKind.Tint;
+                if(tint)yield return new GameplaySkillCardField("TintColor","角色闪色");
+                else yield return audio?new GameplaySkillCardField("Clip","音频片段"):new GameplaySkillCardField("Prefab","特效预制体");
+                if(!audio&&!tint)yield return new GameplaySkillCardField("RecycleWhenParticlesFinish","播完回收");
                 if(IsFieldVisible(cue,"Duration"))yield return new GameplaySkillCardField("Duration",audio?"停止时限":"回收时限",true);
                 yield return new GameplaySkillCardField("Origin","播放位置");
                 if(IsFieldVisible(cue,"Binding"))yield return new GameplaySkillCardField("Binding","挂点（空为根）");
@@ -100,10 +104,12 @@ namespace FRFrame.Gameplay.Unity.Editor
             }
             if(values is GameplayPresentationCueData cue){
                 bool audio=cue.Kind==GameplayPresentationCueAsset.CueKind.Audio;
-                yield return new GameplayBusinessInspectorGroup(null,audio?"音频资源":"特效资源",null,audio?"Clip":"Prefab");
+                yield return new GameplayBusinessInspectorGroup(null,"表现类型与资源",null,"Kind","Clip","Prefab");
                 yield return new GameplayBusinessInspectorGroup(null,audio?"播放位置":"位置 / 缩放 / 朝向",null,"Origin","Binding","Offset","Scale","Follow","MirrorFacing");
                 if(audio)
                     yield return new GameplayBusinessInspectorGroup(null,"音频播放",null,"Volume","Pitch","AudioLoop");
+                if(cue.Kind==GameplayPresentationCueAsset.CueKind.Tint)
+                    yield return new GameplayBusinessInspectorGroup(null,"角色闪色","写入所选可见角色，重复命中刷新同一闪色，结束恢复基色。","TintColor","TintFadeIn","TintFadeOut");
                 yield return new GameplayBusinessInspectorGroup(null,"表现触发条件",
                     "命中和实扣生命只检查同一次伤害结算。表现强度缩放特效，或乘以音量；两点特效只缩放宽度。",
                     "Outcome","TargetRequirements","Intensity");
@@ -116,6 +122,8 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(values is GameplayUnityEffectPresentationAuthoring effect)return effect.StatusPrefab?effect.StatusPrefab.name:"无持续视图";
             if(values is GameplayFloatingTextData text)return "真实战斗结算：伤害 / 治疗 / 暴击 / 护盾\n"+(text.FixedPoint?"固定世界位置":(string.IsNullOrEmpty(text.Binding)?"结果目标根节点":"结果目标挂点 "+text.Binding)+(text.Follow?" · 跟随":" · 不跟随"));
             if(values is GameplayAnimationData animation)return animation.BackendName+" · "+animation.ClipLabel+" · 通道 "+animation.Channel+"\n"+(animation.Loop?"循环":"单次")+" · 速度 "+GameplaySkillFieldSchema.FloatSummary(animation.Speed);
+            if(values is GameplayPresentationCueData tint&&tint.Kind==GameplayPresentationCueAsset.CueKind.Tint)
+                return "角色闪色 · "+(tint.Origin==GameplayPresentationCueAsset.PositionSource.Owner?"施法者":"实际目标")+" · "+GameplaySkillFieldSchema.FloatSummary(tint.Duration)+"s";
             if(values is GameplayPresentationCueData cue)return (cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"音效":"特效")+" · "+(cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?(cue.Clip?cue.Clip.name:"待选择音频"):(cue.Prefab?cue.Prefab.name:"待选择特效"))+"\n"+(cue.Origin switch {
                 GameplayPresentationCueAsset.PositionSource.CallbackSegment => "回调起点 → 命中地点",
                 GameplayPresentationCueAsset.PositionSource.TargetToOwner => "命中地点 → 施法者",
@@ -125,7 +133,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             return null;
         }
         public string NodeTypeName(object values)=>values is GameplayPresentationCueData cue
-            ?cue.Kind==GameplayPresentationCueAsset.CueKind.Audio?"播放音频":"播放特效"
+            ?cue.Kind switch { GameplayPresentationCueAsset.CueKind.Tint=>"角色闪色", GameplayPresentationCueAsset.CueKind.Audio=>"播放音频", _=>"播放特效" }
             :null;
         public IEnumerable<(string Name, GameplayLocalDefinitionPayload Value)> CreationPresets(Type valueType)
         {
@@ -134,6 +142,9 @@ namespace FRFrame.Gameplay.Unity.Editor
                 Kind=GameplayPresentationCueAsset.CueKind.Vfx,RecycleWhenParticlesFinish=true,OwnedByAbility=false
             });
             yield return ("播放音频", new GameplayPresentationCueData { Kind = GameplayPresentationCueAsset.CueKind.Audio });
+            yield return ("角色闪色", new GameplayPresentationCueData { Kind=GameplayPresentationCueAsset.CueKind.Tint,
+                Origin=GameplayPresentationCueAsset.PositionSource.PrimaryTarget, Outcome=GameplayPresentationCueAsset.OutcomeRequirement.ConfirmedHit,
+                Duration=new GameplayConstantFloatValueAuthoring{Value=.25f},OwnedByAbility=false });
         }
 
         public IEnumerable<Type> ValueTypes(Type resource)
@@ -153,7 +164,6 @@ namespace FRFrame.Gameplay.Unity.Editor
             GameplayPresentationCueAsset.PositionSource origin;
             bool autoRecycle;
             if(values is GameplayPresentationCueData cue){
-                if(field=="Kind")return false;
                 kind=cue.Kind;
                 origin=cue.Origin;
                 autoRecycle=cue.RecycleWhenParticlesFinish;
@@ -164,10 +174,16 @@ namespace FRFrame.Gameplay.Unity.Editor
             }else return true;
 
             switch(field){
+                case "TintColor": case "TintFadeIn": case "TintFadeOut":
+                    return kind==GameplayPresentationCueAsset.CueKind.Tint;
+                case "Offset":
+                    return kind!=GameplayPresentationCueAsset.CueKind.Tint;
                 case "Prefab": case "Scale": case "MirrorFacing": case "RecycleWhenParticlesFinish":
                     return kind==GameplayPresentationCueAsset.CueKind.Vfx;
                 case "Clip": case "Volume": case "Pitch": case "AudioLoop":
                     return kind==GameplayPresentationCueAsset.CueKind.Audio;
+                case "Follow" when kind==GameplayPresentationCueAsset.CueKind.Tint:
+                    return false;
                 case "Binding": case "Follow":
                     return origin==GameplayPresentationCueAsset.PositionSource.Owner||origin==GameplayPresentationCueAsset.PositionSource.PrimaryTarget;
                 case "Duration":
@@ -177,8 +193,15 @@ namespace FRFrame.Gameplay.Unity.Editor
             }
         }
         public bool DrawField(SerializedProperty root,SerializedProperty field)=>false;
-        public bool Supports(object values) => values is GameplayAnimationData || values is GameplayPresentationCueData || values is GameplayFloatingTextData;
+        public bool Supports(object values) => values is GameplayAnimationData || values is GameplayPresentationCueData || values is GameplayFloatingTextData ||
+            values is GameplayEffectDefinitionData effect && effect.Presentation is GameplayUnityEffectPresentationAuthoring;
         public IGameplaySkillPreviewSession Create(GameplaySkillDocumentAsset document, object values, float startSeconds)
-        { var session = new GameplayAnimationPreviewSession(); session.UpdateValues(document, values, startSeconds); return session; }
+        {
+            var session = new GameplayAnimationPreviewSession();
+            if(values is GameplayEffectDefinitionData effect&&effect.Presentation is GameplayUnityEffectPresentationAuthoring status)
+                session.UpdateStatus(document,status,effect.Duration,startSeconds);
+            else session.UpdateValues(document, values, startSeconds);
+            return session;
+        }
     }
 }

@@ -122,7 +122,7 @@ namespace FRFrame.Gameplay.Unity
             internal Player(Animator animator,AnimationClip clip,string state,int layer,global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend backend,bool loop,bool restore,float blend,string controllerName)
             {_animator=animator;_clip=clip;_hash=Animator.StringToHash(state??"");_layer=layer;_backend=backend;Loop=loop;_restore=restore;_events=clip.events;_blend=blend;
              PlaybackSource=backend==global::FRFrame.Gameplay.Unity.GameplayUnityAnimationAsset.PlaybackBackend.AnimatorState
-                ? $"Animator · {controllerName} / {state} / {clip.name}" : "Playables · "+clip.name;}
+                ? $"Animator · {controllerName} / {state} / {clip.name} / Layer {layer}" : "Playables · "+clip.name+" / 整个 Animator";}
             public void Seek(float seconds)
             {
                 if(_disposed)return;

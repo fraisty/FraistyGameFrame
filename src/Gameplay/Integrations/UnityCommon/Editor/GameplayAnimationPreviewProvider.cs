@@ -35,11 +35,12 @@ namespace FRFrame.Gameplay.Unity.Editor
         private GameplayUnityCuePreview _cuePreview;
         private GameplaySourceHandle _previewSource;
         private bool _sharedPreviewSource;
+        private bool _statusPreview;
         public void BindSource(GameplaySourceHandle source, bool shared)
         {
             _previewSource = source;
             _sharedPreviewSource = shared;
-            _cuePreview?.BindSource(source, shared);
+            _cuePreview?.BindSource(source, shared || _statusPreview);
         }
         public void CancelInteraction() => _cuePreview?.CancelInteraction();
         private float _presentationStart;
@@ -66,10 +67,17 @@ namespace FRFrame.Gameplay.Unity.Editor
         /// No proxy SO, generated asset or runtime rule simulation is involved.</summary>
         public void UpdateValues(GameplaySkillDocumentAsset document, object values, float startSeconds)
         {
+            _statusPreview=false;
             Release(); _source=null; _cueSource=null; _textSource=null;
             _casterProfile=FRFrame.Gameplay.Editor.SkillAuthoring.GameplaySkillEditorState.PreviewProfile(document);
             _document=document; _values=values as GameplayAnimationData; _cueValues=values as GameplayPresentationCueData; _textValues=values as GameplayFloatingTextData;
             _presentationStart=startSeconds; Load(); Seek(0);
+        }
+        internal void UpdateStatus(GameplaySkillDocumentAsset document, GameplayUnityEffectPresentationAuthoring status,float seconds,float start)
+        {
+            UpdateValues(document,new GameplayPresentationCueData{Prefab=status.StatusPrefab,Binding=status.Binding,Offset=status.Offset,
+                Duration=new GameplayConstantFloatValueAuthoring{Value=Mathf.Max(.3f,seconds)}},start);
+            _statusPreview=true;_cuePreview?.BindSource(null,true);
         }
         public float Duration=>_presentationStart+(_cuePreview!=null?_cuePreview.Duration:_player==null?0:(float)Math.Min(float.MaxValue,(double)_player.Duration/_speed));
         /// <summary>Temporary camera for preview export/diagnostics; the session retains ownership.</summary>
@@ -118,7 +126,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             _error=null;
             try
             {
-                if(_source==null&&_values==null){_speed=1;if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());_cuePreview?.BindSource(_previewSource,_sharedPreviewSource);return;}
+                if(_source==null&&_values==null){_speed=1;if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());_cuePreview?.BindSource(_previewSource,_sharedPreviewSource||_statusPreview);return;}
                 _subject=(_values??_source.CaptureGraphValues() as GameplayAnimationData).CreatePreviewSubject();_subject.hideFlags=HideFlags.HideAndDontSave;
                 _preview=new PreviewRenderUtility();_preview.AddSingleGO(_subject);
                 (_values??_source.CaptureGraphValues() as GameplayAnimationData).ConfigurePreviewCamera(_preview.camera);
@@ -145,6 +153,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         public void DrawControls()
         {
             if(_cuePreview!=null){
+                if(_statusPreview)EditorGUILayout.LabelField("状态外观示意 · 实机时长由 Effect 持有",EditorStyles.wordWrappedMiniLabel);
                 SetLevel(EditorGUILayout.IntField("预览技能等级",_level));
                 _cuePreview?.DrawControls();DrawValueControls();return;
             }

@@ -26,7 +26,7 @@ namespace FRFrame.Gameplay.Unity
             GameplayAnimationWriteTarget[] writes;
             try{writes=definition.ResolveWrites(Subject);}catch(Exception ex){return RejectAnimation(definition,context,"PhysicalTargetMissing: "+ex.Message);}
             bool occupied=_channels.ContainsKey(definition.Channel);
-            foreach(var playback in PhysicalPlayers)occupied|=Conflicts(playback.Writes,writes);
+            foreach(var playback in PhysicalPlayers)occupied|=playback.HostDefinition==null&&Conflicts(playback.Writes,writes);
             occupied|=EarlierQueuedConflict(writes,long.MaxValue);
             if(!occupied)return TryPlay(definition,context);
             if(!_queues.TryGetValue(definition.Channel,out var queue)){queue=new List<QueuedPlayback>();_queues.Add(definition.Channel,queue);}
@@ -64,7 +64,7 @@ namespace FRFrame.Gameplay.Unity
                         {
                             var writes=request.Definition.ResolveWrites(owner.Subject);
                             bool occupied=owner._channels.ContainsKey(request.Definition.Channel);
-                            foreach(var playback in PhysicalPlayers)occupied|=Conflicts(playback.Writes,writes);
+                            foreach(var playback in PhysicalPlayers)occupied|=playback.HostDefinition==null&&Conflicts(playback.Writes,writes);
                             occupied|=EarlierQueuedConflict(writes,request.Order);
                             if(occupied)continue;
                             request.Dispose();changed=true;owner.TryPlay(request.Definition,request.Context);

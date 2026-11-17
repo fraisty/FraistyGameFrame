@@ -16,6 +16,7 @@ namespace FRFrame.Gameplay.Unity
         /// explicit captured RollKey inputs bypass it and are shared with Editor preview.</summary>
         public IGameplayRandomSource AnimationRandom {get;set;}=new GameplaySeededRandomSource(1);
         private readonly Dictionary<string,Playback> _channels = new Dictionary<string,Playback>();
+        private Playback _hostPose;
         private static readonly HashSet<Playback> PhysicalPlayers=new HashSet<Playback>();
         private static readonly HashSet<GameplayUnityAnimationController> Controllers=new HashSet<GameplayUnityAnimationController>();
         private static int ReplacingPhysicalPlayers;
@@ -29,6 +30,30 @@ namespace FRFrame.Gameplay.Unity
             foreach (var playback in _channels.Values)
                 if (playback.IsPlaying)
                     yield return (playback.Channel, playback.Source, playback.Activation);
+        }
+        /// <summary>The current host-owned fallback on the same physical writer as authored playback.</summary>
+        public string ActiveHostPose => _hostPose?.IsPlaying == true ? _hostPose.Source : null;
+
+        /// <summary>Samples a host-owned visual pose only while its writer is free of authored plays
+        /// and queued requests. This fallback has no ability grant and dispatches no skill events.</summary>
+        public bool TrySetHostPose(GameplayAnimationDefinition pose, bool restart = false)
+        {
+            if (_disposed) return false;
+            if (pose == null) { _hostPose?.Dispose(); return true; }
+            if (!restart && _hostPose?.HostDefinition == pose && _hostPose.IsPlaying) return true;
+            var writes = pose.ResolveWrites(Subject);
+            foreach (var current in PhysicalPlayers)
+                if (current != _hostPose && Conflicts(current.Writes, writes)) return false;
+            if (EarlierQueuedConflict(writes, long.MaxValue)) return false;
+            var context = new GameplayContext(Actor.Id, new GameplayTargetData(Actor.Id, Actor.Position));
+            var player = pose.Create(Subject, context);
+            _hostPose?.Dispose();
+            var playback = new Playback(this, pose.Channel, int.MinValue, context, default, player,
+                GameplayValueEvaluator.Evaluate(pose.Speed), writes) { HostDefinition = pose };
+            _hostPose = playback;
+            PhysicalPlayers.Add(playback);
+            try { player.Seek(0); playback.Sampled = true; return true; }
+            catch { playback.Dispose(); throw; }
         }
         private bool RejectAnimation(GameplayAnimationDefinition definition,GameplayContext context,string reason)
         {
@@ -88,9 +113,16 @@ namespace FRFrame.Gameplay.Unity
         {
             if(_disposed)return;
             if(!float.IsFinite(amount)||amount<0)throw new ArgumentOutOfRangeException(nameof(amount));
+            if (!Actor.IsTargetable)
+            {
+                _activeTint?.Dispose();
+                DisposeQueues();
+                foreach (var playback in new List<Playback>(_channels.Values)) playback.Dispose();
+            }
             var cues=_cues.ToArray();
             var floating=_floating.ToArray();
             foreach(var playback in new List<Playback>(_channels.Values))playback.Advance(amount);
+            _hostPose?.Advance(amount);
             foreach(var cue in cues)cue.Advance(amount);
             foreach(var text in floating)text.Advance(amount);
             AdvanceEffectPresentation(amount);
@@ -106,6 +138,8 @@ namespace FRFrame.Gameplay.Unity
             _pendingCombatText.Clear();
             foreach(var playback in new List<Playback>(_channels.Values))playback.Dispose();_channels.Clear();
             DisposeQueues();
+            _hostPose?.Dispose();
+            _activeTint?.Dispose();
             foreach(var cue in _cues.ToArray())cue.Dispose();
             foreach(var text in _floating.ToArray())text.Dispose();
             DisposeEffectPresentation();
@@ -126,6 +160,7 @@ namespace FRFrame.Gameplay.Unity
             internal GameplayUnityAnimationController Owner=>_owner;
             internal GameplayAnimationWriteTarget[] Writes {get;}
             internal bool Sampled { get; set; }
+            internal GameplayAnimationDefinition HostDefinition { get; set; }
             internal bool IsPlaying => Sampled && !_disposed && !_player.IsInterrupted;
             internal string Source => (_player as IGameplayAnimationPlaybackSource)?.PlaybackSource ??
                 (Writes.Length > 0 ? Writes[0].Domain + " · " + Writes[0].Target.name : "后端未报告资源");
@@ -134,7 +169,7 @@ namespace FRFrame.Gameplay.Unity
             {_owner=owner;_channel=channel;Priority=priority;_context=context;_grant=grant;_player=player;_speed=speed;Writes=writes;_player.AnimationEvent+=OnEvent;}
             private void OnEvent(string name)
             {
-                if(_disposed)return;
+                if(_disposed || HostDefinition != null)return;
                 // Native event names are exposed through a typed signal for actual game/definition event mapping.
                 _owner.AnimationEvent?.Invoke(_context,name);
             }
@@ -142,11 +177,12 @@ namespace FRFrame.Gameplay.Unity
             {
                 if(_disposed)return;
                 if(_player.IsInterrupted){Dispose();return;}
+                if(HostDefinition != null && !_player.Loop && _elapsed >= _player.Duration) return;
                 _elapsed+=(double)delta*_speed;
                 float time=(float)Math.Min(float.MaxValue,_elapsed);
                 // Looping backends receive absolute time so they can preserve event crossings.
                 _player.Seek(_player.Loop?time:Math.Min(time,_player.Duration));
-                if(!_player.Loop&&_elapsed>=_player.Duration)Dispose();
+                if(HostDefinition == null && !_player.Loop&&_elapsed>=_player.Duration)Dispose();
             }
             public void Dispose()
             {
@@ -154,6 +190,12 @@ namespace FRFrame.Gameplay.Unity
                 _owner.CutHitAnchorBindings();
                 if(_owner._channels.TryGetValue(_channel,out var current)&&ReferenceEquals(current,this))_owner._channels.Remove(_channel);
                 PhysicalPlayers.Remove(this);
+                if (HostDefinition != null)
+                {
+                    if (ReferenceEquals(_owner._hostPose, this)) _owner._hostPose = null;
+                    _player.Dispose();
+                    return;
+                }
                 _owner.Actor.Abilities.ReleaseOwnedLifetime(_grant,this);_player.Dispose();
                 _owner.PromoteQueue(_channel);
             }

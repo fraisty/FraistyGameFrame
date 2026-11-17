@@ -31,6 +31,7 @@ namespace FRFrame.Gameplay.Spine
         {
             if(Skeleton==null)throw new InvalidOperationException("Spine skeleton is required.");
             var component=SkeletonAnimation.NewSkeletonAnimationGameObject(Skeleton,true);
+            component.gameObject.AddComponent<GameplaySpineVisualColor>();
             component.enabled=false;
             if(!string.IsNullOrWhiteSpace(PreviewInitialAnimation))component.AnimationState.SetAnimation(TrackIndex,PreviewInitialAnimation,true);
             var skin=BuildSkin(Skeleton,SkinNames??Array.Empty<string>());

@@ -41,14 +41,16 @@ namespace FRFrame.Gameplay.Unity
         [SerializeReference] public GameplayFloatValueAuthoring Intensity;
         public OutcomeRequirement Outcome;
         public GameplayTagQueryAuthoring TargetRequirements;
+        public Color TintColor = new Color(1, .15f, .15f, 1);
+        [Min(0)] public float TintFadeIn = .10f, TintFadeOut = .15f;
 
-        public enum CueKind { Vfx, Audio }
+        public enum CueKind { Vfx = 0, Audio = 1, Tint = 2 }
 
         public enum PositionSource { Owner, PrimaryTarget, ContextPoint, CallbackSegment, TargetToOwner }
         public enum OutcomeRequirement { Any, ConfirmedHit, HealthDamage }
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => CaptureValues();
-        private GameplayPresentationCueData CaptureValues() => new GameplayPresentationCueData { Kind = Kind, Prefab = Prefab, Clip = Clip, Origin = Origin, Offset = Offset, Binding = Binding, Scale = Scale, MirrorFacing = MirrorFacing, Follow = Follow, OwnedByAbility = OwnedByAbility, Volume = Volume, Pitch = Pitch, AudioLoop = AudioLoop, Duration = Duration, RecycleWhenParticlesFinish = RecycleWhenParticlesFinish, Intensity = Intensity, Outcome = Outcome, TargetRequirements = TargetRequirements };
+        private GameplayPresentationCueData CaptureValues() => new GameplayPresentationCueData { Kind = Kind, Prefab = Prefab, Clip = Clip, Origin = Origin, Offset = Offset, Binding = Binding, Scale = Scale, MirrorFacing = MirrorFacing, Follow = Follow, OwnedByAbility = OwnedByAbility, Volume = Volume, Pitch = Pitch, AudioLoop = AudioLoop, Duration = Duration, RecycleWhenParticlesFinish = RecycleWhenParticlesFinish, Intensity = Intensity, Outcome = Outcome, TargetRequirements = TargetRequirements, TintColor = TintColor, TintFadeIn = TintFadeIn, TintFadeOut = TintFadeOut };
         public GameplayPresentationCueDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => CaptureValues().Build(context));
         protected override void ValidateContent(GameplayAuthoringValidationContext validation, string path) => CaptureValues().Validate(validation, path);
 
@@ -74,16 +76,28 @@ namespace FRFrame.Gameplay.Unity
         public IGameplayFloatValue Intensity { get; }
         public GameplayPresentationCueAsset.OutcomeRequirement Outcome { get; }
         public GameplayTagQuery TargetRequirements { get; }
+        public Color TintColor { get; }
+        public float TintFadeIn { get; }
+        public float TintFadeOut { get; }
         public GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind kind,GameObject prefab,AudioClip clip,
             GameplayPresentationCueAsset.PositionSource origin,Vector3 offset,bool follow,float volume,float pitch,bool audioLoop,IGameplayFloatValue duration,bool ownedByAbility=true,string binding=null,Vector3? scale=null,bool mirrorFacing=false,bool recycleWhenParticlesFinish=false,
             IGameplayFloatValue intensity=null, GameplayPresentationCueAsset.OutcomeRequirement outcome=default,
             GameplayTagQuery targetRequirements=null)
+            : this(kind,prefab,clip,origin,offset,follow,volume,pitch,audioLoop,duration,ownedByAbility,binding,scale,
+                mirrorFacing,recycleWhenParticlesFinish,intensity,outcome,targetRequirements,null,.10f,.15f) { }
+
+        public GameplayPresentationCueDefinition(GameplayPresentationCueAsset.CueKind kind,GameObject prefab,AudioClip clip,
+            GameplayPresentationCueAsset.PositionSource origin,Vector3 offset,bool follow,float volume,float pitch,bool audioLoop,
+            IGameplayFloatValue duration,bool ownedByAbility,string binding,Vector3? scale,bool mirrorFacing,bool recycleWhenParticlesFinish,
+            IGameplayFloatValue intensity,GameplayPresentationCueAsset.OutcomeRequirement outcome,GameplayTagQuery targetRequirements,
+            Color? tintColor,float tintFadeIn,float tintFadeOut)
         {
             Kind=kind;Prefab=prefab;Clip=clip;Origin=origin;Offset=offset;Follow=follow;Volume=volume;Pitch=pitch;AudioLoop=audioLoop;
             RecycleWhenParticlesFinish=kind==GameplayPresentationCueAsset.CueKind.Vfx&&recycleWhenParticlesFinish;
             Duration=RecycleWhenParticlesFinish?null:duration??throw new ArgumentNullException(nameof(duration));
             OwnedByAbility=ownedByAbility;Binding=binding;Scale=scale??Vector3.one;MirrorFacing=mirrorFacing;
             Intensity=intensity;Outcome=outcome;TargetRequirements=targetRequirements??GameplayTagQuery.Empty;
+            TintColor=tintColor??new Color(1,.15f,.15f,1);TintFadeIn=tintFadeIn;TintFadeOut=tintFadeOut;
         }
     }
 }

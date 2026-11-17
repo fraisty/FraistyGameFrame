@@ -23,8 +23,26 @@ namespace FRFrame.Gameplay.Unity.Editor
         private GameplayPresentationCueData _values;
         private GameplaySourceHandle _source;
         private bool _shared, _auditioning;
+        private string _auditionPath;
+        private double _auditionEnd;
+        private string _auditionError;
+        private Material _tintMaterial;
+        private (Animator Animator, AnimationClip Clip)[] _animators=Array.Empty<(Animator,AnimationClip)>();
+        private bool _unsupportedAnimator;
+        private bool _xz=SessionState.GetBool("FRFrame.CuePreview.XZ",false);
+        private float _zoom=1;
+        private Vector3 _pan;
+        private int _panControl;
+        private GameplayAnimationAsset _modelSource;
+        private GameObject _ownerModel,_targetModel;
+        private bool _bindingFound;
+        private string _referenceError;
+        private string _dragSourceKey;
+        private uint _dragSourceHash;
+        private float _sampleSeconds;
+        private bool _sampleStarted;
         private bool _facingLeft = SessionState.GetBool("FRFrame.CuePreview.FacingLeft", false);
-        private bool _spatial = SessionState.GetBool("FRFrame.CuePreview.Spatial", false);
+        private bool _spatial = SessionState.GetBool("FRFrame.CuePreview.Spatial", true);
         private Vector3 _owner = SessionState.GetVector3("FRFrame.CuePreview.Owner", Vector3.zero);
         private Vector3 _target = SessionState.GetVector3("FRFrame.CuePreview.Target", new Vector3(3, 0, 0));
         private Vector3 _point = SessionState.GetVector3("FRFrame.CuePreview.Point", new Vector3(3, 0, 0));
@@ -59,9 +77,21 @@ namespace FRFrame.Gameplay.Unity.Editor
                 if(_cue?.RecycleWhenParticlesFinish!=true&&(!float.IsFinite(Duration)||Duration<=0))
                     throw new ArithmeticException("Presentation duration must be positive.");
                 if(_cue?.Kind==GameplayPresentationCueAsset.CueKind.Audio)return;
-                var prefab=_cue!=null?_cue.Prefab:_text.Prefab;
-                if(prefab==null)throw new InvalidOperationException("Select an existing presentation prefab.");
-                Subject=UnityEngine.Object.Instantiate(prefab);Subject.hideFlags=HideFlags.HideAndDontSave;
+                if (_cue?.Kind==GameplayPresentationCueAsset.CueKind.Tint)
+                {
+                    if (_cue.TintFadeIn+_cue.TintFadeOut>Duration+.000001f) throw new InvalidOperationException("淡入与淡出超过闪色时限。");
+                    Subject=GameObject.CreatePrimitive(PrimitiveType.Capsule);
+                    UnityEngine.Object.DestroyImmediate(Subject.GetComponent<Collider>());
+                    _tintMaterial=new Material(Shader.Find("Universal Render Pipeline/Unlit")??Shader.Find("Unlit/Color"));
+                    Subject.GetComponent<Renderer>().sharedMaterial=_tintMaterial;
+                }
+                else
+                {
+                    var prefab=_cue!=null?_cue.Prefab:_text.Prefab;
+                    if(prefab==null)throw new InvalidOperationException("Select an existing presentation prefab.");
+                    Subject=UnityEngine.Object.Instantiate(prefab);
+                }
+                Subject.hideFlags=HideFlags.HideAndDontSave;
                 _start=_cue!=null?_cue.Offset:_text.Offset;Subject.transform.position=_start;
                 _preview=new PreviewRenderUtility();_preview.AddSingleGO(Subject);
                 _preview.camera.cameraType=CameraType.Game;_preview.camera.orthographic=true;
@@ -70,6 +100,15 @@ namespace FRFrame.Gameplay.Unity.Editor
                 _preview.lights[0].intensity=1;_preview.lights[0].transform.rotation=Quaternion.Euler(40,40,0);
                 _particles=Subject.GetComponentsInChildren<ParticleSystem>(true);
                 _renderers = Subject.GetComponentsInChildren<Renderer>(true);
+                var animators=new System.Collections.Generic.List<(Animator,AnimationClip)>();
+                foreach(var animator in Subject.GetComponentsInChildren<Animator>(true))
+                {
+                    var clips=animator.runtimeAnimatorController?.animationClips;
+                    if(clips?.Length==1)animators.Add((animator,clips[0]));
+                    else if(clips?.Length>1)_unsupportedAnimator=true;
+                    animator.enabled=false;
+                }
+                _animators=animators.ToArray();
                 if(_cue?.RecycleWhenParticlesFinish==true)Duration=EstimateParticlePreviewDuration();
                 foreach(var particles in _particles){var main=particles.main;main.stopAction=ParticleSystemStopAction.None;particles.Stop(false,ParticleSystemStopBehavior.StopEmittingAndClear);}
                 if(_text!=null){
@@ -83,7 +122,9 @@ namespace FRFrame.Gameplay.Unity.Editor
                 foreach(var renderer in _renderers)bounds.Encapsulate(renderer.bounds);
                 _materialCameraPosition = bounds.center + new Vector3(0,0,-10);
                 _materialCameraSize = Mathf.Max(.7f,bounds.extents.y*1.3f,bounds.extents.x);
-                _spatial = SessionState.GetBool("FRFrame.CuePreview.Spatial", false);
+                _spatial = SessionState.GetBool("FRFrame.CuePreview.Spatial", true);
+                string reference=AssetDatabase.GUIDToAssetPath(SessionState.GetString("FRFrame.CuePreview.Model",""));
+                if(!string.IsNullOrEmpty(reference))SetReference(AssetDatabase.LoadAssetAtPath<GameplayAnimationAsset>(reference));
             }catch{Dispose();throw;}
 
             float Sample(IGameplayFloatValue value, GameplayFloatValueAuthoring source, float fallback, string label, bool positive = false)
@@ -102,7 +143,11 @@ namespace FRFrame.Gameplay.Unity.Editor
                 return fallback;
             }
         }
-        internal void BindSource(GameplaySourceHandle source, bool shared) { _source = source; _shared = shared; }
+        internal void BindSource(GameplaySourceHandle source, bool shared)
+        {
+            if (_source?.Key != source?.Key || _shared != shared) CancelInteraction();
+            _source = source; _shared = shared;
+        }
 
         private GameplaySkillDocumentAsset WritableDocument =>
             !_shared && !EditorApplication.isPlayingOrWillChangePlaymode &&
@@ -111,14 +156,32 @@ namespace FRFrame.Gameplay.Unity.Editor
 
         internal void Seek(float seconds,bool started)
         {
+            _sampleSeconds=seconds;_sampleStarted=started;
+            PositionSubject();
+            if(!Subject || !Subject.activeSelf)return;
+            foreach(var particles in _particles){particles.Simulate(seconds,false,true,true);particles.Pause(false);}
+            foreach(var item in _animators)item.Clip.SampleAnimation(item.Animator.gameObject,Mathf.Min(seconds,item.Clip.length));
+            if(_widget!=null){Subject.transform.position=_start+Vector3.up*(seconds*_text.RiseSpeed);_widget.SetOpacity(1-seconds/Duration);}
+        }
+
+        private void PositionSubject()
+        {
             if(Subject==null)return;
+            float seconds=_sampleSeconds;bool started=_sampleStarted;
             var end = End;
-            bool visible=started&&(_cue?.RecycleWhenParticlesFinish==true||seconds<Duration) &&
+            bool visible=_tintMaterial || started&&(_cue?.RecycleWhenParticlesFinish==true||seconds<Duration) &&
                 (!_spatial || _cue == null || !end.HasValue || (end.Value - Origin).sqrMagnitude > .000001f);
             Subject.SetActive(visible);if(!visible)return;
             if (_cue != null)
             {
-                if (_spatial)
+                if (_tintMaterial)
+                {
+                    Subject.transform.position=(_spatial ? Origin : Vector3.zero)+Vector3.up*_actorHeight*.5f;
+                    Subject.transform.localScale=Vector3.one*(_actorHeight*.5f);
+                    float weight=started?GameplayUnityAnimationController.TintWeight(seconds,Duration,_cue.TintFadeIn,_cue.TintFadeOut):0;
+                    _tintMaterial.color=Color.Lerp(new Color(.55f,.65f,.8f),_cue.TintColor,Mathf.Clamp01(weight*_intensity*_cue.TintColor.a));
+                }
+                else if (_spatial)
                 {
                     var pose = Pose;
                     Subject.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
@@ -130,8 +193,6 @@ namespace FRFrame.Gameplay.Unity.Editor
                     Subject.transform.localScale = _cue.Prefab.transform.localScale;
                 }
             }
-            foreach(var particles in _particles){particles.Simulate(seconds,false,true,true);particles.Pause(false);}
-            if(_widget!=null){Subject.transform.position=_start+Vector3.up*(seconds*_text.RiseSpeed);_widget.SetOpacity(1-seconds/Duration);}
         }
         // The standalone scrubber needs a finite range. Runtime uses actual particle completion.
         private float EstimateParticlePreviewDuration()
@@ -168,16 +229,19 @@ namespace FRFrame.Gameplay.Unity.Editor
                 return;
             }
             if (!string.IsNullOrEmpty(_valueNote)) EditorGUILayout.HelpBox(_valueNote.TrimEnd(), MessageType.Info);
+            if (_cue.Intensity != null) EditorGUILayout.LabelField("当前模拟强度", _intensity.ToString("0.###"));
             if(_cue?.Kind==GameplayPresentationCueAsset.CueKind.Audio){
                 using (new EditorGUI.DisabledScope(true)) EditorGUILayout.ObjectField("音频素材",_cue.Clip,typeof(AudioClip),false);
-                EditorGUILayout.LabelField("试听原 Clip 一次。实际播放使用配置音量、音高、循环及宿主音频混音。",EditorStyles.wordWrappedMiniLabel);
-                EditorGUILayout.LabelField(_cue.OwnedByAbility ? "施放结束会停止本音频，包括仍在播放的尾音。" : "一次性尾音按 Cue 自己的回收时限播放。", EditorStyles.wordWrappedMiniLabel);
-                if(GUILayout.Button("试听现有音频（一次）")){
-                    var play=AudioMethod("PlayPreviewClip");
-                    if(play==null)throw new InvalidOperationException("Installed Editor audio audition is unavailable.");
-                    play.Invoke(null,new object[]{_cue.Clip,0,false});
-                    _auditioning = true;
+                float natural=_cue.Clip.length/_cue.Pitch;
+                string end=_cue.AudioLoop || natural>Duration ? $"配置时限 {Duration:0.###}s" : $"自然播完 {natural:0.###}s";
+                EditorGUILayout.LabelField(end+(_cue.OwnedByAbility?" · 技能更早结束时截断":""),EditorStyles.wordWrappedMiniLabel);
+                using(new EditorGUILayout.HorizontalScope())
+                {
+                    if(GUILayout.Button("原 Clip"))Audition(false);
+                    if(GUILayout.Button("按配置重播"))Audition(true);
+                    if(GUILayout.Button("停止"))StopAudition();
                 }
+                if(_auditionError!=null)EditorGUILayout.HelpBox(_auditionError,MessageType.Warning);
             }
             else
             {
@@ -185,7 +249,16 @@ namespace FRFrame.Gameplay.Unity.Editor
                 if (spatial != _spatial) { CancelInteraction(); _spatial = spatial; SessionState.SetBool("FRFrame.CuePreview.Spatial", spatial); }
                 if (_spatial)
                 {
-                    EditorGUILayout.HelpBox("Editor 示意。修改正式参数后请保存，进入 Scene / 调试重新试装。", MessageType.Info);
+                    bool xz=EditorGUILayout.Popup("观察平面",_xz?1:0,new[]{"XY","XZ"})==1;
+                    if(xz!=_xz){CancelInteraction();_xz=xz;_pan=Vector3.zero;SessionState.SetBool("FRFrame.CuePreview.XZ",xz);}
+                    UnityEngine.Object reference=EditorGUILayout.ObjectField("参考角色",_modelSource,typeof(GameplayAnimationAsset),false);
+                    if(reference!=_modelSource)
+                    {
+                        SessionState.SetString("FRFrame.CuePreview.Model",reference?AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(reference)):"");
+                        SetReference(reference as GameplayAnimationAsset);
+                    }
+                    if(_referenceError!=null)EditorGUILayout.HelpBox(_referenceError,MessageType.Warning);
+                    EditorGUILayout.LabelField("Shift 拖动 Owner / Target · 滚轮缩放 · 中键平移",EditorStyles.wordWrappedMiniLabel);
                     _owner = AnchorField("模拟 Owner", _owner, "Owner");
                     _target = AnchorField("模拟 Target", _target, "Target");
                     if (_cue.Origin == PositionSource.ContextPoint) _point = AnchorField("模拟 Point", _point, "Point");
@@ -203,11 +276,102 @@ namespace FRFrame.Gameplay.Unity.Editor
                     if (WritableDocument) EditorGUILayout.LabelField("拖动中心十字调偏移，拖动 X / Y 方块调缩放。Esc 取消。", EditorStyles.wordWrappedMiniLabel);
                 }
             }
+            if(_unsupportedAnimator)EditorGUILayout.LabelField("多状态 Animator 需在实机检查；当前仅预览该对象的静态姿态。",EditorStyles.wordWrappedMiniLabel);
             DrawSourceFields();
         }
 
         private static MethodInfo AudioMethod(string name) => typeof(AudioImporter).Assembly
             .GetType("UnityEditor.AudioUtil")?.GetMethod(name, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+
+        private void Audition(bool configured)
+        {
+            StopAudition();
+            _auditionError=null;
+            var play=AudioMethod("PlayPreviewClip");
+            if(play==null){_auditionError="此 Editor 未提供音频试听。";return;}
+            var clip=_cue.Clip;
+            double length=clip.length;
+            if(configured)
+            {
+                if(clip.loadState==AudioDataLoadState.Unloaded)clip.LoadAudioData();
+                if(clip.loadState==AudioDataLoadState.Loading){_auditionError="音频正在载入，请再点一次按配置重播。";return;}
+                length=Math.Min(12,_cue.AudioLoop?Duration:Math.Min(Duration,clip.length/_cue.Pitch));
+                var input=new float[clip.samples*clip.channels];
+                if(clip.loadState!=AudioDataLoadState.Loaded||!clip.GetData(input,0)){_auditionError="配置试听需要可读取 PCM 的素材。当前仍可试听原 Clip。";return;}
+                int frames=Math.Max(1,Mathf.CeilToInt((float)length*clip.frequency));
+                var output=new float[frames*clip.channels];
+                float volume=Mathf.Clamp01(_cue.Volume*_intensity);
+                for(int i=0;i<frames;i++)
+                {
+                    double position=i*(double)_cue.Pitch;
+                    if(_cue.AudioLoop)position%=clip.samples;
+                    int first=Math.Min((int)position,clip.samples-1);
+                    int next=_cue.AudioLoop?(first+1)%clip.samples:Math.Min(first+1,clip.samples-1);
+                    for(int channel=0;channel<clip.channels;channel++)
+                        output[i*clip.channels+channel]=Mathf.Lerp(input[first*clip.channels+channel],input[next*clip.channels+channel],(float)(position-first))*volume;
+                }
+                // AudioUtil reloads samples from import data and silences non-imported AudioClips.
+                _auditionPath="Assets/__FRFrameCueAudition_"+Guid.NewGuid().ToString("N")+".wav";
+                try
+                {
+                    using(var wave=new System.IO.BinaryWriter(System.IO.File.Create(_auditionPath)))
+                    {
+                        int byteCount=output.Length*sizeof(short);
+                        wave.Write(0x46464952); wave.Write(36+byteCount); wave.Write(0x45564157);
+                        wave.Write(0x20746d66); wave.Write(16); wave.Write((short)1); wave.Write((short)clip.channels);
+                        wave.Write(clip.frequency); wave.Write(clip.frequency*clip.channels*sizeof(short));
+                        wave.Write((short)(clip.channels*sizeof(short))); wave.Write((short)16);
+                        wave.Write(0x61746164); wave.Write(byteCount);
+                        foreach(float sample in output)wave.Write((short)Mathf.RoundToInt(Mathf.Clamp(sample,-1,1)*short.MaxValue));
+                    }
+                    AssetDatabase.ImportAsset(_auditionPath,ImportAssetOptions.ForceSynchronousImport);
+                    clip=AssetDatabase.LoadAssetAtPath<AudioClip>(_auditionPath);
+                    if(!clip)throw new InvalidOperationException("Unity 无法载入配置试听的音频。");
+                }
+                catch(Exception error){StopAudition();_auditionError=error.Message;return;}
+            }
+            try{play.Invoke(null,new object[]{clip,0,false});_auditioning=true;}
+            catch(TargetInvocationException error){StopAudition();_auditionError=error.InnerException?.Message??error.Message;return;}
+            _auditionEnd=EditorApplication.timeSinceStartup+length;
+            EditorApplication.update+=StopExpiredAudition;
+            AssemblyReloadEvents.beforeAssemblyReload+=StopAudition;
+        }
+
+        private void StopExpiredAudition()
+        {
+            if(EditorApplication.isPlayingOrWillChangePlaymode||EditorApplication.timeSinceStartup>=_auditionEnd)StopAudition();
+        }
+
+        private void StopAudition()
+        {
+            if(_auditioning)AudioMethod("StopAllPreviewClips")?.Invoke(null,null);
+            _auditioning=false;
+            EditorApplication.update-=StopExpiredAudition;
+            AssemblyReloadEvents.beforeAssemblyReload-=StopAudition;
+            if(_auditionPath!=null)
+            {
+                if(!AssetDatabase.DeleteAsset(_auditionPath))System.IO.File.Delete(_auditionPath);
+                _auditionPath=null;
+            }
+        }
+
+        private void SetReference(GameplayAnimationAsset source)
+        {
+            if(_ownerModel)UnityEngine.Object.DestroyImmediate(_ownerModel);
+            if(_targetModel)UnityEngine.Object.DestroyImmediate(_targetModel);
+            _modelSource=source;
+            _referenceError=null;
+            if(!source)return;
+            try
+            {
+                _ownerModel=source.CreatePreviewSubject();_targetModel=source.CreatePreviewSubject();
+                _preview.AddSingleGO(_ownerModel);_preview.AddSingleGO(_targetModel);
+            }
+            catch(Exception error)
+            {
+                SetReference(null);_referenceError=error.Message;
+            }
+        }
 
         private static Vector3 AnchorField(string title, Vector3 current, string key)
         {
@@ -221,7 +385,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             if (!WritableDocument)
             {
                 EditorGUILayout.LabelField(_shared ? "共享 Cue · 当前技能只读" : "当前来源只读", EditorStyles.wordWrappedMiniLabel);
-                if (_shared && _source?.Owner is UnityEngine.Object asset && GUILayout.Button("定位共享 Cue 来源"))
+                if (_shared && _source?.Owner is UnityEngine.Object asset && GUILayout.Button(new GUIContent("定位共享 Cue 来源","在 Project Inspector 编辑共享资产会影响它的所有引用。")))
                 { Selection.activeObject = asset; EditorGUIUtility.PingObject(asset); }
                 using (new EditorGUI.DisabledScope(true))
                 {
@@ -242,6 +406,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             using var serialized = new SerializedObject(document);
             var cue = serialized.FindProperty(path);
             var paths = new System.Collections.Generic.List<string>();
+            Draw("Kind", "表现类型");
             Draw("Origin", "位置来源");
             if (_cue.Kind == GameplayPresentationCueAsset.CueKind.Vfx)
             {
@@ -251,10 +416,16 @@ namespace FRFrame.Gameplay.Unity.Editor
                 using (new EditorGUI.DisabledScope(End.HasValue)) { Draw("Follow", "跟随"); Draw("MirrorFacing", "朝向镜像"); }
                 Draw("RecycleWhenParticlesFinish", "粒子播完回收");
             }
-            else
+            else if (_cue.Kind == GameplayPresentationCueAsset.CueKind.Audio)
             {
                 Draw("Volume", "音量"); Draw("Pitch", "音高"); Draw("AudioLoop", "循环");
             }
+            else
+            {
+                Draw("Binding", "目标挂点");Draw("TintColor", "闪色");
+                Draw("TintFadeIn", "淡入（秒）");Draw("TintFadeOut", "淡出（秒）");
+            }
+            if (_values.Intensity is GameplayConstantFloatValueAuthoring) Draw("Intensity.Value", "强度");
             Draw("OwnedByAbility", "随技能结束清理");
             if (!_cue.RecycleWhenParticlesFinish)
             {
@@ -266,6 +437,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             void Draw(string name, string label)
             {
                 var property = cue.FindPropertyRelative(name);
+                if(property==null)return;
                 EditorGUI.BeginChangeCheck();
                 EditorGUILayout.PropertyField(property, new GUIContent(label));
                 if (EditorGUI.EndChangeCheck()) paths.Add(property.propertyPath);
@@ -274,17 +446,26 @@ namespace FRFrame.Gameplay.Unity.Editor
 
         private bool UsesBinding => !string.IsNullOrEmpty(_cue.Binding) &&
             (_cue.Origin == PositionSource.Owner || _cue.Origin == PositionSource.PrimaryTarget);
+        private Vector3 OwnerPoint => _hotControl!=0&&_dragAxis==4?_draft:_owner;
+        private Vector3 TargetPoint => _hotControl!=0&&_dragAxis==5?_draft:_target;
         private Vector3 Origin => _cue.Origin switch
         {
             PositionSource.ContextPoint => _point,
-            PositionSource.TargetToOwner => _target,
-            PositionSource.PrimaryTarget => _target + (UsesBinding ? _binding : Vector3.zero),
-            _ => _owner + (UsesBinding ? _binding : Vector3.zero)
+            PositionSource.TargetToOwner => TargetPoint,
+            PositionSource.PrimaryTarget => BoundPoint(_targetModel,TargetPoint),
+            _ => BoundPoint(_ownerModel,OwnerPoint)
         };
+        private Vector3 BoundPoint(GameObject model,Vector3 position)
+        {
+            if(!UsesBinding)return position;
+            var anchor=model?model.transform.Find(_cue.Binding):null;
+            _bindingFound=anchor;
+            return anchor?anchor.position:position+_binding;
+        }
         private Vector3? End => _cue?.Origin switch
         {
-            PositionSource.CallbackSegment => _target,
-            PositionSource.TargetToOwner => _owner,
+            PositionSource.CallbackSegment => TargetPoint,
+            PositionSource.TargetToOwner => OwnerPoint,
             _ => null
         };
         private (Vector3 Position, Quaternion Rotation, Vector3 Scale) Pose => GameplayUnityAnimationController.ResolveCueGeometry(
@@ -293,14 +474,34 @@ namespace FRFrame.Gameplay.Unity.Editor
         internal void Render(Rect viewport)
         {
             if(_preview==null){EditorGUI.HelpBox(viewport,"选择实际音频素材；可试听或在真实Scene安装运行。",MessageType.Info);return;}
+            if (_ownerModel) { _ownerModel.SetActive(_spatial);_ownerModel.transform.position=OwnerPoint; }
+            if (_targetModel) { _targetModel.SetActive(_spatial);_targetModel.transform.position=TargetPoint; }
+            if (GUI.Button(new Rect(viewport.x+4,viewport.y+3,66,18),"重置视角",EditorStyles.miniButton))
+            { _zoom=1;_pan=Vector3.zero; }
+            viewport.yMin+=23;
+            var evt=Event.current;
+            int viewControl=GUIUtility.GetControlID(FocusType.Passive,viewport);
+            if(evt.type==EventType.ScrollWheel&&viewport.Contains(evt.mousePosition))
+            { _zoom=Mathf.Clamp(_zoom*Mathf.Exp(-evt.delta.y*.09f),.2f,8);evt.Use();GUI.changed=true; }
+            if(evt.type==EventType.MouseDown&&evt.button==2&&viewport.Contains(evt.mousePosition))
+            { _panControl=GUIUtility.hotControl=viewControl;evt.Use(); }
+            else if(evt.type==EventType.MouseDrag&&_panControl==viewControl)
+            {
+                var transform=_preview.camera.transform;
+                _pan+=(-transform.right*evt.delta.x+transform.up*evt.delta.y)*(2*_preview.camera.orthographicSize/viewport.height);
+                evt.Use();GUI.changed=true;
+            }
+            else if(evt.rawType==EventType.MouseUp&&_panControl==viewControl)
+            { _panControl=GUIUtility.hotControl=0;evt.Use(); }
             if (_spatial && _cue != null) DrawSpatial(viewport);
             else
             {
-                _preview.camera.transform.position = _materialCameraPosition;
-                _preview.camera.orthographicSize = _materialCameraSize;
+                _preview.camera.transform.SetPositionAndRotation(_materialCameraPosition+_pan,Quaternion.identity);
+                _preview.camera.orthographicSize = _materialCameraSize/_zoom;
                 _preview.camera.ResetAspect();
             }
             if(Event.current.type!=EventType.Repaint || _preview == null)return;
+            if(_widget==null)PositionSubject();
             _preview.BeginPreview(viewport,GUIStyle.none);_preview.camera.Render();
             GUI.DrawTexture(viewport,_preview.EndPreview(),ScaleMode.StretchToFill,false);
             if (_spatial && _cue != null) DrawSpatialOverlay(viewport);
@@ -317,8 +518,9 @@ namespace FRFrame.Gameplay.Unity.Editor
                 frame.Encapsulate(_target + Vector3.up * _actorHeight);
                 frame.Encapsulate(Origin); frame.Encapsulate(pose.Position);
                 camera.aspect = viewport.width / viewport.height;
-                camera.transform.position = frame.center + Vector3.back * 10;
-                camera.orthographicSize = Mathf.Max(1, frame.extents.y, frame.extents.x / camera.aspect) * 1.45f;
+                camera.transform.SetPositionAndRotation(frame.center+_pan+(_xz?Vector3.up:Vector3.back)*10,
+                    _xz?Quaternion.Euler(90,0,0):Quaternion.identity);
+                camera.orthographicSize = Mathf.Max(1, _xz?frame.extents.z:frame.extents.y, frame.extents.x / camera.aspect) * 1.45f/_zoom;
             }
             int control = GUIUtility.GetControlID(FocusType.Passive, viewport);
             var evt = Event.current;
@@ -327,16 +529,26 @@ namespace FRFrame.Gameplay.Unity.Editor
             { CancelInteraction(); if (evt.type == EventType.KeyDown) evt.Use(); GUI.changed = true; return; }
             Vector2 center = Project(viewport, pose.Position);
             var xAxis = HandleAxis(viewport, pose.Rotation * Vector3.right);
-            var yAxis = HandleAxis(viewport, pose.Rotation * Vector3.up);
-            if (evt.type == EventType.MouseDown && evt.button == 0 && viewport.Contains(evt.mousePosition) && WritableDocument)
+            var yAxis = HandleAxis(viewport, pose.Rotation * (_xz?Vector3.forward:Vector3.up));
+            if (evt.type == EventType.MouseDown && evt.button == 0 && viewport.Contains(evt.mousePosition))
             {
-                int axis = Vector2.Distance(evt.mousePosition, center) < 10 ? 0 :
+                int axis = evt.shift&&Vector2.Distance(evt.mousePosition,Project(viewport,_owner))<13?4:
+                    evt.shift&&Vector2.Distance(evt.mousePosition,Project(viewport,_target))<13?5:
+                    Vector2.Distance(evt.mousePosition, center) < 10 ? 0 :
                     Vector2.Distance(evt.mousePosition, center + xAxis * 34) < 9 ? 1 :
-                    Vector2.Distance(evt.mousePosition, center + yAxis * 34) < 9 ? 2 : -1;
+                    Vector2.Distance(evt.mousePosition, center + yAxis * 34) < 9 ? (_xz?3:2) :
+                    Vector2.Distance(evt.mousePosition, center + (xAxis+yAxis).normalized * 43) < 9 ? 6 : -1;
                 if (axis < 0) return;
+                if (axis is not (4 or 5))
+                {
+                    if(!WritableDocument||!_source.TryResolve(out string current))return;
+                    using var origin=new SerializedObject(_source.Owner);
+                    _dragSourceKey=_source.Key;
+                    _dragSourceHash=origin.FindProperty(current).contentHash;
+                }
                 _dragAxis = axis;
-                _dragBasis = axis == 1 ? xAxis : yAxis;
-                _dragStart = _draft = axis == 0 ? _cue.Offset : _cue.Scale;
+                _dragBasis = axis == 6 ? (xAxis+yAxis).normalized : axis == 1 ? xAxis : yAxis;
+                _dragStart = _draft = axis==4?_owner:axis==5?_target:axis==0?_cue.Offset:_cue.Scale;
                 _dragMouse = evt.mousePosition;
                 _hotControl = GUIUtility.hotControl = control;
                 evt.Use();
@@ -346,9 +558,11 @@ namespace FRFrame.Gameplay.Unity.Editor
                 float unitsPerPixel = 2 * camera.orthographicSize / viewport.height;
                 var delta = evt.mousePosition - _dragMouse;
                 _draft = _dragStart;
-                if (_dragAxis == 0)
-                    _draft += new Vector3(!End.HasValue && _cue.MirrorFacing && _facingLeft ? -delta.x : delta.x, -delta.y, 0) * unitsPerPixel;
-                else
+                if (_dragAxis is 0 or 4 or 5)
+                    _draft += (camera.transform.right*delta.x-camera.transform.up*delta.y)*unitsPerPixel;
+                if (_dragAxis==0&&!End.HasValue&&_cue.MirrorFacing&&_facingLeft) _draft.x=2*_dragStart.x-_draft.x;
+                else if(_dragAxis==6) _draft*=(1+Vector2.Dot(delta,_dragBasis)*unitsPerPixel);
+                else if(_dragAxis is 1 or 2 or 3)
                 {
                     float divisor = _dragAxis == 1 && End.HasValue ? Vector3.Distance(Origin, End.Value) : 1;
                     _draft[_dragAxis - 1] += Vector2.Dot(delta, _dragBasis) * unitsPerPixel / Mathf.Max(.001f, divisor);
@@ -358,13 +572,18 @@ namespace FRFrame.Gameplay.Unity.Editor
             else if (_hotControl == control && evt.rawType == EventType.MouseUp && evt.button == 0)
             {
                 var document = WritableDocument;
+                int axis=_dragAxis;
                 string field = _dragAxis == 0 ? "Offset" : "Scale";
                 var value = _draft;
                 CancelInteraction(); evt.Use(); GUI.changed = true;
-                if (document && value != _dragStart && _source.TryResolve(out string path))
+                if(axis==4){_owner=value;SessionState.SetVector3("FRFrame.CuePreview.Owner",_owner);return;}
+                if(axis==5){_target=value;SessionState.SetVector3("FRFrame.CuePreview.Target",_target);return;}
+                if (document && value != _dragStart && _source.Key==_dragSourceKey && _source.TryResolve(out string path))
                 {
                     using var serialized = new SerializedObject(document);
-                    var property = serialized.FindProperty(path).FindPropertyRelative(field);
+                    var source=serialized.FindProperty(path);
+                    if(source.contentHash!=_dragSourceHash)return;
+                    var property = source.FindPropertyRelative(field);
                     property.vector3Value = value;
                     Undo.IncrementCurrentGroup();
                     Undo.SetCurrentGroupName("调整 Cue " + (field == "Offset" ? "偏移" : "缩放"));
@@ -389,13 +608,13 @@ namespace FRFrame.Gameplay.Unity.Editor
             Color previous = Handles.color;
             var pose = Pose;
             var owner = Project(viewport, _owner);
-            Mark(_owner, "Owner", new Color(.35f,.85f,1), _actorHeight);
-            Mark(_target, "Target", new Color(1,.6f,.35f), _actorHeight);
-            Mark(Origin, UsesBinding ? "模拟挂点" : "原点", Color.white);
+            Mark(OwnerPoint, "Owner", new Color(.35f,.85f,1), _actorHeight);
+            Mark(TargetPoint, "Target", new Color(1,.6f,.35f), _actorHeight);
+            Mark(Origin, UsesBinding ? _bindingFound ? "实际挂点" : "模拟挂点" : "原点", Color.white);
             if (End.HasValue) { Handles.color = Color.yellow; Handles.DrawAAPolyLine(2, Project(viewport, Origin), Project(viewport, End.Value)); }
             Handles.color = Color.gray;
             Handles.DrawAAPolyLine(2, owner, Project(viewport, _owner + Vector3.right));
-            Handles.DrawAAPolyLine(2, owner, Project(viewport, _owner + Vector3.up));
+            Handles.DrawAAPolyLine(2, owner, Project(viewport, _owner + (_xz?Vector3.forward:Vector3.up)));
             GUI.Label(new Rect(owner.x + 6, owner.y + 3, 105, 18), "世界轴 · 1 单位", EditorStyles.miniLabel);
             var center = Project(viewport, pose.Position);
             Handles.color = Color.green;
@@ -415,7 +634,11 @@ namespace FRFrame.Gameplay.Unity.Editor
             if (WritableDocument)
             {
                 DrawScaleHandle(pose.Rotation * Vector3.right, "X", new Color(1,.55f,.42f));
-                DrawScaleHandle(pose.Rotation * Vector3.up, "Y", new Color(.6f,1,.55f));
+                var up=pose.Rotation*(_xz?Vector3.forward:Vector3.up);
+                DrawScaleHandle(up, _xz?"Z":"Y", new Color(.6f,1,.55f));
+                Handles.color=Color.white;
+                Vector2 uniform=center+(HandleAxis(viewport,pose.Rotation*Vector3.right)+HandleAxis(viewport,up)).normalized*43;
+                Handles.DrawSolidDisc(uniform,Vector3.forward,4);
             }
             GUI.Label(new Rect(5, 3, viewport.width - 10, 18), $"生成位置 {pose.Position.ToString("F2")}", EditorStyles.miniLabel);
             Handles.color = previous;
@@ -442,16 +665,17 @@ namespace FRFrame.Gameplay.Unity.Editor
         }
         internal void CancelInteraction()
         {
-            if (_hotControl == 0) return;
-            if (GUIUtility.hotControl == _hotControl) GUIUtility.hotControl = 0;
-            _hotControl = 0;
+            if (GUIUtility.hotControl == _hotControl || GUIUtility.hotControl == _panControl) GUIUtility.hotControl = 0;
+            _hotControl = _panControl = 0;
         }
         public void Dispose()
         {
             CancelInteraction();
-            if (_auditioning) { AudioMethod("StopAllPreviewClips")?.Invoke(null, null); _auditioning = false; }
+            StopAudition();
+            SetReference(null);
             _preview?.Cleanup();_preview=null;
             if(Subject!=null)UnityEngine.Object.DestroyImmediate(Subject);Subject=null;
+            if(_tintMaterial)UnityEngine.Object.DestroyImmediate(_tintMaterial);_tintMaterial=null;
         }
     }
 }
