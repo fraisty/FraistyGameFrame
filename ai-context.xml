@@ -86066,7 +86066,8 @@ namespace FRFrame.Gameplay.Standard
             float distance = GameplaySpatialMath.Distance(previous, next);
             float rangeLeft = _range - DistanceTravelled;
             bool reachedRange = distance >= rangeLeft;
-            bool rangeClipped = !fixedContacts && distance > rangeLeft;
+            // Both modes stop at MaxRange. Fixed contacts sample only the clipped endpoint.
+            bool rangeClipped = distance > rangeLeft;
             if (rangeClipped && distance > 0)
             { next = GameplaySpatialMath.Lerp(previous, next, rangeLeft / distance); distance = rangeLeft; }
             Direction = GameplaySpatialMath.Direction(previous, next, Direction);
@@ -94936,6 +94937,73 @@ namespace FRFrame.Tests.Gameplay
             }
         }
         private static IGameplayFloatValue N(float number)=>new GameplayConstantFloatValue(number);
+        [TestCase(1)]
+        [TestCase(10)]
+        public void FixedEndpointSamplesOnlyAtTheClippedRangeBoundary(int worldSteps)
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            owner.Facing = new GameplayDirection(1, 0);
+            world.CreateActor(new GameplayPoint(2, 0), 2);
+            world.CreateActor(new GameplayPoint(.5f, 0), 2);
+            var boundary = world.CreateActor(new GameplayPoint(1, 0), 2);
+            var skill = Install(owner, new Observe(_ => { }));
+            Assert.That(skill.TryCast(), Is.True);
+
+            var hits = new List<GameplaySourceId>();
+            var definition = new GameplayProjectileDefinition(
+                new GameplayProjectileMotionDefinition(GameplayProjectileMotionKind.Straight),
+                N(10), N(2), N(.05f), N(1), N(0),
+                onHit: new[] { new Observe(context => hits.Add(context.TargetData.PrimaryTargetId)) },
+                contactMode: GameplayProjectileContactMode.FixedEndpointNearest, contactStep: .2f, continueAfterHit: true);
+            var projectile = world.SpawnProjectile(owner, skill.LastCastContext, definition);
+            var samples = new List<float>();
+            projectile.Changed += operation => samples.Add(operation.Position.X);
+            for (int i = 0; i < worldSteps; i++) world.Advance(.2f / worldSteps);
+
+            Assert.That(hits, Is.EqualTo(new[] { boundary.Id }), "Only the terminal point is sampled. Neither the crossed target nor the out-of-range target is hit.");
+            Assert.That(samples, Is.EqualTo(new[] { 1f }), "The terminal sample must be clipped before notifying observers.");
+            Assert.That(projectile.DistanceTravelled, Is.EqualTo(1f));
+            Assert.That(projectile.EndReason, Is.EqualTo(GameplaySpatialEndReason.Range));
+        }
+
+        [TestCase(1, 1f, GameplaySpatialEndReason.Range)]
+        [TestCase(10, 1f, GameplaySpatialEndReason.Range)]
+        [TestCase(1, 2f, GameplaySpatialEndReason.Arrived)]
+        [TestCase(10, 2f, GameplaySpatialEndReason.Arrived)]
+        public void FixedEndpointCapturedDestinationSpawnsAreaOnlyWhenReached(
+            int worldSteps, float maxRange, GameplaySpatialEndReason expectedEnd)
+        {
+            using var world = new GameplayStandardWorld();
+            var owner = world.CreateActor(default, 1);
+            var skill = Install(owner, new Observe(_ => { }));
+            Assert.That(skill.TryCast(), Is.True);
+            var area = new GameplayAreaDefinition(GameplaySearchShape.Circle, GameplaySpatialPlane.XY,
+                GameplaySearchOrigin.ContextPoint, N(.5f), N(180), N(1), N(1), N(1), N(1), N(1),
+                cancelOnAbilityEnd: false);
+            int arrivals = 0;
+            int ranges = 0;
+            var definition = new GameplayProjectileDefinition(
+                new GameplayProjectileMotionDefinition(GameplayProjectileMotionKind.Straight,
+                    straightDestination: GameplayStraightDestinationMode.CapturedDestination),
+                N(10), N(2), N(.05f), N(maxRange), N(0),
+                onArrive: new IGameplaySkillAction[] { new Observe(_ => arrivals++), new GameplaySpawnAreaAction(area) },
+                onRange: new[] { new Observe(_ => ranges++) }, cancelOnAbilityEnd: false,
+                contactMode: GameplayProjectileContactMode.FixedEndpointNearest, contactStep: .2f, continueAfterHit: true);
+            var context = skill.LastCastContext.WithTarget(new GameplayTargetData(default, new GameplayPoint(2, 0)));
+            var projectile = world.SpawnProjectile(owner, context, definition);
+            Assert.That(owner.Abilities.End(skill.Grant), Is.True);
+            for (int i = 0; i < worldSteps; i++) world.Advance(.2f / worldSteps);
+
+            var children = world.GetSpatialSnapshot().OfType<GameplayAreaOperation>().ToArray();
+            bool arrived = expectedEnd == GameplaySpatialEndReason.Arrived;
+            Assert.That(projectile.EndReason, Is.EqualTo(expectedEnd));
+            Assert.That(projectile.Position.X, Is.EqualTo(maxRange));
+            Assert.That(arrivals, Is.EqualTo(arrived ? 1 : 0));
+            Assert.That(ranges, Is.EqualTo(arrived ? 0 : 1));
+            Assert.That(children.Select(child => child.Position.X), Is.EqualTo(arrived ? new[] { 2f } : Array.Empty<float>()));
+        }
+
         [Test]
         public void StraightDestinationRangeAndZeroTimeAreaHaveDistinctBoundaries()
         {

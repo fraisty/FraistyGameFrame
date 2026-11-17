@@ -259,7 +259,8 @@ namespace FRFrame.Gameplay.Standard
             float distance = GameplaySpatialMath.Distance(previous, next);
             float rangeLeft = _range - DistanceTravelled;
             bool reachedRange = distance >= rangeLeft;
-            bool rangeClipped = !fixedContacts && distance > rangeLeft;
+            // Both modes stop at MaxRange. Fixed contacts sample only the clipped endpoint.
+            bool rangeClipped = distance > rangeLeft;
             if (rangeClipped && distance > 0)
             { next = GameplaySpatialMath.Lerp(previous, next, rangeLeft / distance); distance = rangeLeft; }
             Direction = GameplaySpatialMath.Direction(previous, next, Direction);
