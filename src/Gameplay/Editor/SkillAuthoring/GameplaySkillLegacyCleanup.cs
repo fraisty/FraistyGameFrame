@@ -63,12 +63,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             try
             {
-                double stop=EditorApplication.timeSinceStartup+.008;int work=0;
-                while(_cursor<_scan.Length&&work++<128&&EditorApplication.timeSinceStartup<stop)
+                double stop = EditorApplication.timeSinceStartup + .008;
+                int work = 0;
+                while (_cursor < _scan.Length && work++ < 128 && EditorApplication.timeSinceStartup < stop)
                 {
-                    string path=_scan[_cursor++];
-                    if(!_paths.Contains(path)&&!AssetDatabase.GetDependencies(path,false).Any(_paths.Contains))continue;
-                    ReadReferences(path);
+                    string path = _scan[_cursor++];
+                    var dependencies = AssetDatabase.GetDependencies(path, false);
+                    if (_paths.Contains(path) || dependencies.Any(_paths.Contains))
+                        ReadReferences(path, dependencies);
                 }
                 if(_cursor<_scan.Length)return;
                 EditorApplication.update-=Advance;
@@ -96,14 +98,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 return !GameplayAuthoringDependencyGraph.BuildDefinition(doc).Nodes.Any(n=>Identity(n.Asset)==target);
             }return false;
         }
-        private void ReadReferences(string path)
+        private void ReadReferences(string path, string[] directDependencies)
         {
             using(var reader=new StreamReader(path))
             {
                 var headerBytes=new char[5];int headerLength=reader.Read(headerBytes,0,5);if(headerLength<5||new string(headerBytes)!="%YAML"){
                     // Indexed native/binary dependencies cannot prove a particular fileID unused.
                     // Conservatively protect all candidates in the referenced asset paths.
-                    var dependencies=new HashSet<string>(AssetDatabase.GetDependencies(path,false));
+                    var dependencies=new HashSet<string>(directDependencies);
                     foreach(var candidate in _candidates)if(dependencies.Contains(AssetDatabase.GetAssetPath(candidate.Value))){_kept.Add(candidate.Key);_formal.Add(candidate.Key);}
                     return;
                 }

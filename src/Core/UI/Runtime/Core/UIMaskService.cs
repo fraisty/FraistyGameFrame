@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
@@ -46,13 +47,16 @@ namespace FRFrame
             }
         }
 
-        public UniTask PrepareBlurAsync(UIForm target)
+        public UniTask PrepareBlurAsync(UIForm target) =>
+            target == null ? UniTask.CompletedTask : PrepareBlurAsync(target, target.OperationRevision, default);
+
+        internal UniTask PrepareBlurAsync(UIForm target, uint revision, CancellationToken cancellationToken)
         {
             if (target?.Group == null || !target.UseMask || target.MaskMode != UIMaskMode.Blur)
                 return UniTask.CompletedTask;
 
             return _masks.TryGetValue(target.Group.Layer, out MaskView view)
-                ? view.PrepareBlurAsync(target)
+                ? view.PrepareBlurAsync(target, revision, cancellationToken)
                 : UniTask.CompletedTask;
         }
 
@@ -127,6 +131,9 @@ namespace FRFrame
             private readonly RawImage _tint;
             private readonly Button _button;
             private UIForm _target;
+            private UIForm _blurTarget;
+            private uint _captureRevision;
+            private bool _capturePending;
             private UIManager _uiManager;
             private Material _blurMaterial;
             private RenderTexture _blurTexture;
@@ -142,14 +149,22 @@ namespace FRFrame
                 _button.onClick.AddListener(OnClick);
             }
 
-            public async UniTask PrepareBlurAsync(UIForm target)
+            public async UniTask PrepareBlurAsync(UIForm target, uint revision, CancellationToken cancellationToken)
             {
-                _target = target;
+                uint capture = ++_captureRevision;
+                _capturePending = true;
                 // The capture must exclude this mask. Show() can be reached later in
                 // the same open flow, so keep the mask hidden until the frame-end grab.
                 _go.SetActive(false);
                 await UniTask.WaitForEndOfFrame();
-                CaptureBlur();
+                if (capture != _captureRevision) return;
+                _capturePending = false;
+                if (target && target.OperationRevision == revision && !cancellationToken.IsCancellationRequested)
+                {
+                    CaptureBlur();
+                    _blurTarget = target;
+                }
+                else if (_target) _go.SetActive(true);
             }
 
             public void Show(UIForm target, UIManager uiManager)
@@ -159,7 +174,7 @@ namespace FRFrame
 
                 _canvas.sortingOrder = Mathf.Max(0, target.SortingOrder - 1);
                 _tint.color = GetColor(target);
-                _go.SetActive(true);
+                _go.SetActive(!_capturePending);
 
                 bool useBlur = target.MaskMode == UIMaskMode.Blur;
                 if (!useBlur)
@@ -171,7 +186,7 @@ namespace FRFrame
 
                 // PrepareBlurAsync performs the frame-end capture before this object is
                 // shown. Avoid a synchronous fallback here: it would capture the mask.
-                _backdrop.gameObject.SetActive(_blurTexture != null);
+                _backdrop.gameObject.SetActive(_blurTexture != null && _blurTarget == target);
             }
 
             public void Hide()
@@ -183,6 +198,7 @@ namespace FRFrame
 
             public void Dispose()
             {
+                _captureRevision++;
                 ReleaseBlurTexture();
                 if (_blurMaterial != null)
                 {
@@ -298,6 +314,7 @@ namespace FRFrame
 
             private void ReleaseBlurTexture()
             {
+                _blurTarget = null;
                 _backdrop.texture = null;
                 if (_blurTexture == null)
                     return;

@@ -10,8 +10,33 @@ namespace FRFrame.Editor
     {
         private sealed class TransitionDraftBuffer : ScriptableObject
         {
-            public UIFormTransition open;
-            public UIFormTransition close;
+            [NonSerialized] public UIFormTransition open;
+            [NonSerialized] public UIFormTransition close;
+            [SerializeField] private UndoClip _open = new UndoClip();
+            [SerializeField] private UndoClip _close = new UndoClip();
+
+            internal void Capture() { _open.Capture(open); _close.Capture(close); }
+            internal void Restore() { open = _open.Restore(); close = _close.Restore(); }
+        }
+
+        [Serializable]
+        private sealed class UndoClip
+        {
+            [SerializeField] private bool _enabled, _hasTrackList;
+            [SerializeField] private float _duration;
+            // Preserve missing rows in the Undo buffer only. The runtime configuration stays inline.
+            [SerializeReference] private UITransitionTrack[] _tracks;
+
+            internal void Capture(UIFormTransition clip)
+            {
+                _enabled = clip.enabled;
+                _duration = clip.duration;
+                _hasTrackList = clip.tracks != null;
+                _tracks = clip.tracks;
+            }
+
+            internal UIFormTransition Restore() => new UIFormTransition
+                { enabled = _enabled, duration = _duration, tracks = _hasTrackList ? _tracks : null };
         }
 
         private UIFormConfig _transitionForm;
@@ -26,6 +51,11 @@ namespace FRFrame.Editor
         private UITransitionSample _previewSample;
         private string _previewError;
         private string _transitionAssetPath;
+        private string _previewAssetPath;
+        private Hash128 _previewAssetHash;
+        private uint _transitionRevision;
+
+        private UIFormTransition CurrentTransition => _previewClose ? _transitionDraft.close : _transitionDraft.open;
 
         private void BindTransitionEditor()
         {
@@ -42,12 +72,14 @@ namespace FRFrame.Editor
             _transitionDraft.hideFlags = HideFlags.HideAndDontSave;
             _transitionDraft.open = UIConfigGroupDraftMapper.CloneTransition(_mappedOpen) ?? new UIFormTransition();
             _transitionDraft.close = UIConfigGroupDraftMapper.CloneTransition(_mappedClose) ?? new UIFormTransition();
+            _transitionDraft.Capture();
             _committedTransition = EditorJsonUtility.ToJson(_transitionDraft);
         }
 
         private void OnDisable()
         {
             Undo.undoRedoPerformed -= UndoTransitionDraft;
+            EditorApplication.projectChanged -= CheckTransitionPreviewSource;
             DiscardTransitionEditor();
         }
 
@@ -68,14 +100,23 @@ namespace FRFrame.Editor
 
         private void EditTransition(Action update)
         {
+            _transitionDraft.Capture();
             Undo.RegisterCompleteObjectUndo(_transitionDraft,"修改 Form 多通道动画");
             update();
-            UndoTransitionDraft();
+            _transitionDraft.Capture();
+            CommitTransitionDraft();
         }
 
         private void UndoTransitionDraft()
         {
             if (!_transitionDraft || _selectedFormItem?.data != _transitionForm) return;
+            _transitionDraft.Restore();
+            CommitTransitionDraft();
+        }
+
+        private void CommitTransitionDraft()
+        {
+            _transitionRevision++;
             string revision = EditorJsonUtility.ToJson(_transitionDraft);
             if (revision == _committedTransition) return;
             _committedTransition = revision;
@@ -90,6 +131,7 @@ namespace FRFrame.Editor
         private void DrawTransitionEditor()
         {
             if (!_transitionDraft) return;
+            if (Event.current.type == EventType.Layout) CheckTransitionPreviewSource();
             bool expanded = EditorGUILayout.Foldout(_transitionFold,"多通道动画与 Prefab 预览",true);
             if (expanded != _transitionFold && !expanded) StopTransitionPreview();
             _transitionFold = expanded;
@@ -98,9 +140,10 @@ namespace FRFrame.Editor
             if (_previewClose != (mode == 1))
             {
                 _previewClose = mode == 1;
+                _transitionRevision++;
                 StopTransitionPreview();
             }
-            var clip = _previewClose ? _transitionDraft.close : _transitionDraft.open;
+            var clip = CurrentTransition;
             int method = EditorGUILayout.Popup("方式",clip.enabled ? 1 : 0,new[] { "预设", "多通道" });
             if (clip.enabled != (method == 1)) EditTransition(() => clip.enabled = method == 1);
             if (!clip.enabled) return;
@@ -108,9 +151,12 @@ namespace FRFrame.Editor
             if (duration != clip.duration) EditTransition(() => clip.duration = duration);
             GameObject prefab = string.IsNullOrEmpty(_transitionAssetPath) ? null : AssetDatabase.LoadAssetAtPath<GameObject>(
                 UIConfigEditorWindowHelper.TryLoadPrefabAtRuntimeStylePath(_transitionAssetPath) ?? _transitionAssetPath);
-            for (int i = 0; i < clip.tracks.Length; i++)
+            var tracks = clip.tracks ?? Array.Empty<UITransitionTrack>();
+            if (clip.tracks == null)
+                EditorGUILayout.HelpBox("多通道列表缺失。请增加一条通道以修复。",MessageType.Warning);
+            for (int i = 0; i < tracks.Length; i++)
             {
-                var track = clip.tracks[i];
+                var track = tracks[i];
                 using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
                     using (new EditorGUILayout.HorizontalScope())
@@ -129,9 +175,21 @@ namespace FRFrame.Editor
                             GUIUtility.ExitGUI();
                         }
                     }
+                    if (track == null)
+                    {
+                        EditorGUILayout.HelpBox($"通道 {i + 1} 缺失，请移除或重建该槽。",MessageType.Warning);
+                        if (GUILayout.Button("重建通道"))
+                        {
+                            int slot = i;
+                            EditTransition(() => clip.tracks[slot] = new UITransitionTrack { duration = clip.duration });
+                            GUIUtility.ExitGUI();
+                        }
+                        continue;
+                    }
                     var property = (UITransitionProperty)EditorGUILayout.EnumPopup("属性",track.property);
-                    string path = EditorGUILayout.DelayedTextField("相对路径（空 = 根）",track.targetPath ?? "");
-                    if (prefab && GUILayout.Button("选择目标…")) ShowTransitionTargets(prefab,track);
+                    string previousPath = track.targetPath ?? "";
+                    string path = EditorGUILayout.DelayedTextField("相对路径（空 = 根）",previousPath);
+                    if (prefab && GUILayout.Button("选择目标…")) CreateTransitionTargetMenu(prefab,track).ShowAsContext();
                     float start = EditorGUILayout.DelayedFloatField("起点（秒）",track.start);
                     float length = EditorGUILayout.DelayedFloatField("时长（秒）",track.duration);
                     string units = property switch { UITransitionProperty.Alpha => "透明度", UITransitionProperty.Scale => "倍率", UITransitionProperty.Rotation => "角度", _ => "偏移" };
@@ -143,7 +201,7 @@ namespace FRFrame.Editor
                         : EditorGUILayout.Vector3Field($"{units} · 到",track.to);
                     EditorGUI.BeginChangeCheck();
                     var curve = EditorGUILayout.CurveField("曲线（0–1 时间）",track.curve);
-                    if (EditorGUI.EndChangeCheck() || property != track.property || path != track.targetPath ||
+                    if (EditorGUI.EndChangeCheck() || property != track.property || path != previousPath ||
                         start != track.start || length != track.duration || from != track.from || to != track.to)
                         EditTransition(() => {track.property = property; track.targetPath = path; track.start = start;
                             track.duration = length; track.from = from; track.to = to; track.curve = curve;});
@@ -151,7 +209,7 @@ namespace FRFrame.Editor
             }
             if (GUILayout.Button("增加通道"))
             {
-                EditTransition(() => clip.tracks = clip.tracks.Append(new UITransitionTrack { duration = clip.duration }).ToArray());
+                EditTransition(() => clip.tracks = tracks.Append(new UITransitionTrack { duration = clip.duration }).ToArray());
                 GUIUtility.ExitGUI();
             }
             if (!prefab)
@@ -180,7 +238,11 @@ namespace FRFrame.Editor
                         _playingTransition = true;
                         Repaint();
                     }
-                    if (GUILayout.Button("停止")) _playingTransition = false;
+                    if (GUILayout.Button("停止"))
+                    {
+                        StopTransitionPreview();
+                        GUIUtility.ExitGUI();
+                    }
                 }
             }
             if (_previewError != null) EditorGUILayout.HelpBox(_previewError,MessageType.Warning);
@@ -202,13 +264,23 @@ namespace FRFrame.Editor
             GUI.DrawTexture(rect,texture,ScaleMode.ScaleToFit,false);
         }
 
-        private void ShowTransitionTargets(GameObject prefab,UITransitionTrack track)
+        private GenericMenu CreateTransitionTargetMenu(GameObject prefab,UITransitionTrack track)
         {
             var menu = new GenericMenu();
             var draft = _transitionDraft;
+            var clip = CurrentTransition;
+            uint revision = _transitionRevision;
+            string assetPath = AssetDatabase.GetAssetPath(prefab);
+            var assetHash = AssetDatabase.GetAssetDependencyHash(assetPath);
             void Apply(string path)
             {
-                if (draft && draft == _transitionDraft) EditTransition(() => track.targetPath = path);
+                if (!draft || draft != _transitionDraft || revision != _transitionRevision ||
+                    _selectedFormItem?.data != _transitionForm || _transitionForm.assetPath != _transitionAssetPath ||
+                    clip != CurrentTransition || !clip.tracks.Contains(track) ||
+                    AssetDatabase.LoadAssetAtPath<GameObject>(assetPath) != prefab ||
+                    AssetDatabase.GetAssetDependencyHash(assetPath) != assetHash)
+                    return;
+                EditTransition(() => track.targetPath = path);
             }
             menu.AddItem(new GUIContent("根"),string.IsNullOrEmpty(track.targetPath),() => Apply(""));
             foreach (var target in prefab.GetComponentsInChildren<RectTransform>(true))
@@ -217,7 +289,7 @@ namespace FRFrame.Editor
                 string path = AnimationUtility.CalculateTransformPath(target,prefab.transform);
                 menu.AddItem(new GUIContent(path),track.targetPath == path,() => Apply(path));
             }
-            menu.ShowAsContext();
+            return menu;
         }
 
         private void BuildTransitionPreview(GameObject prefab,UIFormTransition clip)
@@ -244,8 +316,21 @@ namespace FRFrame.Editor
             _previewRoot.SetParent(surface.transform,false);
             if (!instance.GetComponent<CanvasGroup>()) instance.AddComponent<CanvasGroup>();
             LayoutRebuilder.ForceRebuildLayoutImmediate(_previewRoot);
-            try { _previewSample = new UITransitionSample(_previewRoot,clip); }
+            try
+            {
+                _previewSample = new UITransitionSample(_previewRoot,clip);
+                _previewAssetPath = AssetDatabase.GetAssetPath(prefab);
+                _previewAssetHash = AssetDatabase.GetAssetDependencyHash(_previewAssetPath);
+            }
             catch (ArgumentException error) { StopTransitionPreview(); _previewError = error.Message; }
+        }
+
+        private void CheckTransitionPreviewSource()
+        {
+            if (_previewSample == null || AssetDatabase.GetAssetDependencyHash(_previewAssetPath) == _previewAssetHash)
+                return;
+            StopTransitionPreview();
+            Repaint();
         }
 
         private void StopTransitionPreview()
@@ -256,6 +341,7 @@ namespace FRFrame.Editor
             _transitionPreview = null;
             _previewRoot = null;
             _previewSample = null;
+            _previewAssetPath = null;
             _previewError = null;
         }
     }

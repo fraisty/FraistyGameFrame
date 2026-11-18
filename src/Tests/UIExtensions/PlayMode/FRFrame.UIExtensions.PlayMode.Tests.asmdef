@@ -2,7 +2,8 @@
     "name": "FRFrame.UIExtensions.PlayMode.Tests",
     "rootNamespace": "FRFrame.Tests.UIExtensions",
     "references": [
-        "FRFrame.Core"
+        "FRFrame.Core",
+        "UniTask"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

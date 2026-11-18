@@ -55,8 +55,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal Func<string,bool> IsMainAnimation;
         internal Func<bool> IsPlaying;
         internal Action TogglePlaying;
-        internal readonly Dictionary<string,Rect> VisibleEventScreenRects=new Dictionary<string,Rect>();
-        internal readonly Dictionary<string,Rect> DurationHandleScreenRects=new Dictionary<string,Rect>();
+        internal readonly Dictionary<string,Rect> VisibleEventPanelRects=new Dictionary<string,Rect>();
+        internal readonly Dictionary<string,Rect> DurationHandlePanelRects=new Dictionary<string,Rect>();
         private float _cursor {get=>_state.Cursor;set=>_state.Cursor=value;}
         private float _zoom {get=>_state.Zoom;set=>_state.Zoom=value;}
         private Vector2 _scroll {get=>_state.Scroll;set=>_state.Scroll=new Vector2(value.x,0);}
@@ -106,7 +106,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 row.Label.tooltip=GameplaySkillNodeDisplay.EventLabel(node,_document.AuthoringGraph)+"\n"+(entry.TimeSeconds*timeline.FramesPerSecond).ToString("0.##")+"f · Order "+entry.Order+"\n事件 "+entry.Id+"\n行为 "+entry.EntryNodeId;
                 if(IndexOf(row.Element)!=index+1)Insert(index+1,row.Element);
             }
-            foreach(var id in _rows.Keys.Where(id=>!entries.Any(e=>e.Id==id)).ToArray()){_rows[id].Element.RemoveFromHierarchy();_rows.Remove(id);VisibleEventScreenRects.Remove(id);DurationHandleScreenRects.Remove(id);}
+            foreach(var id in _rows.Keys.Where(id=>!entries.Any(e=>e.Id==id)).ToArray()){_rows[id].Element.RemoveFromHierarchy();_rows.Remove(id);VisibleEventPanelRects.Remove(id);DurationHandlePanelRects.Remove(id);}
             Add(_horizontal);RefreshGeometry();RepaintTime();
         }
         private void RepaintTime(){_ruler.MarkDirtyRepaint();foreach(var row in _rows.Values)row.Content.MarkDirtyRepaint();}
@@ -214,10 +214,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool editable=row.Region&&row.Local!=null&&row.Path!=null;
             if(editable)EditorGUI.DrawRect(new Rect(handle.x+2,handle.y+3,4,handle.height-6),new Color(.3f,.9f,.5f));
             if(evt.type==EventType.Repaint){
-                VisibleEventScreenRects.Remove(row.Entry.Id);DurationHandleScreenRects.Remove(row.Entry.Id);
+                VisibleEventPanelRects.Remove(row.Entry.Id);DurationHandlePanelRects.Remove(row.Entry.Id);
                 var clipped=Rect.MinMaxRect(Mathf.Max(0,rect.xMin),rect.yMin,Mathf.Min(bounds.width,rect.xMax),rect.yMax);
-                if(clipped.width>0)VisibleEventScreenRects[row.Entry.Id]=new Rect(GUIUtility.GUIToScreenPoint(clipped.position),clipped.size);
-                if(editable&&handle.xMin>=0&&handle.xMax<=bounds.width)DurationHandleScreenRects[row.Entry.Id]=new Rect(GUIUtility.GUIToScreenPoint(handle.position),handle.size);
+                if(clipped.width>0)VisibleEventPanelRects[row.Entry.Id]=row.Content.LocalToWorld(clipped);
+                if(editable&&handle.xMin>=0&&handle.xMax<=bounds.width)DurationHandlePanelRects[row.Entry.Id]=row.Content.LocalToWorld(handle);
             }
             if(evt.type==EventType.MouseDown&&evt.button==0&&bounds.Contains(evt.mousePosition)&&rect.Contains(evt.mousePosition)){
                 FocusEvent(row.Entry.Id);_drag=row.Entry.Id;_dragTime=_originalTime=_startTime=row.Entry.TimeSeconds;

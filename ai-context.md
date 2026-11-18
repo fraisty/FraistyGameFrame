@@ -32590,7 +32590,12 @@ namespace FRFrame
     public abstract class UIForm : MonoBehaviour
     {
         internal UIDefaultAnimationPlayer.Playback DefaultAnimation;
-        internal uint CloseRevision { get; private set; }
+        internal uint OperationRevision { get; private set; }
+        internal bool HasOpened { get; private set; }
+        private bool _hasOpenSession;
+
+        // A synchronous callback can request another operation, just as it can during an await.
+        internal uint BeginOperation() => ++OperationRevision;
 
         public int SerialId { get; internal set; }
         public string FormId { get; internal set; }
@@ -32665,30 +32670,32 @@ namespace FRFrame
                 IsInitialized = true;
                 State = UIFormState.Initialized;
             }
+            SetVisible(false);
         }
 
         internal void InternalOpen(object userData)
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             IsPaused = false;
             IsCovered = false;
             State = UIFormState.Opened;
+            HasOpened = _hasOpenSession = true;
             OnOpen(userData);
         }
 
         internal void InternalClose(object userData)
         {
+            State = UIFormState.Closed;
+            if (!_hasOpenSession) return;
+            _hasOpenSession = false;
             _eventScopes.ClearOpen();
             OnClose(userData);
-            State = UIFormState.Closed;
         }
 
         internal void InternalBeginClose()
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             State = UIFormState.Closing;
         }
@@ -32775,7 +32782,6 @@ namespace FRFrame
 
         internal void InternalHide()
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             _eventScopes.ClearVisible();
             for (int i = 0; i < _widgets.Count; i++)
@@ -32791,21 +32797,21 @@ namespace FRFrame
                 gameObject.SetActive(false);
         }
 
-        internal void InternalShow(object userData)
+        internal void InternalShow(object userData, bool notify = true)
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             State = UIFormState.Opened;
-            OnShow(userData);
+            _hasOpenSession = true;
+            if (notify) OnShow(userData);
         }
 
         internal void InternalDispose()
         {
             if (State == UIFormState.Disposed)
                 return;
-            CloseRevision++;
+            State = UIFormState.Disposed;
             UIDefaultAnimationPlayer.Stop(this);
 
             ReleaseAllWidgets();
@@ -32816,7 +32822,6 @@ namespace FRFrame
             _maskColorOverride = null;
             UnbindEvent();
             OnDispose();
-            State = UIFormState.Disposed;
         }
 
         internal void InternalUpdate(float deltaTime, float unscaledDeltaTime)
@@ -33897,19 +33902,14 @@ namespace FRFrame
                 if (!config.allowMultiInstance)
                 {
                     UIForm existing = Get(formId);
+                    if ((existing == null || existing.State == UIFormState.Initialized) &&
+                        _loadingFormsById.TryGetValue(formId, out UILoadingOperation loadingOperation))
+                    {
+                        existing = await loadingOperation.Source.Task;
+                        return existing == null ? null : await OpenExistingFormAsync(existing, options, cancellationToken);
+                    }
                     if (existing != null)
-                    {
-                        await OpenExistingFormAsync(existing, options, cancellationToken);
-                        return existing;
-                    }
-
-                    if (_loadingFormsById.TryGetValue(formId, out UILoadingOperation loadingOperation))
-                    {
-                        UIForm loadingForm = await loadingOperation.Source.Task;
-                        if (loadingForm != null && !cancellationToken.IsCancellationRequested)
-                            await OpenExistingFormAsync(loadingForm, options, cancellationToken);
-                        return cancellationToken.IsCancellationRequested ? null : loadingForm;
-                    }
+                        return await OpenExistingFormAsync(existing, options, cancellationToken);
                 }
 
                 int serialId = ++_serialSeed;
@@ -33928,34 +33928,32 @@ namespace FRFrame
                     {
                         if (instance != null)
                             RecycleOrDestroyFormInstance(instance, config);
-                        operation.Source?.TrySetResult(null);
                         return null;
                     }
 
                     UIForm form = CreateFormInstance(instance, config, formId, serialId, options.UserData);
                     if (form == null)
                     {
-                        FRFM.Resource.Recycle(instance);
-                        operation.Source?.TrySetResult(null);
+                        RecycleOrDestroyFormInstance(instance, config);
                         return null;
                     }
 
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        DisposeForm(form, null);
+                        return null;
+                    }
+
+                    uint revision = form.BeginOperation();
                     RegisterForm(form, config);
-                    form.ApplyOpenOptions(options);
-                    ApplyOpenParam(form, options.UserData, options.StrongParamType);
-                    await _maskService.PrepareBlurAsync(form);
-                    form.InternalOpen(options.UserData);
-                    RefreshAllVisualStates();
-
-                    if (options.PlayAnimation)
-                        await form.InternalPlayOpenAnimationAsync(cancellationToken).SuppressCancellationThrow();
-
-                    operation.Source?.TrySetResult(form);
-                    return form;
+                    UIForm opened = await OpenExistingFormAsync(form, options, cancellationToken, revision);
+                    operation.Source?.TrySetResult(opened);
+                    return opened;
                 }
                 finally
                 {
-                    RemoveLoadingOperation(operation, config);
+                    RemoveLoadingOperation(operation);
+                    operation.Source?.TrySetResult(null);
                 }
             }
             finally
@@ -34078,20 +34076,26 @@ namespace FRFrame
         public UniTask CloseAsync(string formId, object userData = null, CancellationToken cancellationToken = default)
         {
             UIForm form = Get(formId);
-            return form == null ? UniTask.CompletedTask : CloseAsync(form, userData, cancellationToken);
+            if (form != null) return CloseAsync(form, userData, cancellationToken);
+            CancelLoading(formId);
+            return UniTask.CompletedTask;
         }
 
         public async UniTask CloseAsync(UIForm form, object userData = null, CancellationToken cancellationToken = default)
         {
-            if (form == null || form.State == UIFormState.Disposed || form.State == UIFormState.Closing)
+            if (!IsRegistered(form) || form.State == UIFormState.Closing)
                 return;
 
+            uint revision = form.BeginOperation();
             form.InternalBeginClose();
-            uint revision = form.CloseRevision;
-            await form.InternalPlayCloseAnimationAsync(cancellationToken).SuppressCancellationThrow();
-            if (!form || form.State != UIFormState.Closing || form.CloseRevision != revision)
+            CancelLoading(form.SerialId);
+            if (form.IsVisible)
+                await form.InternalPlayCloseAnimationAsync(cancellationToken).SuppressCancellationThrow();
+            if (!OwnsFormOperation(form, revision))
                 return;
             form.InternalClose(userData);
+            if (!OwnsFormOperation(form, revision))
+                return;
 
             if (form.Config != null && (form.Config.resident || form.Config.closeMode == UIFormCloseMode.Cache))
             {
@@ -34105,9 +34109,11 @@ namespace FRFrame
 
         public void Hide(UIForm form)
         {
-            if (form == null)
+            if (!IsRegistered(form))
                 return;
 
+            form.BeginOperation();
+            CancelLoading(form.SerialId);
             form.InternalHide();
             RefreshAllVisualStates();
         }
@@ -34124,13 +34130,16 @@ namespace FRFrame
 
         public void Show(UIForm form, object userData = null)
         {
-            if (form == null)
+            if (!IsRegistered(form))
                 return;
 
+            form.BeginOperation();
+            CancelLoading(form.SerialId);
             if (form.Config != null && form.Config.bringToFrontOnOpen)
                 form.Group?.BringToFront(form);
 
-            form.InternalShow(userData);
+            if (form.HasOpened) form.InternalShow(userData, notify: form.State != UIFormState.Closing || !form.IsVisible);
+            else form.InternalOpen(userData);
             RefreshAllVisualStates();
         }
 
@@ -34279,9 +34288,7 @@ namespace FRFrame
             if (string.IsNullOrEmpty(formId) || !_loadingFormsById.TryGetValue(formId, out UILoadingOperation operation))
                 return false;
 
-            operation.CancelRequested = true;
-            operation.CancellationSource?.Cancel();
-            operation.Source?.TrySetResult(null);
+            CancelLoading(operation);
             return true;
         }
 
@@ -34290,9 +34297,7 @@ namespace FRFrame
             if (!_loadingFormsBySerialId.TryGetValue(serialId, out UILoadingOperation operation))
                 return false;
 
-            operation.CancelRequested = true;
-            operation.CancellationSource?.Cancel();
-            operation.Source?.TrySetResult(null);
+            CancelLoading(operation);
             return true;
         }
 
@@ -34487,14 +34492,15 @@ namespace FRFrame
 
         public void CloseAll(string formId, object userData = null)
         {
-            if (CancelLoading(formId))
-                return;
-
             List<UIForm> forms = GetAll(formId);
-            if (forms == null)
-                return;
+            var snapshot = forms == null ? null : new List<UIForm>(forms);
+            var pending = new List<UILoadingOperation>(_loadingFormsBySerialId.Values);
+            foreach (var operation in pending)
+                if (operation.FormId == formId && !_formsBySerialId.ContainsKey(operation.SerialId))
+                    CancelLoading(operation);
 
-            List<UIForm> snapshot = new List<UIForm>(forms);
+            if (snapshot == null)
+                return;
             for (int i = snapshot.Count - 1; i >= 0; i--)
                 Close(snapshot[i], userData);
         }
@@ -34511,7 +34517,9 @@ namespace FRFrame
 
         public UniTask CloseAsync(int serialId, object userData = null, CancellationToken cancellationToken = default)
         {
-            return _formsBySerialId.TryGetValue(serialId, out UIForm form) ? CloseAsync(form, userData, cancellationToken) : UniTask.CompletedTask;
+            if (_formsBySerialId.TryGetValue(serialId, out UIForm form)) return CloseAsync(form, userData, cancellationToken);
+            CancelLoading(serialId);
+            return UniTask.CompletedTask;
         }
 
         internal void RemoveFromNavigation(UIForm form)
@@ -34519,30 +34527,47 @@ namespace FRFrame
             _navigation?.Remove(form);
         }
 
-        private async UniTask OpenExistingFormAsync(UIForm form, UIOpenOptions options, CancellationToken cancellationToken)
+        private bool IsRegistered(UIForm form) =>
+            form && _formsBySerialId.TryGetValue(form.SerialId, out var current) && ReferenceEquals(form, current);
+
+        private bool OwnsFormOperation(UIForm form, uint revision) =>
+            IsRegistered(form) && form.OperationRevision == revision;
+
+        private async UniTask<UIForm> OpenExistingFormAsync(UIForm form, UIOpenOptions options, CancellationToken cancellationToken, uint? registeredRevision = null)
         {
-            ApplyOpenParam(form, options.UserData, options.StrongParamType);
+            if (registeredRevision.HasValue ? !OwnsFormOperation(form, registeredRevision.Value) : !IsRegistered(form)) return null;
+            uint revision = registeredRevision ?? form.BeginOperation();
             form.ApplyOpenOptions(options);
+            ApplyOpenParam(form, options.UserData, options.StrongParamType);
+            if (!OwnsFormOperation(form, revision)) return null;
             if (form.Config != null && (options.BringToFront ?? form.Config.bringToFrontOnOpen))
                 form.Group?.BringToFront(form);
 
-            bool willOpen = form.State == UIFormState.Preloaded ||
-                            form.State == UIFormState.Hidden ||
-                            !form.gameObject.activeSelf ||
-                            form.State != UIFormState.Opened;
-            if (willOpen && form.State != UIFormState.Closing)
-                await _maskService.PrepareBlurAsync(form);
+            if (!cancellationToken.IsCancellationRequested &&
+                form.State != UIFormState.Opened && form.State != UIFormState.Closing)
+                await _maskService.PrepareBlurAsync(form, revision, cancellationToken);
+            if (!OwnsFormOperation(form, revision)) return null;
+            if (cancellationToken.IsCancellationRequested)
+            {
+                if (form.State == UIFormState.Initialized) DisposeForm(form, null);
+                else RefreshAllVisualStates();
+                return null;
+            }
 
-            if (form.State == UIFormState.Preloaded)
+            if (!form.HasOpened)
                 form.InternalOpen(options.UserData);
-            else if (form.State == UIFormState.Hidden || !form.gameObject.activeSelf)
-                form.InternalShow(options.UserData);
+            else if (form.State == UIFormState.Hidden || form.State == UIFormState.Closing)
+                form.InternalShow(options.UserData, notify: form.State != UIFormState.Closing || !form.IsVisible);
             else if (form.State != UIFormState.Opened)
                 form.InternalOpen(options.UserData);
 
+            if (!OwnsFormOperation(form, revision)) return null;
             RefreshAllVisualStates();
+            if (!OwnsFormOperation(form, revision)) return null;
             if (options.PlayAnimation)
                 await form.InternalPlayOpenAnimationAsync(cancellationToken).SuppressCancellationThrow();
+            // An already opened form stays open if only its animation was cancelled.
+            return OwnsFormOperation(form, revision) && form.State == UIFormState.Opened ? form : null;
         }
 
         private GameObject CreateCodeFormRoot(string formId, Transform parent)
@@ -34613,6 +34638,7 @@ namespace FRFrame
             if (form == null)
                 return;
 
+            form.BeginOperation();
             RemoveFromNavigation(form);
             form.Group?.Remove(form);
             _formsBySerialId.Remove(form.SerialId);
@@ -34622,15 +34648,16 @@ namespace FRFrame
                 if (list.Count == 0)
                     _formsById.Remove(form.FormId);
             }
+            CancelLoading(form.SerialId);
 
             form.InternalDispose();
             if (form.gameObject != null)
-                RecycleOrDestroyFormInstance(form.gameObject, form.Config);
+                RecycleOrDestroyFormInstance(form.gameObject, form.Config, initialized: true);
 
             RefreshAllVisualStates();
         }
 
-        private void RecycleOrDestroyFormInstance(GameObject instance, UIFormConfig config)
+        private void RecycleOrDestroyFormInstance(GameObject instance, UIFormConfig config, bool initialized = false)
         {
             if (instance == null)
                 return;
@@ -34641,6 +34668,7 @@ namespace FRFrame
             // produces a dead UI on the next open.
             if (config == null ||
                 string.IsNullOrEmpty(config.assetPath) ||
+                initialized ||
                 config.closeMode == UIFormCloseMode.Destroy)
             {
                 if (string.IsNullOrEmpty(config?.assetPath))
@@ -34670,15 +34698,20 @@ namespace FRFrame
             return operation;
         }
 
-        private void RemoveLoadingOperation(UILoadingOperation operation, UIFormConfig config)
+        private void RemoveLoadingOperation(UILoadingOperation operation)
         {
-            if (operation == null)
-                return;
-
             _loadingSerialIds.Remove(operation.SerialId);
             _loadingFormsBySerialId.Remove(operation.SerialId);
-            if (!config.allowMultiInstance)
+            if (_loadingFormsById.TryGetValue(operation.FormId, out var current) && ReferenceEquals(current, operation))
                 _loadingFormsById.Remove(operation.FormId);
+        }
+
+        private void CancelLoading(UILoadingOperation operation)
+        {
+            RemoveLoadingOperation(operation);
+            operation.CancelRequested = true;
+            operation.CancellationSource?.Cancel();
+            operation.Source?.TrySetResult(null);
         }
 
         private CancellationTokenSource CreateLinkedCancellation(CancellationToken cancellationToken, float timeout)
@@ -34719,9 +34752,7 @@ namespace FRFrame
             var operations = new List<UILoadingOperation>(_loadingFormsBySerialId.Values);
             for (int i = 0; i < operations.Count; i++)
             {
-                operations[i].CancelRequested = true;
-                operations[i].CancellationSource?.Cancel();
-                operations[i].Source?.TrySetResult(null);
+                CancelLoading(operations[i]);
             }
         }
 
@@ -34804,6 +34835,7 @@ namespace FRFrame
 ## File: Core/UI/Runtime/Core/UIMaskService.cs
 ````csharp
 using System.Collections.Generic;
+using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
@@ -34851,13 +34883,16 @@ namespace FRFrame
             }
         }
 
-        public UniTask PrepareBlurAsync(UIForm target)
+        public UniTask PrepareBlurAsync(UIForm target) =>
+            target == null ? UniTask.CompletedTask : PrepareBlurAsync(target, target.OperationRevision, default);
+
+        internal UniTask PrepareBlurAsync(UIForm target, uint revision, CancellationToken cancellationToken)
         {
             if (target?.Group == null || !target.UseMask || target.MaskMode != UIMaskMode.Blur)
                 return UniTask.CompletedTask;
 
             return _masks.TryGetValue(target.Group.Layer, out MaskView view)
-                ? view.PrepareBlurAsync(target)
+                ? view.PrepareBlurAsync(target, revision, cancellationToken)
                 : UniTask.CompletedTask;
         }
 
@@ -34932,6 +34967,9 @@ namespace FRFrame
             private readonly RawImage _tint;
             private readonly Button _button;
             private UIForm _target;
+            private UIForm _blurTarget;
+            private uint _captureRevision;
+            private bool _capturePending;
             private UIManager _uiManager;
             private Material _blurMaterial;
             private RenderTexture _blurTexture;
@@ -34947,14 +34985,22 @@ namespace FRFrame
                 _button.onClick.AddListener(OnClick);
             }
 
-            public async UniTask PrepareBlurAsync(UIForm target)
+            public async UniTask PrepareBlurAsync(UIForm target, uint revision, CancellationToken cancellationToken)
             {
-                _target = target;
+                uint capture = ++_captureRevision;
+                _capturePending = true;
                 // The capture must exclude this mask. Show() can be reached later in
                 // the same open flow, so keep the mask hidden until the frame-end grab.
                 _go.SetActive(false);
                 await UniTask.WaitForEndOfFrame();
-                CaptureBlur();
+                if (capture != _captureRevision) return;
+                _capturePending = false;
+                if (target && target.OperationRevision == revision && !cancellationToken.IsCancellationRequested)
+                {
+                    CaptureBlur();
+                    _blurTarget = target;
+                }
+                else if (_target) _go.SetActive(true);
             }
 
             public void Show(UIForm target, UIManager uiManager)
@@ -34964,7 +35010,7 @@ namespace FRFrame
 
                 _canvas.sortingOrder = Mathf.Max(0, target.SortingOrder - 1);
                 _tint.color = GetColor(target);
-                _go.SetActive(true);
+                _go.SetActive(!_capturePending);
 
                 bool useBlur = target.MaskMode == UIMaskMode.Blur;
                 if (!useBlur)
@@ -34976,7 +35022,7 @@ namespace FRFrame
 
                 // PrepareBlurAsync performs the frame-end capture before this object is
                 // shown. Avoid a synchronous fallback here: it would capture the mask.
-                _backdrop.gameObject.SetActive(_blurTexture != null);
+                _backdrop.gameObject.SetActive(_blurTexture != null && _blurTarget == target);
             }
 
             public void Hide()
@@ -34988,6 +35034,7 @@ namespace FRFrame
 
             public void Dispose()
             {
+                _captureRevision++;
                 ReleaseBlurTexture();
                 if (_blurMaterial != null)
                 {
@@ -35103,6 +35150,7 @@ namespace FRFrame
 
             private void ReleaseBlurTexture()
             {
+                _blurTarget = null;
                 _backdrop.texture = null;
                 if (_blurTexture == null)
                     return;
@@ -53997,6 +54045,7 @@ namespace FRFrame.Editor
 
         private void OnEnable()
         {
+            EditorApplication.projectChanged += CheckTransitionPreviewSource;
             Undo.undoRedoPerformed += UndoTransitionDraft;
             RefreshGroups();
         }
@@ -57105,8 +57154,33 @@ namespace FRFrame.Editor
     {
         private sealed class TransitionDraftBuffer : ScriptableObject
         {
-            public UIFormTransition open;
-            public UIFormTransition close;
+            [NonSerialized] public UIFormTransition open;
+            [NonSerialized] public UIFormTransition close;
+            [SerializeField] private UndoClip _open = new UndoClip();
+            [SerializeField] private UndoClip _close = new UndoClip();
+
+            internal void Capture() { _open.Capture(open); _close.Capture(close); }
+            internal void Restore() { open = _open.Restore(); close = _close.Restore(); }
+        }
+
+        [Serializable]
+        private sealed class UndoClip
+        {
+            [SerializeField] private bool _enabled, _hasTrackList;
+            [SerializeField] private float _duration;
+            // Preserve missing rows in the Undo buffer only. The runtime configuration stays inline.
+            [SerializeReference] private UITransitionTrack[] _tracks;
+
+            internal void Capture(UIFormTransition clip)
+            {
+                _enabled = clip.enabled;
+                _duration = clip.duration;
+                _hasTrackList = clip.tracks != null;
+                _tracks = clip.tracks;
+            }
+
+            internal UIFormTransition Restore() => new UIFormTransition
+                { enabled = _enabled, duration = _duration, tracks = _hasTrackList ? _tracks : null };
         }
 
         private UIFormConfig _transitionForm;
@@ -57121,6 +57195,11 @@ namespace FRFrame.Editor
         private UITransitionSample _previewSample;
         private string _previewError;
         private string _transitionAssetPath;
+        private string _previewAssetPath;
+        private Hash128 _previewAssetHash;
+        private uint _transitionRevision;
+
+        private UIFormTransition CurrentTransition => _previewClose ? _transitionDraft.close : _transitionDraft.open;
 
         private void BindTransitionEditor()
         {
@@ -57137,12 +57216,14 @@ namespace FRFrame.Editor
             _transitionDraft.hideFlags = HideFlags.HideAndDontSave;
             _transitionDraft.open = UIConfigGroupDraftMapper.CloneTransition(_mappedOpen) ?? new UIFormTransition();
             _transitionDraft.close = UIConfigGroupDraftMapper.CloneTransition(_mappedClose) ?? new UIFormTransition();
+            _transitionDraft.Capture();
             _committedTransition = EditorJsonUtility.ToJson(_transitionDraft);
         }
 
         private void OnDisable()
         {
             Undo.undoRedoPerformed -= UndoTransitionDraft;
+            EditorApplication.projectChanged -= CheckTransitionPreviewSource;
             DiscardTransitionEditor();
         }
 
@@ -57163,14 +57244,23 @@ namespace FRFrame.Editor
 
         private void EditTransition(Action update)
         {
+            _transitionDraft.Capture();
             Undo.RegisterCompleteObjectUndo(_transitionDraft,"修改 Form 多通道动画");
             update();
-            UndoTransitionDraft();
+            _transitionDraft.Capture();
+            CommitTransitionDraft();
         }
 
         private void UndoTransitionDraft()
         {
             if (!_transitionDraft || _selectedFormItem?.data != _transitionForm) return;
+            _transitionDraft.Restore();
+            CommitTransitionDraft();
+        }
+
+        private void CommitTransitionDraft()
+        {
+            _transitionRevision++;
             string revision = EditorJsonUtility.ToJson(_transitionDraft);
             if (revision == _committedTransition) return;
             _committedTransition = revision;
@@ -57185,6 +57275,7 @@ namespace FRFrame.Editor
         private void DrawTransitionEditor()
         {
             if (!_transitionDraft) return;
+            if (Event.current.type == EventType.Layout) CheckTransitionPreviewSource();
             bool expanded = EditorGUILayout.Foldout(_transitionFold,"多通道动画与 Prefab 预览",true);
             if (expanded != _transitionFold && !expanded) StopTransitionPreview();
             _transitionFold = expanded;
@@ -57193,9 +57284,10 @@ namespace FRFrame.Editor
             if (_previewClose != (mode == 1))
             {
                 _previewClose = mode == 1;
+                _transitionRevision++;
                 StopTransitionPreview();
             }
-            var clip = _previewClose ? _transitionDraft.close : _transitionDraft.open;
+            var clip = CurrentTransition;
             int method = EditorGUILayout.Popup("方式",clip.enabled ? 1 : 0,new[] { "预设", "多通道" });
             if (clip.enabled != (method == 1)) EditTransition(() => clip.enabled = method == 1);
             if (!clip.enabled) return;
@@ -57203,9 +57295,12 @@ namespace FRFrame.Editor
             if (duration != clip.duration) EditTransition(() => clip.duration = duration);
             GameObject prefab = string.IsNullOrEmpty(_transitionAssetPath) ? null : AssetDatabase.LoadAssetAtPath<GameObject>(
                 UIConfigEditorWindowHelper.TryLoadPrefabAtRuntimeStylePath(_transitionAssetPath) ?? _transitionAssetPath);
-            for (int i = 0; i < clip.tracks.Length; i++)
+            var tracks = clip.tracks ?? Array.Empty<UITransitionTrack>();
+            if (clip.tracks == null)
+                EditorGUILayout.HelpBox("多通道列表缺失。请增加一条通道以修复。",MessageType.Warning);
+            for (int i = 0; i < tracks.Length; i++)
             {
-                var track = clip.tracks[i];
+                var track = tracks[i];
                 using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
                     using (new EditorGUILayout.HorizontalScope())
@@ -57224,9 +57319,21 @@ namespace FRFrame.Editor
                             GUIUtility.ExitGUI();
                         }
                     }
+                    if (track == null)
+                    {
+                        EditorGUILayout.HelpBox($"通道 {i + 1} 缺失，请移除或重建该槽。",MessageType.Warning);
+                        if (GUILayout.Button("重建通道"))
+                        {
+                            int slot = i;
+                            EditTransition(() => clip.tracks[slot] = new UITransitionTrack { duration = clip.duration });
+                            GUIUtility.ExitGUI();
+                        }
+                        continue;
+                    }
                     var property = (UITransitionProperty)EditorGUILayout.EnumPopup("属性",track.property);
-                    string path = EditorGUILayout.DelayedTextField("相对路径（空 = 根）",track.targetPath ?? "");
-                    if (prefab && GUILayout.Button("选择目标…")) ShowTransitionTargets(prefab,track);
+                    string previousPath = track.targetPath ?? "";
+                    string path = EditorGUILayout.DelayedTextField("相对路径（空 = 根）",previousPath);
+                    if (prefab && GUILayout.Button("选择目标…")) CreateTransitionTargetMenu(prefab,track).ShowAsContext();
                     float start = EditorGUILayout.DelayedFloatField("起点（秒）",track.start);
                     float length = EditorGUILayout.DelayedFloatField("时长（秒）",track.duration);
                     string units = property switch { UITransitionProperty.Alpha => "透明度", UITransitionProperty.Scale => "倍率", UITransitionProperty.Rotation => "角度", _ => "偏移" };
@@ -57238,7 +57345,7 @@ namespace FRFrame.Editor
                         : EditorGUILayout.Vector3Field($"{units} · 到",track.to);
                     EditorGUI.BeginChangeCheck();
                     var curve = EditorGUILayout.CurveField("曲线（0–1 时间）",track.curve);
-                    if (EditorGUI.EndChangeCheck() || property != track.property || path != track.targetPath ||
+                    if (EditorGUI.EndChangeCheck() || property != track.property || path != previousPath ||
                         start != track.start || length != track.duration || from != track.from || to != track.to)
                         EditTransition(() => {track.property = property; track.targetPath = path; track.start = start;
                             track.duration = length; track.from = from; track.to = to; track.curve = curve;});
@@ -57246,7 +57353,7 @@ namespace FRFrame.Editor
             }
             if (GUILayout.Button("增加通道"))
             {
-                EditTransition(() => clip.tracks = clip.tracks.Append(new UITransitionTrack { duration = clip.duration }).ToArray());
+                EditTransition(() => clip.tracks = tracks.Append(new UITransitionTrack { duration = clip.duration }).ToArray());
                 GUIUtility.ExitGUI();
             }
             if (!prefab)
@@ -57275,7 +57382,11 @@ namespace FRFrame.Editor
                         _playingTransition = true;
                         Repaint();
                     }
-                    if (GUILayout.Button("停止")) _playingTransition = false;
+                    if (GUILayout.Button("停止"))
+                    {
+                        StopTransitionPreview();
+                        GUIUtility.ExitGUI();
+                    }
                 }
             }
             if (_previewError != null) EditorGUILayout.HelpBox(_previewError,MessageType.Warning);
@@ -57297,13 +57408,23 @@ namespace FRFrame.Editor
             GUI.DrawTexture(rect,texture,ScaleMode.ScaleToFit,false);
         }
 
-        private void ShowTransitionTargets(GameObject prefab,UITransitionTrack track)
+        private GenericMenu CreateTransitionTargetMenu(GameObject prefab,UITransitionTrack track)
         {
             var menu = new GenericMenu();
             var draft = _transitionDraft;
+            var clip = CurrentTransition;
+            uint revision = _transitionRevision;
+            string assetPath = AssetDatabase.GetAssetPath(prefab);
+            var assetHash = AssetDatabase.GetAssetDependencyHash(assetPath);
             void Apply(string path)
             {
-                if (draft && draft == _transitionDraft) EditTransition(() => track.targetPath = path);
+                if (!draft || draft != _transitionDraft || revision != _transitionRevision ||
+                    _selectedFormItem?.data != _transitionForm || _transitionForm.assetPath != _transitionAssetPath ||
+                    clip != CurrentTransition || !clip.tracks.Contains(track) ||
+                    AssetDatabase.LoadAssetAtPath<GameObject>(assetPath) != prefab ||
+                    AssetDatabase.GetAssetDependencyHash(assetPath) != assetHash)
+                    return;
+                EditTransition(() => track.targetPath = path);
             }
             menu.AddItem(new GUIContent("根"),string.IsNullOrEmpty(track.targetPath),() => Apply(""));
             foreach (var target in prefab.GetComponentsInChildren<RectTransform>(true))
@@ -57312,7 +57433,7 @@ namespace FRFrame.Editor
                 string path = AnimationUtility.CalculateTransformPath(target,prefab.transform);
                 menu.AddItem(new GUIContent(path),track.targetPath == path,() => Apply(path));
             }
-            menu.ShowAsContext();
+            return menu;
         }
 
         private void BuildTransitionPreview(GameObject prefab,UIFormTransition clip)
@@ -57339,8 +57460,21 @@ namespace FRFrame.Editor
             _previewRoot.SetParent(surface.transform,false);
             if (!instance.GetComponent<CanvasGroup>()) instance.AddComponent<CanvasGroup>();
             LayoutRebuilder.ForceRebuildLayoutImmediate(_previewRoot);
-            try { _previewSample = new UITransitionSample(_previewRoot,clip); }
+            try
+            {
+                _previewSample = new UITransitionSample(_previewRoot,clip);
+                _previewAssetPath = AssetDatabase.GetAssetPath(prefab);
+                _previewAssetHash = AssetDatabase.GetAssetDependencyHash(_previewAssetPath);
+            }
             catch (ArgumentException error) { StopTransitionPreview(); _previewError = error.Message; }
+        }
+
+        private void CheckTransitionPreviewSource()
+        {
+            if (_previewSample == null || AssetDatabase.GetAssetDependencyHash(_previewAssetPath) == _previewAssetHash)
+                return;
+            StopTransitionPreview();
+            Repaint();
         }
 
         private void StopTransitionPreview()
@@ -57351,6 +57485,7 @@ namespace FRFrame.Editor
             _transitionPreview = null;
             _previewRoot = null;
             _previewSample = null;
+            _previewAssetPath = null;
             _previewError = null;
         }
     }
@@ -61146,7 +61281,9 @@ namespace FRFrame.Gameplay.Authoring
                     v.Error(p + ".OngoingRequirements", "Instant effects cannot have ongoing requirements.");
             }
             else if ((Period > 0) != (executionCount != 0 || OnPeriod.Length > 0))
-                v.Error(p, "周期大于零时需要周期结算或已连接的周期动作。");
+                v.Error(p + ".Period", Period > 0
+                    ? "周期大于零时需要周期结算或已连接的周期动作。"
+                    : "周期结算或已连接的周期动作需要大于零的周期。");
         }
 
         public GameplayEffectDefinition Build(GameplayAuthoringBuildContext context)
@@ -75366,12 +75503,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             try
             {
-                double stop=EditorApplication.timeSinceStartup+.008;int work=0;
-                while(_cursor<_scan.Length&&work++<128&&EditorApplication.timeSinceStartup<stop)
+                double stop = EditorApplication.timeSinceStartup + .008;
+                int work = 0;
+                while (_cursor < _scan.Length && work++ < 128 && EditorApplication.timeSinceStartup < stop)
                 {
-                    string path=_scan[_cursor++];
-                    if(!_paths.Contains(path)&&!AssetDatabase.GetDependencies(path,false).Any(_paths.Contains))continue;
-                    ReadReferences(path);
+                    string path = _scan[_cursor++];
+                    var dependencies = AssetDatabase.GetDependencies(path, false);
+                    if (_paths.Contains(path) || dependencies.Any(_paths.Contains))
+                        ReadReferences(path, dependencies);
                 }
                 if(_cursor<_scan.Length)return;
                 EditorApplication.update-=Advance;
@@ -75399,14 +75538,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 return !GameplayAuthoringDependencyGraph.BuildDefinition(doc).Nodes.Any(n=>Identity(n.Asset)==target);
             }return false;
         }
-        private void ReadReferences(string path)
+        private void ReadReferences(string path, string[] directDependencies)
         {
             using(var reader=new StreamReader(path))
             {
                 var headerBytes=new char[5];int headerLength=reader.Read(headerBytes,0,5);if(headerLength<5||new string(headerBytes)!="%YAML"){
                     // Indexed native/binary dependencies cannot prove a particular fileID unused.
                     // Conservatively protect all candidates in the referenced asset paths.
-                    var dependencies=new HashSet<string>(AssetDatabase.GetDependencies(path,false));
+                    var dependencies=new HashSet<string>(directDependencies);
                     foreach(var candidate in _candidates)if(dependencies.Contains(AssetDatabase.GetAssetPath(candidate.Value))){_kept.Add(candidate.Key);_formal.Add(candidate.Key);}
                     return;
                 }
@@ -75956,8 +76095,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal Func<string,bool> IsMainAnimation;
         internal Func<bool> IsPlaying;
         internal Action TogglePlaying;
-        internal readonly Dictionary<string,Rect> VisibleEventScreenRects=new Dictionary<string,Rect>();
-        internal readonly Dictionary<string,Rect> DurationHandleScreenRects=new Dictionary<string,Rect>();
+        internal readonly Dictionary<string,Rect> VisibleEventPanelRects=new Dictionary<string,Rect>();
+        internal readonly Dictionary<string,Rect> DurationHandlePanelRects=new Dictionary<string,Rect>();
         private float _cursor {get=>_state.Cursor;set=>_state.Cursor=value;}
         private float _zoom {get=>_state.Zoom;set=>_state.Zoom=value;}
         private Vector2 _scroll {get=>_state.Scroll;set=>_state.Scroll=new Vector2(value.x,0);}
@@ -76007,7 +76146,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 row.Label.tooltip=GameplaySkillNodeDisplay.EventLabel(node,_document.AuthoringGraph)+"\n"+(entry.TimeSeconds*timeline.FramesPerSecond).ToString("0.##")+"f · Order "+entry.Order+"\n事件 "+entry.Id+"\n行为 "+entry.EntryNodeId;
                 if(IndexOf(row.Element)!=index+1)Insert(index+1,row.Element);
             }
-            foreach(var id in _rows.Keys.Where(id=>!entries.Any(e=>e.Id==id)).ToArray()){_rows[id].Element.RemoveFromHierarchy();_rows.Remove(id);VisibleEventScreenRects.Remove(id);DurationHandleScreenRects.Remove(id);}
+            foreach(var id in _rows.Keys.Where(id=>!entries.Any(e=>e.Id==id)).ToArray()){_rows[id].Element.RemoveFromHierarchy();_rows.Remove(id);VisibleEventPanelRects.Remove(id);DurationHandlePanelRects.Remove(id);}
             Add(_horizontal);RefreshGeometry();RepaintTime();
         }
         private void RepaintTime(){_ruler.MarkDirtyRepaint();foreach(var row in _rows.Values)row.Content.MarkDirtyRepaint();}
@@ -76115,10 +76254,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             bool editable=row.Region&&row.Local!=null&&row.Path!=null;
             if(editable)EditorGUI.DrawRect(new Rect(handle.x+2,handle.y+3,4,handle.height-6),new Color(.3f,.9f,.5f));
             if(evt.type==EventType.Repaint){
-                VisibleEventScreenRects.Remove(row.Entry.Id);DurationHandleScreenRects.Remove(row.Entry.Id);
+                VisibleEventPanelRects.Remove(row.Entry.Id);DurationHandlePanelRects.Remove(row.Entry.Id);
                 var clipped=Rect.MinMaxRect(Mathf.Max(0,rect.xMin),rect.yMin,Mathf.Min(bounds.width,rect.xMax),rect.yMax);
-                if(clipped.width>0)VisibleEventScreenRects[row.Entry.Id]=new Rect(GUIUtility.GUIToScreenPoint(clipped.position),clipped.size);
-                if(editable&&handle.xMin>=0&&handle.xMax<=bounds.width)DurationHandleScreenRects[row.Entry.Id]=new Rect(GUIUtility.GUIToScreenPoint(handle.position),handle.size);
+                if(clipped.width>0)VisibleEventPanelRects[row.Entry.Id]=row.Content.LocalToWorld(clipped);
+                if(editable&&handle.xMin>=0&&handle.xMax<=bounds.width)DurationHandlePanelRects[row.Entry.Id]=row.Content.LocalToWorld(handle);
             }
             if(evt.type==EventType.MouseDown&&evt.button==0&&bounds.Contains(evt.mousePosition)&&rect.Contains(evt.mousePosition)){
                 FocusEvent(row.Entry.Id);_drag=row.Entry.Id;_dragTime=_originalTime=_startTime=row.Entry.TimeSeconds;
@@ -101859,7 +101998,8 @@ namespace FRFrame.Tests.UIExtensions
     "name": "FRFrame.UIExtensions.PlayMode.Tests",
     "rootNamespace": "FRFrame.Tests.UIExtensions",
     "references": [
-        "FRFrame.Core"
+        "FRFrame.Core",
+        "UniTask"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
@@ -101884,10 +102024,14 @@ namespace FRFrame.Tests.UIExtensions
 ````csharp
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using FRFrame;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Events;
 using UnityEngine.TestTools;
 using UnityEngine.UI;
 
@@ -101896,6 +102040,54 @@ namespace FRFrame.Tests.UIExtensions
     public sealed class UIRuntimeExtensionsPlayModeTests
     {
         private readonly List<Object> _created = new List<Object>();
+
+        [UnityTest]
+        public IEnumerator ReopeningKeepsOneOpenSubscriptionAndRevokesTheOldClose() => VerifyFormOwnership().ToCoroutine();
+
+        private async UniTask VerifyFormOwnership()
+        {
+            var root = Track(new GameObject("Form operation test", typeof(RectTransform)));
+            var manager = new UIManager();
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(UIManager).GetField("_configRegistry", fields).SetValue(manager, new UIConfigRegistry());
+            typeof(UIManager).GetField("_maskService", fields).SetValue(manager, new UIMaskService());
+            var groups = (Dictionary<UIGroupLayer, UIGroup>)typeof(UIManager).GetField("_groups", fields).GetValue(manager);
+            groups.Add(UIGroupLayer.Normal, new UIGroup(UIGroupLayer.Normal, "Test", root.transform, 0));
+            manager.RegisterCodeFormConfig<FormOperationTestProbe>();
+            try
+            {
+                var options = UIOpenOptions.Default;
+                options.PlayAnimation = false;
+                options.UserData = (System.Action<UIForm>)manager.Hide;
+                string id = nameof(FormOperationTestProbe);
+                Assert.That(await manager.OpenAsync(id,options), Is.Null, "A synchronous Hide in OnOpen owns the result.");
+                var form = manager.Get<FormOperationTestProbe>();
+                Assert.That(form.State, Is.EqualTo(UIFormState.Hidden));
+                options.UserData = null;
+                Assert.That(await manager.OpenAsync(id,options), Is.SameAs(form));
+
+                form.CloseGate = new UniTaskCompletionSource();
+                var closing = manager.CloseAsync(form);
+                Assert.That(form.State, Is.EqualTo(UIFormState.Closing));
+                Assert.That(await manager.OpenAsync(id,options), Is.SameAs(form));
+                form.CloseGate.TrySetResult();
+                await closing;
+                form.Signal.Invoke();
+                Assert.That(form.Opened, Is.EqualTo(1));
+                Assert.That(form.Shown, Is.EqualTo(1), "Revoking a visible close does not start a new visible lifetime.");
+                Assert.That(form.Closed, Is.Zero);
+                Assert.That(form.Received, Is.EqualTo(1));
+                Assert.That(form.State, Is.EqualTo(UIFormState.Opened));
+
+                form.CloseGate = null;
+                await manager.CloseAsync(form);
+                form.Signal.Invoke();
+                Assert.That(form.Closed, Is.EqualTo(1));
+                Assert.That(form.Received, Is.EqualTo(1));
+                Assert.That(form.State, Is.EqualTo(UIFormState.Hidden));
+            }
+            finally { manager.Destroy(); }
+        }
 
         [UnityTest]
         public IEnumerator WorldHealthBarRebindAndPoolReturnRevokePreviousLease()
@@ -102138,6 +102330,25 @@ namespace FRFrame.Tests.UIExtensions
             IndexSeenInsideRecycle = Index;
             DataSeenInsideRecycle = Data;
         }
+    }
+
+    public sealed class FormOperationTestProbe : UIForm
+    {
+        internal readonly UnityEvent Signal = new UnityEvent();
+        internal UniTaskCompletionSource CloseGate;
+        internal int Opened, Shown, Closed, Received;
+
+        protected override void OnOpen(object userData)
+        {
+            Opened++;
+            AddUIEvent(Signal, () => Received++, UIEventListenMode.WhileOpen);
+            (userData as System.Action<UIForm>)?.Invoke(this);
+        }
+
+        protected override void OnShow(object userData) => Shown++;
+        protected override void OnClose(object userData) => Closed++;
+        protected override UniTask PlayCloseAnimationAsync(CancellationToken cancellationToken) =>
+            CloseGate?.Task ?? UniTask.CompletedTask;
     }
 }
 ````

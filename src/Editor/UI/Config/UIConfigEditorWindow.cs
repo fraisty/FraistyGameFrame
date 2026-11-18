@@ -331,6 +331,7 @@ namespace FRFrame.Editor
 
         private void OnEnable()
         {
+            EditorApplication.projectChanged += CheckTransitionPreviewSource;
             Undo.undoRedoPerformed += UndoTransitionDraft;
             RefreshGroups();
         }

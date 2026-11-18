@@ -1,9 +1,13 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using FRFrame;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Events;
 using UnityEngine.TestTools;
 using UnityEngine.UI;
 
@@ -12,6 +16,54 @@ namespace FRFrame.Tests.UIExtensions
     public sealed class UIRuntimeExtensionsPlayModeTests
     {
         private readonly List<Object> _created = new List<Object>();
+
+        [UnityTest]
+        public IEnumerator ReopeningKeepsOneOpenSubscriptionAndRevokesTheOldClose() => VerifyFormOwnership().ToCoroutine();
+
+        private async UniTask VerifyFormOwnership()
+        {
+            var root = Track(new GameObject("Form operation test", typeof(RectTransform)));
+            var manager = new UIManager();
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(UIManager).GetField("_configRegistry", fields).SetValue(manager, new UIConfigRegistry());
+            typeof(UIManager).GetField("_maskService", fields).SetValue(manager, new UIMaskService());
+            var groups = (Dictionary<UIGroupLayer, UIGroup>)typeof(UIManager).GetField("_groups", fields).GetValue(manager);
+            groups.Add(UIGroupLayer.Normal, new UIGroup(UIGroupLayer.Normal, "Test", root.transform, 0));
+            manager.RegisterCodeFormConfig<FormOperationTestProbe>();
+            try
+            {
+                var options = UIOpenOptions.Default;
+                options.PlayAnimation = false;
+                options.UserData = (System.Action<UIForm>)manager.Hide;
+                string id = nameof(FormOperationTestProbe);
+                Assert.That(await manager.OpenAsync(id,options), Is.Null, "A synchronous Hide in OnOpen owns the result.");
+                var form = manager.Get<FormOperationTestProbe>();
+                Assert.That(form.State, Is.EqualTo(UIFormState.Hidden));
+                options.UserData = null;
+                Assert.That(await manager.OpenAsync(id,options), Is.SameAs(form));
+
+                form.CloseGate = new UniTaskCompletionSource();
+                var closing = manager.CloseAsync(form);
+                Assert.That(form.State, Is.EqualTo(UIFormState.Closing));
+                Assert.That(await manager.OpenAsync(id,options), Is.SameAs(form));
+                form.CloseGate.TrySetResult();
+                await closing;
+                form.Signal.Invoke();
+                Assert.That(form.Opened, Is.EqualTo(1));
+                Assert.That(form.Shown, Is.EqualTo(1), "Revoking a visible close does not start a new visible lifetime.");
+                Assert.That(form.Closed, Is.Zero);
+                Assert.That(form.Received, Is.EqualTo(1));
+                Assert.That(form.State, Is.EqualTo(UIFormState.Opened));
+
+                form.CloseGate = null;
+                await manager.CloseAsync(form);
+                form.Signal.Invoke();
+                Assert.That(form.Closed, Is.EqualTo(1));
+                Assert.That(form.Received, Is.EqualTo(1));
+                Assert.That(form.State, Is.EqualTo(UIFormState.Hidden));
+            }
+            finally { manager.Destroy(); }
+        }
 
         [UnityTest]
         public IEnumerator WorldHealthBarRebindAndPoolReturnRevokePreviousLease()
@@ -254,5 +306,24 @@ namespace FRFrame.Tests.UIExtensions
             IndexSeenInsideRecycle = Index;
             DataSeenInsideRecycle = Data;
         }
+    }
+
+    public sealed class FormOperationTestProbe : UIForm
+    {
+        internal readonly UnityEvent Signal = new UnityEvent();
+        internal UniTaskCompletionSource CloseGate;
+        internal int Opened, Shown, Closed, Received;
+
+        protected override void OnOpen(object userData)
+        {
+            Opened++;
+            AddUIEvent(Signal, () => Received++, UIEventListenMode.WhileOpen);
+            (userData as System.Action<UIForm>)?.Invoke(this);
+        }
+
+        protected override void OnShow(object userData) => Shown++;
+        protected override void OnClose(object userData) => Closed++;
+        protected override UniTask PlayCloseAnimationAsync(CancellationToken cancellationToken) =>
+            CloseGate?.Task ?? UniTask.CompletedTask;
     }
 }

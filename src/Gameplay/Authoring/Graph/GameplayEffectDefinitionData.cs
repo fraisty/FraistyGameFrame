@@ -96,7 +96,9 @@ namespace FRFrame.Gameplay.Authoring
                     v.Error(p + ".OngoingRequirements", "Instant effects cannot have ongoing requirements.");
             }
             else if ((Period > 0) != (executionCount != 0 || OnPeriod.Length > 0))
-                v.Error(p, "周期大于零时需要周期结算或已连接的周期动作。");
+                v.Error(p + ".Period", Period > 0
+                    ? "周期大于零时需要周期结算或已连接的周期动作。"
+                    : "周期结算或已连接的周期动作需要大于零的周期。");
         }
 
         public GameplayEffectDefinition Build(GameplayAuthoringBuildContext context)

@@ -454,19 +454,14 @@ namespace FRFrame
                 if (!config.allowMultiInstance)
                 {
                     UIForm existing = Get(formId);
+                    if ((existing == null || existing.State == UIFormState.Initialized) &&
+                        _loadingFormsById.TryGetValue(formId, out UILoadingOperation loadingOperation))
+                    {
+                        existing = await loadingOperation.Source.Task;
+                        return existing == null ? null : await OpenExistingFormAsync(existing, options, cancellationToken);
+                    }
                     if (existing != null)
-                    {
-                        await OpenExistingFormAsync(existing, options, cancellationToken);
-                        return existing;
-                    }
-
-                    if (_loadingFormsById.TryGetValue(formId, out UILoadingOperation loadingOperation))
-                    {
-                        UIForm loadingForm = await loadingOperation.Source.Task;
-                        if (loadingForm != null && !cancellationToken.IsCancellationRequested)
-                            await OpenExistingFormAsync(loadingForm, options, cancellationToken);
-                        return cancellationToken.IsCancellationRequested ? null : loadingForm;
-                    }
+                        return await OpenExistingFormAsync(existing, options, cancellationToken);
                 }
 
                 int serialId = ++_serialSeed;
@@ -485,34 +480,32 @@ namespace FRFrame
                     {
                         if (instance != null)
                             RecycleOrDestroyFormInstance(instance, config);
-                        operation.Source?.TrySetResult(null);
                         return null;
                     }
 
                     UIForm form = CreateFormInstance(instance, config, formId, serialId, options.UserData);
                     if (form == null)
                     {
-                        FRFM.Resource.Recycle(instance);
-                        operation.Source?.TrySetResult(null);
+                        RecycleOrDestroyFormInstance(instance, config);
                         return null;
                     }
 
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        DisposeForm(form, null);
+                        return null;
+                    }
+
+                    uint revision = form.BeginOperation();
                     RegisterForm(form, config);
-                    form.ApplyOpenOptions(options);
-                    ApplyOpenParam(form, options.UserData, options.StrongParamType);
-                    await _maskService.PrepareBlurAsync(form);
-                    form.InternalOpen(options.UserData);
-                    RefreshAllVisualStates();
-
-                    if (options.PlayAnimation)
-                        await form.InternalPlayOpenAnimationAsync(cancellationToken).SuppressCancellationThrow();
-
-                    operation.Source?.TrySetResult(form);
-                    return form;
+                    UIForm opened = await OpenExistingFormAsync(form, options, cancellationToken, revision);
+                    operation.Source?.TrySetResult(opened);
+                    return opened;
                 }
                 finally
                 {
-                    RemoveLoadingOperation(operation, config);
+                    RemoveLoadingOperation(operation);
+                    operation.Source?.TrySetResult(null);
                 }
             }
             finally
@@ -635,20 +628,26 @@ namespace FRFrame
         public UniTask CloseAsync(string formId, object userData = null, CancellationToken cancellationToken = default)
         {
             UIForm form = Get(formId);
-            return form == null ? UniTask.CompletedTask : CloseAsync(form, userData, cancellationToken);
+            if (form != null) return CloseAsync(form, userData, cancellationToken);
+            CancelLoading(formId);
+            return UniTask.CompletedTask;
         }
 
         public async UniTask CloseAsync(UIForm form, object userData = null, CancellationToken cancellationToken = default)
         {
-            if (form == null || form.State == UIFormState.Disposed || form.State == UIFormState.Closing)
+            if (!IsRegistered(form) || form.State == UIFormState.Closing)
                 return;
 
+            uint revision = form.BeginOperation();
             form.InternalBeginClose();
-            uint revision = form.CloseRevision;
-            await form.InternalPlayCloseAnimationAsync(cancellationToken).SuppressCancellationThrow();
-            if (!form || form.State != UIFormState.Closing || form.CloseRevision != revision)
+            CancelLoading(form.SerialId);
+            if (form.IsVisible)
+                await form.InternalPlayCloseAnimationAsync(cancellationToken).SuppressCancellationThrow();
+            if (!OwnsFormOperation(form, revision))
                 return;
             form.InternalClose(userData);
+            if (!OwnsFormOperation(form, revision))
+                return;
 
             if (form.Config != null && (form.Config.resident || form.Config.closeMode == UIFormCloseMode.Cache))
             {
@@ -662,9 +661,11 @@ namespace FRFrame
 
         public void Hide(UIForm form)
         {
-            if (form == null)
+            if (!IsRegistered(form))
                 return;
 
+            form.BeginOperation();
+            CancelLoading(form.SerialId);
             form.InternalHide();
             RefreshAllVisualStates();
         }
@@ -681,13 +682,16 @@ namespace FRFrame
 
         public void Show(UIForm form, object userData = null)
         {
-            if (form == null)
+            if (!IsRegistered(form))
                 return;
 
+            form.BeginOperation();
+            CancelLoading(form.SerialId);
             if (form.Config != null && form.Config.bringToFrontOnOpen)
                 form.Group?.BringToFront(form);
 
-            form.InternalShow(userData);
+            if (form.HasOpened) form.InternalShow(userData, notify: form.State != UIFormState.Closing || !form.IsVisible);
+            else form.InternalOpen(userData);
             RefreshAllVisualStates();
         }
 
@@ -836,9 +840,7 @@ namespace FRFrame
             if (string.IsNullOrEmpty(formId) || !_loadingFormsById.TryGetValue(formId, out UILoadingOperation operation))
                 return false;
 
-            operation.CancelRequested = true;
-            operation.CancellationSource?.Cancel();
-            operation.Source?.TrySetResult(null);
+            CancelLoading(operation);
             return true;
         }
 
@@ -847,9 +849,7 @@ namespace FRFrame
             if (!_loadingFormsBySerialId.TryGetValue(serialId, out UILoadingOperation operation))
                 return false;
 
-            operation.CancelRequested = true;
-            operation.CancellationSource?.Cancel();
-            operation.Source?.TrySetResult(null);
+            CancelLoading(operation);
             return true;
         }
 
@@ -1044,14 +1044,15 @@ namespace FRFrame
 
         public void CloseAll(string formId, object userData = null)
         {
-            if (CancelLoading(formId))
-                return;
-
             List<UIForm> forms = GetAll(formId);
-            if (forms == null)
-                return;
+            var snapshot = forms == null ? null : new List<UIForm>(forms);
+            var pending = new List<UILoadingOperation>(_loadingFormsBySerialId.Values);
+            foreach (var operation in pending)
+                if (operation.FormId == formId && !_formsBySerialId.ContainsKey(operation.SerialId))
+                    CancelLoading(operation);
 
-            List<UIForm> snapshot = new List<UIForm>(forms);
+            if (snapshot == null)
+                return;
             for (int i = snapshot.Count - 1; i >= 0; i--)
                 Close(snapshot[i], userData);
         }
@@ -1068,7 +1069,9 @@ namespace FRFrame
 
         public UniTask CloseAsync(int serialId, object userData = null, CancellationToken cancellationToken = default)
         {
-            return _formsBySerialId.TryGetValue(serialId, out UIForm form) ? CloseAsync(form, userData, cancellationToken) : UniTask.CompletedTask;
+            if (_formsBySerialId.TryGetValue(serialId, out UIForm form)) return CloseAsync(form, userData, cancellationToken);
+            CancelLoading(serialId);
+            return UniTask.CompletedTask;
         }
 
         internal void RemoveFromNavigation(UIForm form)
@@ -1076,30 +1079,47 @@ namespace FRFrame
             _navigation?.Remove(form);
         }
 
-        private async UniTask OpenExistingFormAsync(UIForm form, UIOpenOptions options, CancellationToken cancellationToken)
+        private bool IsRegistered(UIForm form) =>
+            form && _formsBySerialId.TryGetValue(form.SerialId, out var current) && ReferenceEquals(form, current);
+
+        private bool OwnsFormOperation(UIForm form, uint revision) =>
+            IsRegistered(form) && form.OperationRevision == revision;
+
+        private async UniTask<UIForm> OpenExistingFormAsync(UIForm form, UIOpenOptions options, CancellationToken cancellationToken, uint? registeredRevision = null)
         {
-            ApplyOpenParam(form, options.UserData, options.StrongParamType);
+            if (registeredRevision.HasValue ? !OwnsFormOperation(form, registeredRevision.Value) : !IsRegistered(form)) return null;
+            uint revision = registeredRevision ?? form.BeginOperation();
             form.ApplyOpenOptions(options);
+            ApplyOpenParam(form, options.UserData, options.StrongParamType);
+            if (!OwnsFormOperation(form, revision)) return null;
             if (form.Config != null && (options.BringToFront ?? form.Config.bringToFrontOnOpen))
                 form.Group?.BringToFront(form);
 
-            bool willOpen = form.State == UIFormState.Preloaded ||
-                            form.State == UIFormState.Hidden ||
-                            !form.gameObject.activeSelf ||
-                            form.State != UIFormState.Opened;
-            if (willOpen && form.State != UIFormState.Closing)
-                await _maskService.PrepareBlurAsync(form);
+            if (!cancellationToken.IsCancellationRequested &&
+                form.State != UIFormState.Opened && form.State != UIFormState.Closing)
+                await _maskService.PrepareBlurAsync(form, revision, cancellationToken);
+            if (!OwnsFormOperation(form, revision)) return null;
+            if (cancellationToken.IsCancellationRequested)
+            {
+                if (form.State == UIFormState.Initialized) DisposeForm(form, null);
+                else RefreshAllVisualStates();
+                return null;
+            }
 
-            if (form.State == UIFormState.Preloaded)
+            if (!form.HasOpened)
                 form.InternalOpen(options.UserData);
-            else if (form.State == UIFormState.Hidden || !form.gameObject.activeSelf)
-                form.InternalShow(options.UserData);
+            else if (form.State == UIFormState.Hidden || form.State == UIFormState.Closing)
+                form.InternalShow(options.UserData, notify: form.State != UIFormState.Closing || !form.IsVisible);
             else if (form.State != UIFormState.Opened)
                 form.InternalOpen(options.UserData);
 
+            if (!OwnsFormOperation(form, revision)) return null;
             RefreshAllVisualStates();
+            if (!OwnsFormOperation(form, revision)) return null;
             if (options.PlayAnimation)
                 await form.InternalPlayOpenAnimationAsync(cancellationToken).SuppressCancellationThrow();
+            // An already opened form stays open if only its animation was cancelled.
+            return OwnsFormOperation(form, revision) && form.State == UIFormState.Opened ? form : null;
         }
 
         private GameObject CreateCodeFormRoot(string formId, Transform parent)
@@ -1170,6 +1190,7 @@ namespace FRFrame
             if (form == null)
                 return;
 
+            form.BeginOperation();
             RemoveFromNavigation(form);
             form.Group?.Remove(form);
             _formsBySerialId.Remove(form.SerialId);
@@ -1179,15 +1200,16 @@ namespace FRFrame
                 if (list.Count == 0)
                     _formsById.Remove(form.FormId);
             }
+            CancelLoading(form.SerialId);
 
             form.InternalDispose();
             if (form.gameObject != null)
-                RecycleOrDestroyFormInstance(form.gameObject, form.Config);
+                RecycleOrDestroyFormInstance(form.gameObject, form.Config, initialized: true);
 
             RefreshAllVisualStates();
         }
 
-        private void RecycleOrDestroyFormInstance(GameObject instance, UIFormConfig config)
+        private void RecycleOrDestroyFormInstance(GameObject instance, UIFormConfig config, bool initialized = false)
         {
             if (instance == null)
                 return;
@@ -1198,6 +1220,7 @@ namespace FRFrame
             // produces a dead UI on the next open.
             if (config == null ||
                 string.IsNullOrEmpty(config.assetPath) ||
+                initialized ||
                 config.closeMode == UIFormCloseMode.Destroy)
             {
                 if (string.IsNullOrEmpty(config?.assetPath))
@@ -1227,15 +1250,20 @@ namespace FRFrame
             return operation;
         }
 
-        private void RemoveLoadingOperation(UILoadingOperation operation, UIFormConfig config)
+        private void RemoveLoadingOperation(UILoadingOperation operation)
         {
-            if (operation == null)
-                return;
-
             _loadingSerialIds.Remove(operation.SerialId);
             _loadingFormsBySerialId.Remove(operation.SerialId);
-            if (!config.allowMultiInstance)
+            if (_loadingFormsById.TryGetValue(operation.FormId, out var current) && ReferenceEquals(current, operation))
                 _loadingFormsById.Remove(operation.FormId);
+        }
+
+        private void CancelLoading(UILoadingOperation operation)
+        {
+            RemoveLoadingOperation(operation);
+            operation.CancelRequested = true;
+            operation.CancellationSource?.Cancel();
+            operation.Source?.TrySetResult(null);
         }
 
         private CancellationTokenSource CreateLinkedCancellation(CancellationToken cancellationToken, float timeout)
@@ -1276,9 +1304,7 @@ namespace FRFrame
             var operations = new List<UILoadingOperation>(_loadingFormsBySerialId.Values);
             for (int i = 0; i < operations.Count; i++)
             {
-                operations[i].CancelRequested = true;
-                operations[i].CancellationSource?.Cancel();
-                operations[i].Source?.TrySetResult(null);
+                CancelLoading(operations[i]);
             }
         }
 

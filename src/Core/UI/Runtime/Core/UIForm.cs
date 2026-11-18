@@ -14,7 +14,12 @@ namespace FRFrame
     public abstract class UIForm : MonoBehaviour
     {
         internal UIDefaultAnimationPlayer.Playback DefaultAnimation;
-        internal uint CloseRevision { get; private set; }
+        internal uint OperationRevision { get; private set; }
+        internal bool HasOpened { get; private set; }
+        private bool _hasOpenSession;
+
+        // A synchronous callback can request another operation, just as it can during an await.
+        internal uint BeginOperation() => ++OperationRevision;
 
         public int SerialId { get; internal set; }
         public string FormId { get; internal set; }
@@ -89,30 +94,32 @@ namespace FRFrame
                 IsInitialized = true;
                 State = UIFormState.Initialized;
             }
+            SetVisible(false);
         }
 
         internal void InternalOpen(object userData)
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             IsPaused = false;
             IsCovered = false;
             State = UIFormState.Opened;
+            HasOpened = _hasOpenSession = true;
             OnOpen(userData);
         }
 
         internal void InternalClose(object userData)
         {
+            State = UIFormState.Closed;
+            if (!_hasOpenSession) return;
+            _hasOpenSession = false;
             _eventScopes.ClearOpen();
             OnClose(userData);
-            State = UIFormState.Closed;
         }
 
         internal void InternalBeginClose()
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             State = UIFormState.Closing;
         }
@@ -199,7 +206,6 @@ namespace FRFrame
 
         internal void InternalHide()
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             _eventScopes.ClearVisible();
             for (int i = 0; i < _widgets.Count; i++)
@@ -215,21 +221,21 @@ namespace FRFrame
                 gameObject.SetActive(false);
         }
 
-        internal void InternalShow(object userData)
+        internal void InternalShow(object userData, bool notify = true)
         {
-            CloseRevision++;
             UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             State = UIFormState.Opened;
-            OnShow(userData);
+            _hasOpenSession = true;
+            if (notify) OnShow(userData);
         }
 
         internal void InternalDispose()
         {
             if (State == UIFormState.Disposed)
                 return;
-            CloseRevision++;
+            State = UIFormState.Disposed;
             UIDefaultAnimationPlayer.Stop(this);
 
             ReleaseAllWidgets();
@@ -240,7 +246,6 @@ namespace FRFrame
             _maskColorOverride = null;
             UnbindEvent();
             OnDispose();
-            State = UIFormState.Disposed;
         }
 
         internal void InternalUpdate(float deltaTime, float unscaledDeltaTime)
