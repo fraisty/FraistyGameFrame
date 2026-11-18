@@ -40,6 +40,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         bool DrawSourceLink(SerializedProperty root,SerializedProperty property);
     }
 
+    /// <summary>Opt-in Inspector details for a composite field whose primary control belongs to the card.</summary>
+    public interface IGameplaySkillCardDetailProvider : IGameplaySkillFieldControlProvider
+    {
+        /// <summary>Draws source navigation and supplementary subfields without repeating the card control.</summary>
+        bool DrawCardDetails(SerializedProperty root, SerializedProperty property);
+    }
+
     /// <summary>Derived card bindings. Stable owner IDs are resolved again after Undo/reorder;
     /// no values, SO copies, or execution data are retained by this adapter.</summary>
     public static class GameplaySkillCardFields

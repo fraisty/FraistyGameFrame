@@ -109,7 +109,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             else
                             {
                                 EditorGUI.BeginChangeCheck();
-                                bool providedOnCard = DrawIntegrationField(root, property);
+                                bool providedOnCard = Providers.OfType<IGameplaySkillCardDetailProvider>()
+                                    .Any(provider => provider.DrawCardDetails(root, property));
                                 if (EditorGUI.EndChangeCheck()) edit.Paths.Add(field.Path);
                                 if (!providedOnCard &&
                                     !Providers.OfType<IGameplaySkillFieldControlProvider>().Any(provider => provider.DrawSourceLink(root, property)) &&

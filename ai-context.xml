@@ -71281,6 +71281,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         bool DrawSourceLink(SerializedProperty root,SerializedProperty property);
     }
 
+    /// <summary>Opt-in Inspector details for a composite field whose primary control belongs to the card.</summary>
+    public interface IGameplaySkillCardDetailProvider : IGameplaySkillFieldControlProvider
+    {
+        /// <summary>Draws source navigation and supplementary subfields without repeating the card control.</summary>
+        bool DrawCardDetails(SerializedProperty root, SerializedProperty property);
+    }
+
     /// <summary>Derived card bindings. Stable owner IDs are resolved again after Undo/reorder;
     /// no values, SO copies, or execution data are retained by this adapter.</summary>
     public static class GameplaySkillCardFields
@@ -73090,7 +73097,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             else
                             {
                                 EditorGUI.BeginChangeCheck();
-                                bool providedOnCard = DrawIntegrationField(root, property);
+                                bool providedOnCard = Providers.OfType<IGameplaySkillCardDetailProvider>()
+                                    .Any(provider => provider.DrawCardDetails(root, property));
                                 if (EditorGUI.EndChangeCheck()) edit.Paths.Add(field.Path);
                                 if (!providedOnCard &&
                                     !Providers.OfType<IGameplaySkillFieldControlProvider>().Any(provider => provider.DrawSourceLink(root, property)) &&
@@ -80368,7 +80376,7 @@ using UnityEngine.UIElements;
 namespace FRFrame.Gameplay.Unity.Editor
 {
     /// <summary>Unity backends expose their real plain-data sources to the shared V2 editor.</summary>
-    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider, IGameplaySkillValueCreationPresets, IGameplaySkillFieldControlProvider
+    public sealed class GameplaySkillUnityValueEditor : IGameplaySkillValueEditor, IGameplaySkillPreviewFactory, IGameplaySkillValueDescription, IGameplaySkillValueSections, IGameplaySkillValueDuration, IGameplaySkillCardFieldProvider, IGameplaySkillValueCreationPresets, IGameplaySkillCardDetailProvider
     {
         public bool SupportsControl(SerializedProperty property) => property.propertyType == SerializedPropertyType.ManagedReference &&
             property.managedReferenceFieldTypename.EndsWith("." + nameof(GameplayEffectPresentationAuthoring), StringComparison.Ordinal) &&
@@ -80551,35 +80559,43 @@ namespace FRFrame.Gameplay.Unity.Editor
         }
         public bool DrawField(SerializedProperty root,SerializedProperty field)
         {
+            if (field.serializedObject.targetObject is not GameplayEffectDefinitionAsset)
+                return DrawCardDetails(root, field);
             if (!SupportsControl(field)) return false;
-            bool shared = field.serializedObject.targetObject is GameplayEffectDefinitionAsset;
-            if (shared)
+            var presentation = field.managedReferenceValue as GameplayUnityEffectPresentationAuthoring;
+            var current = presentation?.StatusPrefab;
+            var prefab = (GameObject)EditorGUILayout.ObjectField("状态预制体", current, typeof(GameObject), false);
+            if (prefab != current)
             {
-                var presentation = field.managedReferenceValue as GameplayUnityEffectPresentationAuthoring;
-                var current = presentation?.StatusPrefab;
-                var prefab = (GameObject)EditorGUILayout.ObjectField("状态预制体", current, typeof(GameObject), false);
-                if (prefab != current)
+                if (presentation != null && prefab)
+                    field.FindPropertyRelative("StatusPrefab").objectReferenceValue = prefab;
+                else
                 {
-                    if (presentation != null && prefab)
-                        field.FindPropertyRelative("StatusPrefab").objectReferenceValue = prefab;
-                    else
-                    {
-                        field.managedReferenceValue = prefab ? new GameplayUnityEffectPresentationAuthoring { StatusPrefab = prefab } : null;
-                        return true;
-                    }
+                    field.managedReferenceValue = prefab ? new GameplayUnityEffectPresentationAuthoring { StatusPrefab = prefab } : null;
+                    return true;
                 }
-                if (prefab && !prefab.TryGetComponent<GameplayEffectStatusView>(out _))
-                    EditorGUILayout.HelpBox("预制体根节点需要 GameplayEffectStatusView。", MessageType.Warning);
             }
-            else DrawSourceLink(root, field);
-            if (field.managedReferenceValue == null) return true;
+            if (prefab && !prefab.TryGetComponent<GameplayEffectStatusView>(out _))
+                EditorGUILayout.HelpBox("预制体根节点需要 GameplayEffectStatusView。", MessageType.Warning);
+            DrawStatusFields(field);
+            return true;
+        }
 
+        public bool DrawCardDetails(SerializedProperty root, SerializedProperty field)
+        {
+            if (!DrawSourceLink(root, field)) return false;
+            DrawStatusFields(field);
+            return true;
+        }
+
+        private static void DrawStatusFields(SerializedProperty field)
+        {
+            if (field.managedReferenceValue == null) return;
             EditorGUILayout.PropertyField(field.FindPropertyRelative("Offset"), new GUIContent("世界偏移"));
             EditorGUILayout.PropertyField(field.FindPropertyRelative("Binding"),
                 new GUIContent("目标挂点", "可见模型下的 Transform 路径。留空或找不到时使用角色位置，找不到会记录诊断。"));
             EditorGUILayout.PropertyField(field.FindPropertyRelative("DisplayGroup"),
                 new GUIContent("显示组", "同组显示一份，取有效效果中的最高层。留空时只合并同一定义。"));
-            return true;
         }
         public bool Supports(object values) => values is GameplayAnimationData || values is GameplayPresentationCueData || values is GameplayFloatingTextData ||
             values is GameplayEffectDefinitionData effect && effect.Presentation is GameplayUnityEffectPresentationAuthoring;
