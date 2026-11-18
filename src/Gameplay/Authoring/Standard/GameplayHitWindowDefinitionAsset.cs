@@ -79,7 +79,7 @@ namespace FRFrame.Gameplay.Authoring
         public GameplayHitWindowDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => values.Build(context));
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => (GameplayHitWindowData)GameplayGraphFields.Clone(values);
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
-        protected override void ValidateContent(GameplayAuthoringValidationContext v, string path) => values.Validate(v, path);
+        protected override void ValidateContent(GameplayAuthoringValidationContext v, string path) => values.Validate(v, path + "." + nameof(values));
     }
 
     [Serializable, Preserve]

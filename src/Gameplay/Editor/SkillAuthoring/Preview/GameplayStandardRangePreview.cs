@@ -13,13 +13,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public sealed class GameplayStandardRangePreview : IGameplayRangePreviewProvider
     {
         public bool Supports(GameplayRangePreviewContext context, SerializedProperty property)=>
-            (property==null && context.Asset is GameplayAreaDefinitionAsset or GameplayHitWindowDefinitionAsset) ||
+            (property==null && context.Asset is GameplayAreaDefinitionAsset) ||
+            (context.Asset is GameplayHitWindowDefinitionAsset && property?.propertyPath=="values") ||
             (property?.propertyType==SerializedPropertyType.ManagedReference &&
-                !(context.Asset is GameplayHitWindowDefinitionAsset && property.propertyPath=="values") &&
                 property.managedReferenceValue is GameplaySearchTargetActionAuthoring or GameplayHitWindowData or GameplayAreaDefinitionData);
-        public GameplayRangePreviewShape Read(GameplayRangePreviewContext context, SerializedProperty property)
+        public GameplayRangePreviewShape Read(GameplayRangePreviewContext context, SerializedProperty property) =>
+            ReadSource(context, property?.propertyType==SerializedPropertyType.ManagedReference ?
+                property.managedReferenceValue : (context.Asset as GameplayDefinitionAsset)?.CaptureGraphValues());
+
+        /// <summary>Reads a standard search supplied by an external action without building its callbacks.</summary>
+        public static GameplayRangePreviewShape ReadSearch(GameplayRangePreviewContext context, GameplaySearchTargetActionAuthoring search) =>
+            ReadSource(context, search);
+
+        private static GameplayRangePreviewShape ReadSource(GameplayRangePreviewContext context, object source)
         {
-            object source=property?.managedReferenceValue ?? (context.Asset as GameplayDefinitionAsset)?.CaptureGraphValues();
             var simulation=context.Simulation??new GameplayRangeSimulation();
             var direction=new Extensions.GameplayDirection(simulation.Facing.x,simulation.Facing.y,simulation.Facing.z);
             var owner=Point(simulation.Owner);

@@ -27,7 +27,9 @@ namespace FRFrame.Gameplay.Authoring.Graph
             target is GameplaySkillPointTargetAuthoring?input.With(false,true,"显式地点"):
             target is GameplaySkillContextTargetAuthoring { UseActionContext: true }?input:
             timeline?input.With(input.TriggerActor,input.TriggerPoint,"时间事件读取原 TriggerEvent.Context",input.OptionalTriggerActor,input.OptionalTriggerPoint):input;
-        public static HashSet<string> Reachable(GameplayAuthoringGraph graph)
+        public static HashSet<string> Reachable(GameplayAuthoringGraph graph) => Reachable(graph, null);
+
+        internal static HashSet<string> Reachable(GameplayAuthoringGraph graph, string localRoot)
         {
             var result=new HashSet<string>();var visits=new HashSet<string>();Action<string,bool> visit=null;visit=(id,effectOnly)=>{
                 if(string.IsNullOrEmpty(id)||!visits.Add(id+":"+effectOnly))return;result.Add(id);
@@ -36,7 +38,9 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if(effectOnly)return;
                 var timeline=graph.Timelines.Find(t=>t.Id==id);if(timeline!=null)foreach(var e in timeline.Events)visit(e.EntryNodeId,false);
                 foreach(var e in graph.Connections.Where(e=>e.FromNodeId==id))visit(e.ToNodeId,e.InputPortKey==GameplayGraphEffectCallbacks.Input);
-            };visit(graph.AbilityNodeId,false);visit(graph.PrimaryRuleNodeId,false);foreach(var id in graph.AdditionalRuleNodeIds)visit(id,false);return result;
+            };visit(graph.AbilityNodeId,false);visit(graph.PrimaryRuleNodeId,false);foreach(var id in graph.AdditionalRuleNodeIds)visit(id,false);
+            if(localRoot!=null)visit(localRoot,false);
+            return result;
         }
         public static Inputs Output(object payload,string port,Inputs input)
         {
@@ -109,7 +113,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         public static string Describe(Requirement required)=>((required&(Requirement.Actor|Requirement.PrimaryActor))!=0?"有效目标 Actor":"")+((required&(Requirement.Actor|Requirement.PrimaryActor))!=0&&(required&Requirement.Point)!=0?" + ":"")+((required&Requirement.Point)!=0?"地点 Point":"");
         private static string Impossible(Requirement required,Inputs input)
         {var missing=Missing(required,input)&~Optional(input);return missing==Requirement.None?null:"此行为需要"+Describe(missing)+"。"+input.Note;}
-        private static Dictionary<string,List<Inputs>> Analyze(GameplayAuthoringGraph graph)
+        private static Dictionary<string,List<Inputs>> Analyze(GameplayAuthoringGraph graph, string localRoot = null)
         {
             var inputs=new Dictionary<string,List<Inputs>>();var seen=new HashSet<string>();Action<string,Inputs,bool> visit=null;visit=(id,input,effectOnly)=>{
                 if(string.IsNullOrEmpty(id)||!seen.Add(id+":"+input.Actor+":"+input.Point+":"+input.OptionalActor+":"+input.OptionalPoint+":"+input.TriggerActor+":"+input.TriggerPoint+":"+input.OptionalTriggerActor+":"+input.OptionalTriggerPoint+":"+effectOnly))return;
@@ -121,14 +125,17 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 foreach(var edge in graph.Connections.Where(e=>e.FromNodeId==id))visit(edge.ToNodeId,Output(Payload(graph,id),edge.OutputPortKey,input),edge.InputPortKey==GameplayGraphEffectCallbacks.Input);
             };
             foreach(var node in graph.Nodes.Where(n=>n.Payload is GameplayRuleNodePayload))visit(node.Id,Target(((GameplayRuleNodePayload)node.Payload).Target,Caller()),false);
+            if(localRoot!=null)visit(localRoot,Caller(),false);
             return inputs;
         }
         /// <summary>Conditional requirements are not compile-time guarantees. The compiler gates
         /// each consumer at its actual execution point, including branch/Timeline context.</summary>
-        public static Dictionary<string,Requirement> ConditionalInputs(GameplayAuthoringGraph graph)
+        public static Dictionary<string,Requirement> ConditionalInputs(GameplayAuthoringGraph graph) => ConditionalInputs(graph,null);
+
+        internal static Dictionary<string,Requirement> ConditionalInputs(GameplayAuthoringGraph graph, string localRoot)
         {
             var result=new Dictionary<string,Requirement>();
-            foreach(var pair in Analyze(graph)){
+            foreach(var pair in Analyze(graph,localRoot)){
                 var node=graph.Nodes.Find(n=>n.Id==pair.Key);if(!(node?.Payload is GameplayActionNodePayload))continue;
                 var required=RequiredNode(graph,node);var conditional=Requirement.None;
                 foreach(var input in pair.Value)conditional|=Missing(required,input)&Optional(input);
@@ -172,15 +179,18 @@ namespace FRFrame.Gameplay.Authoring.Graph
         public static Func<string,string,string,string,bool,string> ConnectionChecker(GameplayAuthoringGraph graph)
         {var inputs=Analyze(graph);var lifecycle=LifecycleActions(graph);return (owner,port,target,input,scheduled)=>Reason(graph,inputs,lifecycle,owner,port,target,input,scheduled);}
         public static string ScheduledReason(GameplayAuthoringGraph graph,string eventId,string target)=>Reason(graph,Analyze(graph),LifecycleActions(graph),eventId,"Schedule",target,"Execute",true);
-        public static void Validate(GameplayAuthoringGraph graph,GameplayAuthoringValidationContext validation,string path)
+        public static void Validate(GameplayAuthoringGraph graph,GameplayAuthoringValidationContext validation,string path) =>
+            Validate(graph,validation,path,null);
+
+        internal static void Validate(GameplayAuthoringGraph graph,GameplayAuthoringValidationContext validation,string path,string localRoot)
         {
-            var inputs=Analyze(graph);
+            var inputs=Analyze(graph,localRoot);
             var lifecycle=LifecycleActions(graph);
             foreach(var pair in inputs){var node=graph.Nodes.Find(n=>n.Id==pair.Key);var local=graph.LocalDefinitions.Find(d=>d.Id==pair.Key);
                 foreach(var input in pair.Value){string reason=Impossible(node!=null?RequiredNode(graph,node):Required(local?.Payload),input);if(reason!=null)validation.Error(path+"/"+pair.Key,reason);}
             }
             foreach(var edge in graph.Connections){string reason=Reason(graph,inputs,lifecycle,edge.FromNodeId,edge.OutputPortKey,edge.ToNodeId,edge.InputPortKey,false);if(reason!=null)validation.Error(path+"/"+edge.Id,reason);}
-            foreach(var pair in ConditionalInputs(graph))validation.Warning(path+"/"+pair.Key,"条件输入：需调用者提供"+Describe(pair.Value)+"；缺失时运行拒绝并在 Trace 定位，不保证此行为必然执行。");
+            foreach(var pair in ConditionalInputs(graph,localRoot))validation.Warning(path+"/"+pair.Key,"条件输入：需调用者提供"+Describe(pair.Value)+"；缺失时运行拒绝并在 Trace 定位，不保证此行为必然执行。");
         }
     }
 }

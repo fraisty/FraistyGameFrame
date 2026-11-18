@@ -183,9 +183,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         /// <summary>Highlights the existing resource without changing its binding.</summary>
         public static void LocateResource(UnityEngine.Object source) => EditorGUIUtility.PingObject(source);
         /// <summary>Opens an explicit editor for the actual shared or Unity resource.</summary>
-        public static void EditResource(UnityEngine.Object source)
+        public static void EditResource(UnityEngine.Object source, string path = null)
         {
-            if (source is GameplayDefinitionAsset definition) GameplaySkillWorkbench.EditSharedSource(definition);
+            if (source is GameplayDefinitionAsset definition) GameplaySkillWorkbench.EditSharedSource(definition,path);
             else AssetDatabase.OpenAsset(source);
         }
     }

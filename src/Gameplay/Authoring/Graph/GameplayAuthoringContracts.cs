@@ -22,10 +22,11 @@ namespace FRFrame.Gameplay.Authoring.Graph
         GameplayGraphContextPolicy.Inputs OutputInputs(string port, GameplayGraphContextPolicy.Inputs input);
     }
 
-    /// <summary>Validates one occurrence in the actual ordered execution array.</summary>
+    /// <summary>Validates one occurrence using the actual ordered actions. Placement is independent
+    /// of the caller's lifetime guard, so raw assets and graph consumers have the same contract.</summary>
     public interface IGameplayActionPlacementConstraint
     {
-        string PlacementReason(IReadOnlyList<GameplaySkillActionAuthoring> actions, int index, bool guarded);
+        string PlacementReason(IReadOnlyList<GameplaySkillActionAuthoring> actions, int index);
     }
 
     public static class GameplayActionArrayPolicy
@@ -42,14 +43,14 @@ namespace FRFrame.Gameplay.Authoring.Graph
             catch (Exception error) { return $"{authoring.GetType().Name} Scope 合同失败 · {error.Message}"; }
         }
 
-        public static string PlacementReason(IReadOnlyList<GameplaySkillActionAuthoring> actions, bool guarded)
+        public static string PlacementReason(IReadOnlyList<GameplaySkillActionAuthoring> actions)
         {
             for (int i = 0; i < actions.Count; i++)
                 if (actions[i] is IGameplayActionPlacementConstraint constraint)
                 {
                     try
                     {
-                        string reason = constraint.PlacementReason(actions, i, guarded);
+                        string reason = constraint.PlacementReason(actions, i);
                         if (reason != null) return $"动作 {i + 1} ({actions[i].GetType().Name}) · {reason}";
                     }
                     catch (Exception error) { return $"动作 {i + 1} 的顺序合同失败 · {error.Message}"; }
@@ -62,7 +63,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
             GameplayAuthoringValidationContext validation, string path)
         {
             if (actions == null) return;
-            string placement = PlacementReason(actions, false);
+            string placement = PlacementReason(actions);
             if (placement != null) validation.Error(path, placement);
             for (int i = 0; i < actions.Length; i++)
             {

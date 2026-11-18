@@ -50,12 +50,26 @@ namespace FRFrame.Gameplay.Editor
                 .Distinct().OrderBy(t => t.FullName, StringComparer.Ordinal).ToArray();
         }
         public static IReadOnlyList<Type> Query(Type baseType, string scope, string search = "", bool otherGames = false, bool samples = false)
+            => QueryWithScope(baseType,scope,scope,search,otherGames,samples);
+
+        /// <summary>Browsing follows catalog ownership. Shared source eligibility uses its Player declaration.</summary>
+        public static IReadOnlyList<Type> QueryForSource(Type baseType, Object source, string browseScope = null,
+            string search = "", bool otherGames = false, bool samples = false)
+        {
+            string browsing = browseScope ?? Scope(source);
+            string required = source is GameplaySkillDocumentAsset { AuthoringSchemaVersion: 2 } document
+                ? document.AuthoringGraph?.Scope
+                : (source as IGameplayScopedAuthoring)?.RequiredScope;
+            return QueryWithScope(baseType,browsing,required,search,otherGames,samples);
+        }
+
+        private static IReadOnlyList<Type> QueryWithScope(Type baseType, string scope, string contractScope, string search, bool otherGames, bool samples)
         {
             return Types(baseType).Where(t => {
                 var d = GameplaySkillNodeDescriptors.Get(t);
                 bool scopeMatch = string.IsNullOrEmpty(scope) || d.AuthoringScope == "FRFrame" || d.AuthoringScope == "Common" || d.AuthoringScope == scope || otherGames;
                 if (scopeMatch && typeof(IGameplayScopedAuthoring).IsAssignableFrom(t))
-                    scopeMatch = GameplayActionArrayPolicy.ScopeReason(Activator.CreateInstance(t), scope) == null;
+                    scopeMatch = GameplayActionArrayPolicy.ScopeReason(Activator.CreateInstance(t), contractScope) == null;
                 return scopeMatch && (!d.IsSample || samples) && (string.IsNullOrEmpty(search) ||
                     (d.DisplayName + " " + d.CategoryPath + " " + d.Summary + " " + d.Keywords + " " + t.FullName).IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0);
             }).ToArray();
@@ -65,6 +79,7 @@ namespace FRFrame.Gameplay.Editor
     public sealed class GameplayAuthoringTypePicker : EditorWindow
     {
         private Type _baseType; private string _scope, _search = ""; private bool _other, _samples, _officialOnly;
+        private Object _source;
         private Action<Type> _choose; private Vector2 _scroll;
         private Func<Type,string> _unavailable;private string _contextNote;
         public static void Show(Type baseType, Object source, Action<Type> choose, string scope = null, string search = "",Func<Type,string> unavailable=null,string contextNote=null)
@@ -73,7 +88,7 @@ namespace FRFrame.Gameplay.Editor
             if(v2!=null){
                 GameplaySkillCreationMenu.Show(v2.Canvas,"选择配置",menu=>{
                     menu.AddItem(new GUIContent("清空配置"),false,()=>choose(null));
-                    foreach(var type in GameplayAuthoringTypeCatalog.Query(baseType,scope??GameplayAuthoringTypeCatalog.Scope(source),search)){
+                    foreach(var type in GameplayAuthoringTypeCatalog.QueryForSource(baseType,source,scope,search)){
                         var item=type;var descriptor=GameplaySkillNodeDescriptors.Get(item);
                         string reason=unavailable?.Invoke(item)??SkillAuthoring.GameplaySkillTypeAvailability.Reason(source as GameplaySkillDocumentAsset,item);
                         var label=new GUIContent(GameplaySkillNodeDescriptors.Category(item)+"/"+descriptor.DisplayName+(reason==null?"":" · 不可用"),reason??descriptor.Summary);
@@ -84,6 +99,7 @@ namespace FRFrame.Gameplay.Editor
             }
             var window = CreateInstance<GameplayAuthoringTypePicker>();
             window._baseType = baseType; window._scope = scope ?? GameplayAuthoringTypeCatalog.Scope(source); window._choose = choose;
+            window._source=source;
             window._officialOnly=source is GameplaySkillDocumentAsset||source!=null&&AssetDatabase.LoadMainAssetAtPath(AssetDatabase.GetAssetPath(source)) is GameplaySkillDocumentAsset;
             window._search=search;
             window._unavailable=unavailable;window._contextNote=contextNote;
@@ -103,7 +119,7 @@ namespace FRFrame.Gameplay.Editor
             }
             if (GUILayout.Button("清空配置")) Pick(null);
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
-            foreach (var group in GameplayAuthoringTypeCatalog.Query(_baseType, _scope, _search, _other, _samples)
+            foreach (var group in GameplayAuthoringTypeCatalog.QueryForSource(_baseType, _source, _scope, _search, _other, _samples)
                 .Where(t=>!_officialOnly||(t!=typeof(GameplaySkillApplyEffectActionAuthoring)&&t!=typeof(GameplaySkillPlaySequenceActionAuthoring)))
                 .GroupBy(GameplaySkillNodeDescriptors.Category))
             {
@@ -137,7 +153,7 @@ namespace FRFrame.Gameplay.Editor
                     var selected = serialized.FindProperty(path);
                     if(selected==null||!append&&selected.managedReferenceFullTypename!=expected)
                         throw new InvalidOperationException("原字段已被另一个编辑入口替换，请重新选择配置类型。");
-                    if(type!=null&&!GameplayAuthoringTypeCatalog.Query(baseType,GameplayAuthoringTypeCatalog.Scope(source),samples:true).Contains(type))
+                    if(type!=null&&!GameplayAuthoringTypeCatalog.QueryForSource(baseType,source,samples:true).Contains(type))
                         throw new InvalidOperationException("此类型在当前 Scope 不可用。");
                     if(baseType==typeof(GameplaySkillActionAuthoring)&&type!=null){
                         string array=append?path:GameplaySharedAuthoringCommands.ActionArray(path);

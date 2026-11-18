@@ -31,6 +31,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         internal string GraphOwner, SlotPath, LocalDefinitionId;
         internal GameplaySourceHandle Handle;
         internal string SourceSnapshot;
+        internal bool ProviderOwned;
         public Action Open { get; }
         public Action Ping { get; }
         /// <summary>Optional provider repair. Must record Undo, touch only this reference and never SaveAll.</summary>
@@ -50,9 +51,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public Object Asset { get; }
         public IReadOnlyList<GameplayAuthoringDependencyEdge> Edges => _edges;
         public IReadOnlyList<string> InlineAuthoringPaths => _inlinePaths;
+        public IReadOnlyList<GameplayAuthoringValidationIssue> Issues => _issues;
+        internal bool HasActions { get; set; }
         public int UnusedDefinitions { get; internal set; }
         internal readonly List<GameplayAuthoringDependencyEdge> _edges = new List<GameplayAuthoringDependencyEdge>();
         internal readonly List<string> _inlinePaths = new List<string>();
+        internal readonly List<GameplayAuthoringValidationIssue> _issues = new List<GameplayAuthoringValidationIssue>();
         internal GameplayAuthoringDependencyNode(Object asset) { Asset = asset; }
     }
 
@@ -82,21 +86,35 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 ReadGraph(node, document);
             else if (asset is GameplayDefinitionAsset definition)
             {
-                var required = GameplayGraphFields.RequiredResources(definition);
+                var required = Requirements(node, definition, "");
                 using (var serialized = new SerializedObject(asset))
                 foreach (var property in GameplayAuthoringProperties.Walk(serialized))
                 {
                     if (property.propertyType == SerializedPropertyType.ManagedReference && property.managedReferenceValue != null)
+                    {
                         node._inlinePaths.Add(property.propertyPath + " · " + property.managedReferenceValue.GetType().Name);
+                        node.HasActions |= property.managedReferenceValue is GameplaySkillActionAuthoring;
+                    }
                     if (property.propertyType != SerializedPropertyType.ObjectReference || property.name == "m_Script") continue;
                     Type expected = GameplayAuthoringProperties.ReferenceType(property);
-                    bool needed = required.Any(path => path == property.propertyPath ||
-                        property.propertyPath.StartsWith(path + ".Array.data[", StringComparison.Ordinal));
-                    AddProperty(node, property, expected, needed);
+                    AddProperty(node, property, expected, IsRequired(required,property.propertyPath), required != null);
                 }
             }
             else foreach (var provider in GameplayAuthoringProviders.Dependencies)
-                if (provider.Supports(asset)) node._edges.AddRange(provider.Dependencies(asset));
+                try
+                {
+                    if (!provider.Supports(asset)) continue;
+                    foreach (var edge in provider.Dependencies(asset).ToArray())
+                    {
+                        edge.ProviderOwned = true;
+                        node._edges.Add(edge);
+                    }
+                }
+                catch (Exception error)
+                {
+                    node._issues.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Error,
+                        provider.GetType().Name, error.Message));
+                }
             string snapshot = null;
             foreach (var edge in node._edges)
             {
@@ -106,7 +124,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     edge.Issue = "循环引用。";
                 }
                 else if (edge.Target) Visit(edge.Target);
-                if (!edge.Missing) continue;
+                if (!edge.Missing || edge.ProviderOwned) continue;
                 edge.Handle = GameplaySourceHandle.Capture(asset, edge.PropertyPath);
                 edge.SourceSnapshot = snapshot ??= EditorJsonUtility.ToJson(asset);
             }
@@ -126,7 +144,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var node = graph.Nodes[i];
                 if (!active.Contains(node.Id)) { target.UnusedDefinitions++; continue; }
                 string prefix = $"authoringGraph.Nodes.Array.data[{i}].Payload";
-                if (node.Payload is GameplayActionNodePayload action) ReadOwner(node.Id, action.Action, node.Payload.Definitions, prefix + ".Action");
+                if (node.Payload is GameplayActionNodePayload action)
+                {
+                    target.HasActions |= action.Action != null;
+                    ReadOwner(node.Id, action.Action, node.Payload.Definitions, prefix + ".Action");
+                }
                 else if (node.Payload is GameplayAbilityNodePayload ability) ReadOwner(node.Id, ability.Settings, node.Payload.Definitions, prefix + ".Settings");
             }
             for (int i = 0; i < graph.LocalDefinitions.Count; i++)
@@ -139,25 +161,27 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             void ReadOwner(string id, object payload, List<GameplayDefinitionBinding> bindings, string prefix)
             {
                 var slots = GameplayGraphFields.ResourceSlots(payload);
-                var required = GameplayGraphFields.RequiredResources(payload);
+                var required = Requirements(target,payload,prefix);
                 var resourcePaths = slots.Select(slot => prefix + "." + slot.Path).ToHashSet();
                 foreach (var slot in slots)
                 {
                     var binding = bindings.Find(b => b.PropertyPath == slot.Path);
                     GraphSlot(id, prefix + "." + slot.Path, slot.Path, slot.ValueType, binding,
-                        required.Any(path => slot.Path == path || slot.Path.StartsWith(path + ".Array.data[", StringComparison.Ordinal)),
-                        GameplayGraphEffectCallbacks.Slots(payload).Any(s => s.Path == slot.Path && graph.Connections.Any(e => e.FromNodeId == id && e.OutputPortKey == s.Key)));
+                        IsRequired(required,slot.Path),
+                        GameplayGraphEffectCallbacks.Slots(payload).Any(s => s.Path == slot.Path && graph.Connections.Any(e => e.FromNodeId == id && e.OutputPortKey == s.Key)),
+                        required != null);
                 }
                 foreach (var binding in bindings.Where(b => !slots.Any(slot => slot.Path == b.PropertyPath)))
                 {
                     Type expected = binding.PropertyPath == "Settings" ? typeof(GameplayAbilityDefinitionAsset) : null;
-                    GraphSlot(id, prefix, binding.PropertyPath, expected, binding, true, false);
+                    GraphSlot(id, prefix, binding.PropertyPath, expected, binding, true, false, true);
                 }
                 foreach (var p in ordinary.Where(p => p.propertyPath.StartsWith(prefix + ".", StringComparison.Ordinal) && !resourcePaths.Contains(p.propertyPath)))
-                    AddProperty(target, p, GameplayAuthoringProperties.ReferenceType(p), required.Contains(p.propertyPath.Substring(prefix.Length + 1)));
+                    AddProperty(target, p, GameplayAuthoringProperties.ReferenceType(p),
+                        IsRequired(required,p.propertyPath.Substring(prefix.Length + 1)), required != null);
             }
 
-            void GraphSlot(string id, string path, string slot, Type expected, GameplayDefinitionBinding binding, bool required, bool callback)
+            void GraphSlot(string id, string path, string slot, Type expected, GameplayDefinitionBinding binding, bool required, bool callback, bool validated)
             {
                 var edge = new GameplayAuthoringDependencyEdge(document, binding?.External, path, slot, expected)
                 {
@@ -179,17 +203,32 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     edge.State = edge.Issue == null ? GameplayDependencyState.Linked : GameplayDependencyState.Invalid;
                 }
                 else if (required || binding != null) { edge.State = GameplayDependencyState.Missing; edge.Issue = "需要实际的内嵌定义或共享引用。"; }
-                else edge.State = GameplayDependencyState.Optional;
+                else edge.State = validated ? GameplayDependencyState.Optional : GameplayDependencyState.Unset;
                 target._edges.Add(edge);
             }
         }
 
-        private static void AddProperty(GameplayAuthoringDependencyNode owner, SerializedProperty property, Type expected, bool required)
+        private static IReadOnlyCollection<string> Requirements(GameplayAuthoringDependencyNode node, object payload, string path)
+        {
+            try { return GameplayGraphFields.RequiredResources(payload); }
+            catch (Exception error)
+            {
+                node._issues.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Error,
+                    path, $"未能判定 {payload.GetType().Name} 的必填引用 · {error.Message}"));
+                return null;
+            }
+        }
+
+        private static bool IsRequired(IReadOnlyCollection<string> required, string path) =>
+            required != null && required.Any(declaration => declaration == path ||
+                path.StartsWith(declaration + ".Array.data[", StringComparison.Ordinal));
+
+        private static void AddProperty(GameplayAuthoringDependencyNode owner, SerializedProperty property, Type expected, bool required, bool validated)
         {
             var target = property.objectReferenceValue;
             var edge = new GameplayAuthoringDependencyEdge(owner.Asset, target, property.propertyPath, property.propertyPath, expected);
             if (!target && !required && property.objectReferenceInstanceIDValue == 0)
-                edge.State = expected != null && typeof(GameplayDefinitionAsset).IsAssignableFrom(expected)
+                edge.State = validated && expected != null && typeof(GameplayDefinitionAsset).IsAssignableFrom(expected)
                     ? GameplayDependencyState.Optional : GameplayDependencyState.Unset;
             if (edge.Missing) edge.Issue = "声明的资源未绑定或已丢失。";
             owner._edges.Add(edge);
@@ -240,6 +279,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     {
         public static void Assign(GameplayAuthoringDependencyEdge edge, Object target)
         {
+            if (target is GameplayDefinitionAsset { MigrationHistoryOnly: true })
+                throw new InvalidOperationException("只读迁移记录不能用作正式共享引用。");
             string path = RequireCurrent(edge);
             if (!target || !EditorUtility.IsPersistent(target) || !edge.ExpectedType.IsInstanceOfType(target))
                 throw new ArgumentException("请选择类型匹配的项目资源。");

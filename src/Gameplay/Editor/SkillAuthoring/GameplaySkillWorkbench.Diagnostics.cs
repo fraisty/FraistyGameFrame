@@ -76,8 +76,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             foreach (var source in nodes)
             {
                 var edges = source.Edges.Where(e => !_dependencyProblems || e.Missing).ToArray();
-                if (edges.Length == 0 && source != model.Root) continue;
+                if (edges.Length == 0 && source.Issues.Count == 0 && source != model.Root) continue;
                 GUILayout.Label(source.Asset.name, EditorStyles.boldLabel);
+                foreach (var issue in source.Issues)
+                    EditorGUILayout.HelpBox($"{(string.IsNullOrEmpty(issue.Path)?source.Asset.name:issue.Path)} · {issue.Message}", MessageType.Error);
                 if (!_dependencyProblems && source.UnusedDefinitions > 0)
                     GUILayout.Label($"未参与运行的节点与定义 {source.UnusedDefinitions}", EditorStyles.wordWrappedMiniLabel);
                 foreach (var edge in edges)
@@ -101,7 +103,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             NavigateDiagnostic(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning, edge.GraphOwner + "." + edge.SlotPath, ""));
                         else
                         {
-                            GameplayInspectorOperations.EditResource(edge.Source);
+                            GameplayInspectorOperations.EditResource(edge.Source,edge.PropertyPath);
                             if (edge.Source is GameplayDefinitionAsset)
                                 GameplayAuthoringInspector.RequestFieldFocus(edge.Source, edge.PropertyPath);
                         }
@@ -113,6 +115,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     }
                     if (!edge.Missing) continue;
                     EditorGUILayout.LabelField(edge.Issue + (edge.ExpectedType==null?"":" · "+edge.ExpectedType.Name), EditorStyles.wordWrappedMiniLabel);
+                    if (edge.ProviderOwned)
+                    {
+                        GUILayout.Label("由资源提供者维护，请通过来源入口定位并检查。", EditorStyles.wordWrappedMiniLabel);
+                        continue;
+                    }
                     if (edge.ExpectedType != null && typeof(GameplayDefinitionAsset).IsAssignableFrom(edge.ExpectedType))
                     {
                         using var disabled = new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode ||

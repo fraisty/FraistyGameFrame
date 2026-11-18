@@ -32,11 +32,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private sealed class RangeSource
         {
             public GameplaySourceHandle Handle;
-            public string Owner, Use, Occurrence, Label;
+            public string Owner, Use, Occurrence, Label, Entry, ClockRoot, Timeline;
             public Color Color;
             public string Key => Handle.Key + "@" + Occurrence;
             public GameplayRangePreviewShape Shape;
-            public string Error, Revision, Cursor;
+            public string Error, Revision;
+            public (IGameplaySkillPreviewSession session,string choice,float seconds) Cursor;
             public bool HitWindow;
         }
 
@@ -51,7 +52,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private GameplaySkillDocumentAsset _rangeDocument;
         private GameplayAuthoringDependencyGraph _rangeDependencyGraph;
         private GameplayActorProfileAsset _rangeProfile;
-        private bool _rangeIncludeReferences, _rangeWholeSkill, _rangeShowInputs, _rangeManualSlice;
+        private bool _rangeIncludeReferences, _rangeWholeSkill, _rangeShowInputs, _rangeManualSlice, _rangeLimited;
         private string _rangePin, _rangeSolo;
         private int _rangePlane;
         private float _rangeSlice;
@@ -99,9 +100,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var listed = _rangeWholeSkill ? _rangeSources.ToArray() : _rangePin != null ?
                 _rangeSources.Where(s => s.Key == _rangePin).ToArray() : related;
             if (_rangeSolo != null && !listed.Any(s => s.Key == _rangeSolo)) _rangeSolo = null;
+            if (_rangeLimited) EditorGUILayout.HelpBox("已展示前 256 条范围或前 2048 步执行路径。", MessageType.Info);
             if (listed.Length == 0)
             {
-                GUILayout.Label("选中搜索、命中窗或区域，也可钉住技能查看全图范围。", EditorStyles.wordWrappedMiniLabel);
+                GUILayout.Label("当前选择没有可用的范围读取器或正式使用位置。可钉住技能查看所有可预览范围。", EditorStyles.wordWrappedMiniLabel);
                 return;
             }
 
@@ -119,8 +121,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 _rangeSimulation.Caller = EditorGUILayout.TextArea(_rangeSimulation.Caller, GUILayout.MinHeight(26));
             }
 
-            string cursor = _previewClockOwner != null && _previews.TryGetValue(_previewClockOwner, out var clock) ?
-                _previewClockOwner + ":" + clock.Seconds.ToString("R") + ":" + clock.Session?.GetHashCode() : "";
             var input = _rangeSimulation;
             if (!Finite(input.Owner) || !Finite(input.Facing) || input.HasTarget && !Finite(input.Target) || input.HasPoint && !Finite(input.Point))
             {
@@ -153,8 +153,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 if (!shown || _rangeSolo != null && _rangeSolo != source.Key) continue;
                 if (!source.Handle.Owner) continue;
-                if (dirty || source.Revision != key || source.Cursor != cursor && source.HitWindow)
-                    ReadRange(source, key, cursor);
+                var clock = source.HitWindow || source.Revision == null ? RangeClock(source) : null;
+                var cursor = (clock?.Session,clock?.ChoiceKey,clock?.Seconds??0f);
+                if (dirty || source.Revision != key || source.Cursor != cursor)
+                    ReadRange(source, key, cursor, clock);
                 if (source.Error != null) EditorGUILayout.HelpBox(source.Error, MessageType.Warning);
                 else if (source.Shape.Geometry is GameplaySearchGeometry geometry)
                 {
@@ -199,92 +201,218 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             static bool Finite(Vector3 v)=>float.IsFinite(v.x)&&float.IsFinite(v.y)&&float.IsFinite(v.z);
         }
 
+        private struct RangeUse
+        {
+            public string Path, Owner, Entry, ClockRoot, Timeline, Location;
+            public float? Time;
+            public bool Triggered;
+
+            public RangeUse Follow(string segment)
+            {
+                var next = this;
+                next.Path += "/" + segment;
+                return next;
+            }
+
+            public void OnTrigger(string port)
+            {
+                Triggered = true;
+                Time = null;
+                ClockRoot = null;
+                Location = port;
+            }
+        }
+
         private void RefreshRangeSources(GameplayAuthoringDependencyGraph dependencies)
         {
             _rangeKey = null;
             _rangeSources.Clear();
-            var graph = _document.AuthoringGraph;
-            var reachable = GameplayGraphContextPolicy.Reachable(graph);
-            var edges = dependencies.Root.Edges;
-            foreach (var context in GameplayRangePreview.Sources(_document))
-            {
-                string path = context.PropertyPath;
-                if (path == null) continue;
-                bool local = path.StartsWith("authoringGraph.LocalDefinitions.Array.data[", StringComparison.Ordinal);
-                if (!local && !path.StartsWith("authoringGraph.Nodes.Array.data[", StringComparison.Ordinal)) continue;
-                int start = path.IndexOf('[')+1;
-                int index = int.Parse(path.Substring(start,path.IndexOf(']')-start));
-                string owner = local ? graph.LocalDefinitions[index].Id : graph.Nodes[index].Id;
-                if (!reachable.Contains(owner)) continue;
-                string label = local ? graph.LocalDefinitions[index].Name : GameplaySkillFieldSchema.NodeName(graph.Nodes[index]);
-                var handle = GameplaySourceHandle.Capture(_document, path);
-                var users = edges.Where(e => e.LocalDefinitionId == owner).ToArray();
-                if (users.Length == 0) AddUses(handle, owner, owner, "", label);
-                else foreach (var user in users) AddUses(handle, owner, user.GraphOwner, user.SlotPath, label + " · " + Usage(user.GraphOwner));
-            }
-            if (_rangeIncludeReferences)
-            {
-                foreach (var node in dependencies.Nodes.Where(n => n != dependencies.Root && n.Asset is GameplayDefinitionAsset))
-                {
-                    foreach (var context in GameplayRangePreview.Sources(node.Asset))
-                    {
-                        var handle = GameplaySourceHandle.Capture(node.Asset, context.PropertyPath);
-                        foreach (var source in dependencies.Nodes)
-                        foreach (var edge in source.Edges.Where(e => e.Target == node.Asset && e.State == GameplayDependencyState.Linked))
-                        {
-                            if (source == dependencies.Root)
-                                AddUses(handle, null, edge.GraphOwner, edge.SlotPath, node.Asset.name + " · " + Usage(edge.GraphOwner) + " / " + edge.Label);
-                            else Add(handle, null, null, GameplaySourceHandle.Capture(source.Asset).AssetKey + edge.PropertyPath,
-                                node.Asset.name + " · " + source.Asset.name + " / " + edge.Label);
-                        }
-                    }
-                }
-            }
+            _rangeLimited = false;
+            int remainingSteps = 2048;
+            var active = new HashSet<(UnityEngine.Object source,string owner)>();
+            var locations = new Dictionary<UnityEngine.Object,ILookup<string,GameplaySourceHandle>>();
+            VisitDocument(_document, new RangeUse { Path = "", Owner = null });
             if (_rangePin != null && !_rangeSources.Any(s => s.Key == _rangePin)) _rangePin = null;
             if (_rangeSolo != null && !_rangeSources.Any(s => s.Key == _rangeSolo)) _rangeSolo = null;
 
-            string Usage(string owner)
+            ILookup<string,GameplaySourceHandle> Sources(UnityEngine.Object asset)
             {
-                var node = graph.Nodes.Find(n => n.Id == owner);
-                return node != null ? GameplaySkillFieldSchema.NodeName(node) :
-                    graph.LocalDefinitions.Find(d => d.Id == owner)?.Name ?? "配置引用";
+                if (locations.TryGetValue(asset,out var cached)) return cached;
+                var sections = GameplayRangePreview.Sources(asset).Select(range =>
+                    (owner:asset is GameplaySkillDocumentAsset doc ? GraphOwner(doc.AuthoringGraph,range.PropertyPath) : "",
+                     handle:GameplaySourceHandle.Capture(asset,range.PropertyPath)));
+                return locations[asset] = sections.ToLookup(s=>s.owner,s=>s.handle);
             }
-            void AddUses(GameplaySourceHandle handle, string owner, string use, string slot, string label)
+
+            void VisitDocument(GameplaySkillDocumentAsset document, RangeUse use)
             {
-                var events = graph.Timelines.Where(t => reachable.Contains(t.Id)).SelectMany(t => t.Events
-                    .Where(e => e.EntryNodeId == use).Select(e => (timeline:t, entry:e))).ToArray();
-                var connections = graph.Connections.Where(e => e.ToNodeId == use && reachable.Contains(e.FromNodeId)).ToArray();
-                if (events.Length == 0 && connections.Length <= 1)
-                    Add(handle, owner, use, use + "." + slot, label);
-                else
+                var graph = document.AuthoringGraph;
+                var edges = dependencies.Find(document)?.Edges.ToLookup(e => e.GraphOwner);
+                if (graph == null || edges == null) return;
+                var outgoing = graph.Connections.ToLookup(e=>e.FromNodeId);
+                Visit(graph.AbilityNodeId,use,false);
+                Visit(graph.PrimaryRuleNodeId,use,true);
+                foreach (string id in graph.AdditionalRuleNodeIds) Visit(id,use,true);
+
+                void Visit(string id, RangeUse caller, bool execute)
                 {
-                    foreach (var e in events)
-                        Add(handle, owner, use, e.entry.Id + "." + slot, $"{e.entry.TimeSeconds:0.###} s · {label}");
-                    foreach (var edge in connections)
-                        Add(handle, owner, use, edge.Id + "." + slot, label + " · " + Usage(edge.FromNodeId) +
-                            " / " + GameplaySkillFieldSchema.PortName(edge.OutputPortKey));
+                    if (string.IsNullOrEmpty(id)||!Step()||!active.Add((document,id))) return;
+                    var useAt = caller.Follow(id);
+                    var node = graph.Nodes.Find(n=>n.Id==id);
+                    var local = graph.LocalDefinitions.Find(d=>d.Id==id);
+                    var timeline = graph.Timelines.Find(t=>t.Id==id);
+                    bool primary = document == _document;
+                    if (primary && node!=null) useAt.Owner=id;
+                    string name=node!=null?GameplaySkillFieldSchema.NodeName(node):local?.Name;
+                    if (execute || node==null)
+                        foreach (var handle in Sources(document)[id])
+                            Add(handle,primary?id:null,useAt,name);
+                    foreach (var slot in edges[id])
+                    {
+                        var inside=useAt.Follow(slot.SlotPath);
+                        if (slot.LocalDefinitionId != null && slot.State==GameplayDependencyState.Inline)
+                        {
+                            if (node!=null && graph.Timelines.Any(t=>t.Id==slot.LocalDefinitionId))
+                                inside.ClockRoot=primary && !inside.Triggered ? id : null;
+                            Visit(slot.LocalDefinitionId,inside,true);
+                        }
+                        else if (_rangeIncludeReferences && slot.State==GameplayDependencyState.Linked &&
+                            slot.Target is GameplayDefinitionAsset external)
+                            VisitShared(external,inside);
+                    }
+                    if (timeline!=null)
+                    {
+                        foreach (var entry in timeline.Events.OrderBy(e=>e.TimeSeconds).ThenBy(e=>e.Order))
+                        {
+                            var step=useAt.Follow(entry.Id);
+                            if (!step.Triggered) step.Time=(step.Time??0)+entry.TimeSeconds;
+                            if (primary) step.Entry=entry.Id;
+                            step.Timeline=timeline.Id;
+                            step.Location=timeline.Name;
+                            Visit(entry.EntryNodeId,step,true);
+                        }
+                    }
+                    if (execute)
+                        foreach (var edge in outgoing[id].OrderBy(e=>e.Order))
+                        {
+                            var next=useAt.Follow(edge.Id);
+                            if (edge.OutputPortKey!="Then" && node?.Payload is not GameplayRuleNodePayload)
+                                next.OnTrigger(GameplaySkillFieldSchema.PortName(edge.OutputPortKey,graph,id));
+                            Visit(edge.ToNodeId,next,edge.InputPortKey!=GameplayGraphEffectCallbacks.Input);
+                        }
+                    active.Remove((document,id));
                 }
             }
-            void Add(GameplaySourceHandle handle, string owner, string use, string occurrence, string label)
+
+            void VisitShared(GameplayDefinitionAsset asset, RangeUse use)
             {
-                _rangeSources.Add(new RangeSource { Handle=handle, Owner=owner, Use=use, Label=label,
-                    Occurrence=occurrence, Color=RangeColors[_rangeSources.Count%RangeColors.Length] });
+                if (!Step() || !active.Add((asset,""))) return;
+                if (asset is GameplaySkillDocumentAsset sharedDocument && sharedDocument.AuthoringSchemaVersion==2)
+                {
+                    use.OnTrigger(asset.name);
+                    VisitDocument(sharedDocument,use);
+                }
+                else
+                {
+                    var callbacks=GameplayGraphFields.ActionArrays(asset);
+                    foreach (var handle in Sources(asset)[""])
+                        Add(handle,null,SharedUse(handle.OriginalPath),asset.name);
+                    foreach (var edge in dependencies.Find(asset).Edges)
+                        if (edge.State==GameplayDependencyState.Linked && edge.Target is GameplayDefinitionAsset child)
+                        {
+                            var handle=GameplaySourceHandle.Capture(asset,edge.PropertyPath);
+                            VisitShared(child,SharedUse(edge.PropertyPath).Follow(handle.Key));
+                        }
+
+                    RangeUse SharedUse(string path)
+                    {
+                        var location=use;
+                        const string markerPrefix="Markers.Array.data[";
+                        if (asset is GameplaySequenceDefinitionAsset sequence && path.StartsWith(markerPrefix,StringComparison.Ordinal))
+                        {
+                            int end=path.IndexOf(']',markerPrefix.Length);
+                            if (end>=0 && int.TryParse(path.Substring(markerPrefix.Length,end-markerPrefix.Length),out int index) &&
+                                sequence.Markers != null && index<sequence.Markers.Length && sequence.Markers[index] is {} marker && !location.Triggered)
+                            {
+                                location.Time=(location.Time??0)+marker.Time;
+                                location.Location=asset.name;
+                                const string actionPrefix=".Actions.Array.data[";
+                                if (marker is GameplaySequenceSkillStepMarkerAuthoring step &&
+                                    path.IndexOf(actionPrefix,end+1,StringComparison.Ordinal)==end+1)
+                                {
+                                    int start=end+1+actionPrefix.Length;
+                                    int close=path.IndexOf(']',start);
+                                    if (close>=0 && int.TryParse(path.Substring(start,close-start),out int actionIndex) &&
+                                        GameplayGraphFields.ActionArrays(step.Actions[actionIndex]).Any(slot=>
+                                            path.IndexOf("."+slot.Path+".Array.data[",close+1,StringComparison.Ordinal)==close+1))
+                                        location.OnTrigger(asset.name);
+                                }
+                            }
+                            location.ClockRoot=null;
+                        }
+                        else if (callbacks.Any(slot=>path.StartsWith(slot.Path+".Array.data[",StringComparison.Ordinal)))
+                            location.OnTrigger(asset.name);
+                        return location;
+                    }
+                }
+                active.Remove((asset,""));
+            }
+
+            bool Step()
+            {
+                if (--remainingSteps >= 0 && _rangeSources.Count < 256) return true;
+                _rangeLimited = true;
+                return false;
+            }
+
+            void Add(GameplaySourceHandle handle, string owner, RangeUse use, string name)
+            {
+                if (_rangeSources.Count >= 256) { _rangeLimited=true; return; }
+                string prefix=use.Time.HasValue?$"{use.Time:0.###} s · ":use.Triggered?"触发时 · ":"";
+                string location=string.IsNullOrEmpty(use.Location)?"":" · "+use.Location;
+                _rangeSources.Add(new RangeSource { Handle=handle, Owner=owner, Use=use.Owner, Entry=use.Entry,
+                    ClockRoot=use.ClockRoot, Timeline=use.Timeline, Label=prefix+(name??"范围")+location,
+                    Occurrence=use.Path, Color=RangeColors[_rangeSources.Count%RangeColors.Length] });
+            }
+
+            static string GraphOwner(GameplayAuthoringGraph graph,string path)
+            {
+                if (path == null) return null;
+                bool local=path.StartsWith("authoringGraph.LocalDefinitions.Array.data[",StringComparison.Ordinal);
+                if (!local && !path.StartsWith("authoringGraph.Nodes.Array.data[",StringComparison.Ordinal)) return null;
+                int start=path.IndexOf('[')+1;
+                int index=int.Parse(path.Substring(start,path.IndexOf(']')-start));
+                return local?graph.LocalDefinitions[index].Id:graph.Nodes[index].Id;
             }
         }
 
         private void LocateRange(RangeSource source)
         {
+            if (!source.Handle.TryResolve(out string field)) return;
             if (source.Handle.Owner != _document)
             {
-                GameplayInspectorOperations.EditResource(source.Handle.Owner);
+                GameplayInspectorOperations.EditResource(source.Handle.Owner,field);
+                if (!string.IsNullOrEmpty(field)) GameplayAuthoringInspector.RequestFieldFocus(source.Handle.Owner,field);
                 return;
             }
-            string id=source.Occurrence.Split('.')[0];
-            bool isTimeline=_document.AuthoringGraph.Timelines.Any(t=>t.Events.Any(e=>e.Id==id));
-            NavigateDiagnostic(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning, isTimeline?id:source.Owner, ""));
+            NavigateDiagnostic(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning, source.Entry ?? source.Owner, ""));
         }
 
-        private void ReadRange(RangeSource source, string key, string cursor)
+        private PreviewState RangeClock(RangeSource source)
+        {
+            if (source.ClockRoot == null || source.ClockRoot != _previewClockOwner ||
+                !_previews.TryGetValue(source.ClockRoot, out var state) || state.Session is not IGameplayHitPosePreview)
+                return null;
+            var timeline=_document.AuthoringGraph.Timelines.Find(t=>t.Id==source.Timeline);
+            var choice=PreviewChoices(source.ClockRoot).Find(c=>c.Key==state.ChoiceKey);
+            if (choice == null || timeline == null || !timeline.Events.Any(e=>e.Id==choice.EventId) ||
+                !GameplaySkillNodeDescriptors.Get(((GameplayActionNodePayload)choice.Node.Payload).Action.GetType()).IsAnimation ||
+                state.Key != _document.GetInstanceID()+":"+choice.Key)
+                return null;
+            return state;
+        }
+
+        private void ReadRange(RangeSource source, string key, (IGameplaySkillPreviewSession session,string choice,float seconds) cursor, PreviewState clock)
         {
             source.Revision = key;
             source.Cursor = cursor;
@@ -301,12 +429,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             {
                 var property = path.Length == 0 ? null : serialized.FindProperty(path);
                 if (property?.propertyType == SerializedPropertyType.ManagedReference) window = property.managedReferenceValue as GameplayHitWindowData;
-                else if (asset is GameplayHitWindowDefinitionAsset shared) window = (GameplayHitWindowData)shared.CaptureGraphValues();
+                else if (asset is GameplayHitWindowDefinitionAsset shared && path=="values") window = (GameplayHitWindowData)shared.CaptureGraphValues();
             }
             source.HitWindow = window != null;
             GameplayHitPose? sampled = null;
-            if (window != null && _previewClockOwner != null &&
-                _previews.TryGetValue(_previewClockOwner,out var animation) && animation.Session is IGameplayHitPosePreview reader &&
+            if (window != null && clock?.Session is IGameplayHitPosePreview reader &&
                 (window.AnchorKind == GameplayHitAnchorKind.OwnerRoot ||
                     (window.AnchorKind == GameplayHitAnchorKind.TransformPath ? !string.IsNullOrWhiteSpace(window.AnchorPath) : !string.IsNullOrWhiteSpace(window.AnchorBone))) &&
                 reader.TryReadHitPose(new GameplayHitAnchor(window.AnchorKind,window.AnchorPath,window.AnchorBone),out var pose))

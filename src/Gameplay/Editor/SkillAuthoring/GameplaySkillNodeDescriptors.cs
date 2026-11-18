@@ -46,6 +46,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         /// <summary>Business creation categories shared by canvas, port and field pickers.</summary>
         public static string Category(Type type)
         {
+            var descriptor=Get(type);
+            if (descriptor.AuthoringScope != "FRFrame" && descriptor.AuthoringScope != "Other")
+                return ExternalCategory(descriptor.CategoryPath) ?? descriptor.AuthoringScope + "/扩展行为";
             if(type==typeof(GameplayOwnedSequenceActionAuthoring))return "时间/时间编排";
             if(type==typeof(GameplaySearchTargetActionAuthoring))return "目标与空间/搜索";
             if(type==typeof(GameplayOpenHitWindowActionAuthoring))return "目标与空间/命中判定";
@@ -64,11 +67,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(typeof(GameplaySkillConditionAuthoring).IsAssignableFrom(type))return "条件与触发/条件";
             if(typeof(GameplayEffectExecutionAuthoring).IsAssignableFrom(type))return "效果/瞬时";
             if(type==typeof(GameplayRotateToPointActionAuthoring))return "任务 / 高级显式控制（可选）";
-            var descriptor=Get(type);
-            if (descriptor.AuthoringScope != "FRFrame" && descriptor.AuthoringScope != "Common" && descriptor.AuthoringScope != "Other")
-            {
-                return ExternalCategory(descriptor.CategoryPath) ?? descriptor.AuthoringScope + "/扩展行为";
-            }
             if(descriptor.IsAnimation)return "时间与表现/独立动画控制";
             if(descriptor.VisualKind==GameplayNodeVisualKind.Presentation)return "时间与表现/特效音效与飘字";
             if(typeof(GameplaySkillActionAuthoring).IsAssignableFrom(type))return descriptor.AuthoringScope=="FRFrame"?"控制/其它标准行为":descriptor.AuthoringScope+"/扩展行为";
@@ -117,7 +115,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if (claims.Count > 1 || claims.Any(claim => claim.Contains(" failed: ")))
                 issues.Add(type.FullName + ": descriptor providers: " + string.Join(", ", claims));
             var descriptor = Get(type);
-            if (descriptor.AuthoringScope != "FRFrame" && descriptor.AuthoringScope != "Common" &&
+            if (descriptor.AuthoringScope != "FRFrame" &&
                 descriptor.AuthoringScope != "Other" && ExternalCategory(descriptor.CategoryPath) == null)
                 issues.Add($"{descriptor.DisplayName} 未声明有效的业务分类，显示在 {descriptor.AuthoringScope}/扩展行为。");
             return issues;

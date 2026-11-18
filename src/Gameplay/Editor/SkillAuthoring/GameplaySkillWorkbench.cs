@@ -18,6 +18,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     {
         [SerializeField] private GameplaySkillDocumentAsset _document;
         [SerializeField] private GameplayDefinitionAsset _sharedSource;
+        private GameplaySourceHandle _sharedField;
         [SerializeField] private string _selected;
         [SerializeField] private bool _referenceView;
         [SerializeField] private List<GameplayBehaviorGraphView.DetachedPolicy> _detachedPolicies=new List<GameplayBehaviorGraphView.DetachedPolicy>();
@@ -100,12 +101,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(owner!=null){Open(owner.Document,owner.Node.Id);return;}
             EditSharedSource(source);
         }
-        internal static void EditSharedSource(GameplayDefinitionAsset source)
+        internal static void EditSharedSource(GameplayDefinitionAsset source, string fieldPath = null)
         {
             var window=GetWindow<GameplaySkillWorkbench>();
             window.SelectDocument(null);window._sharedSource=source;
+            window._sharedField=string.IsNullOrEmpty(fieldPath)?null:GameplaySourceHandle.Capture(source,fieldPath);
             window._feedback="正在编辑共享源 · "+source.name+"。修改会影响引用此资源的技能。";
-            window._detailTab=0;window._inspectorOpen=true;window.UpdateSurface();window.ApplyPaneWidths();window.Show();window.Repaint();
+            window._detailTab=0;window._inspectorScroll=Vector2.zero;window._inspectorOpen=true;window.UpdateSurface();window.ApplyPaneWidths();window.Show();window.Repaint();
         }
         public void SelectDocument(GameplaySkillDocumentAsset document,string nodeId=null,bool reveal=true)
         {_examplePanel?.RemoveFromHierarchy();_referenceView=false;GameplaySkillAuthoringCommands.ReadOnlyDocument=null;if(document)_sharedSource=null;if(_document!=document){_previewClockOwner=null;DisposeInstallation();DisposePreview();_previews.Clear();if(Event.current==null||GUI.GetNameOfFocusedControl()!="SkillDocumentBrowser"){GUIUtility.keyboardControl=0;EditorGUIUtility.editingTextField=false;_details?.Blur();}_diagnostics.Clear();_diagnosticsStale=true;_returnPan=null;_feedback=null;}_previewChoices.Clear();_document=document;_policySelection=null;_inlinePreviewNode=document?SessionState.GetString(GameplaySkillEditorState.Key(document)+".InlinePreview",""):null;if(string.IsNullOrEmpty(_inlinePreviewNode))_inlinePreviewNode=null;_selected=nodeId??document?.AuthoringGraph?.AbilityNodeId;_definition=null;if(reveal)_documentBrowser?.Reveal(document);Canvas?.Load(document);Canvas?.SelectNodeWithoutCamera(_selected);_shape=Shape();RememberSourceVersion();if(document)RememberRecent(document);UpdateSurface();Repaint();}
@@ -266,7 +268,26 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             using var scroll = new EditorGUILayout.ScrollViewScope(_inspectorScroll);
             _inspectorScroll = scroll.scrollPosition;
             if (!string.IsNullOrEmpty(_feedback)) EditorGUILayout.HelpBox(_feedback, MessageType.Info);
-            if(!_document&&_sharedSource){using(var source=new SerializedObject(_sharedSource))GameplayAuthoringInspector.Draw(source);}
+            if(!_document&&_sharedSource)
+            {
+                using var source=new SerializedObject(_sharedSource);
+                var focused=_sharedField!=null&&_sharedField.TryResolve(out string path)?source.FindProperty(path):null;
+                if(focused==null||_sharedSource.MigrationHistoryOnly)GameplayAuthoringInspector.Draw(source);
+                else
+                {
+                    GUILayout.Label("定位字段 · "+focused.propertyPath,EditorStyles.wordWrappedMiniLabel);
+                    if(GUILayout.Button("显示完整共享源"))_sharedField=null;
+                    int dot=focused.propertyPath.LastIndexOf('.');
+                    bool hasFields=focused.propertyType==SerializedPropertyType.ManagedReference ||
+                        focused.propertyType==SerializedPropertyType.Generic && !focused.isArray && focused.hasVisibleChildren;
+                    string owner=hasFields?focused.propertyPath:
+                        dot<0?"":focused.propertyPath.Substring(0,dot);
+                    using var fields=GameplayAuthoringInspector.UseFieldContext("Inspector");
+                    using var disabled=new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode||!AssetDatabase.IsOpenForEdit(_sharedSource));
+                    GameplayAuthoringFieldSchema.Draw(new GameplayAuthoringLocation { Source=_sharedSource,Path=owner },
+                        GameplayAuthoringTypeCatalog.Scope(_sharedSource));
+                }
+            }
             else if (!_document) EditorGUILayout.HelpBox("选择正式技能，或新建一个正式技能。", MessageType.Info);
             else {
                 if(_detailTab==0){
@@ -379,19 +400,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(reason==null&&!link.Scheduled&&(action is IGameplayActionPlacementConstraint ||
                     candidates.Nodes.Any(n=>(n.Payload as GameplayActionNodePayload)?.Action is IGameplayActionPlacementConstraint)))
                 {
-                    var before=candidates.Connections.ToArray();
+                    var proposed=(GameplayAuthoringGraph)GameplayGraphFields.Clone(candidates);
                     try
                     {
-                        GameplaySkillAuthoringCommands.ConnectCreated(candidates,link,candidate.Id);
-                        GameplayGraphCompiler.ValidateActionOrder(candidates);
+                        GameplaySkillAuthoringCommands.ConnectCreated(proposed,link,candidate.Id);
+                        GameplayGraphCompiler.ValidateActionOrder(proposed);
                     }
                     catch(InvalidOperationException error) { return error.Message; }
-                    finally
-                    {
-                        candidates.Connections.Clear();
-                        candidates.Connections.AddRange(before);
-                        candidate.CallbackOwnerDefinitionId=null;
-                    }
                 }
                 return reason==null?null:reason+" 请改从搜索逐目标/弹体命中连接，或明确使用自身目标。";
             }

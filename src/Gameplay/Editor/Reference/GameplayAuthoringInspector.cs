@@ -378,6 +378,7 @@ namespace FRFrame.Gameplay.Editor
         private GameplayRangePreviewShape _range;
         private string _rangeError;
         private GameplayAuthoringDependencyGraph _orderSources;
+        private IReadOnlyList<GameplayWorkbenchDiagnostic> _orderIssues;
         protected void OnEnable()
         {
             Undo.undoRedoPerformed+=InvalidateSourceViews;
@@ -390,17 +391,19 @@ namespace FRFrame.Gameplay.Editor
             EditorApplication.projectChanged-=InvalidateSourceViews;
             GameplayAuthoringSourceChanges.Changed-=SourceViewsChanged;
         }
-        private void InvalidateSourceViews(){_orderSources=null;_ranges=null;}
+        private void InvalidateSourceViews(){_orderSources=null;_orderIssues=null;_ranges=null;}
         private void SourceViewsChanged(IReadOnlyList<GameplayAuthoringSourceChanges.Change> changes)
         {
             if(changes.Any(c=>c.Source==target||_orderSources?.Find(c.Source)!=null))InvalidateSourceViews();
+            else if(changes.Any(c=>c.Source is GameplayDefinitionAsset))_orderIssues=null;
         }
         public override void OnInspectorGUI()
         {
             if(target is GameplayDefinitionAsset history && history.MigrationHistoryOnly){GameplayAuthoringInspector.DrawMigrationHistory(serializedObject);return;}
             if(target is GameplayDefinitionAsset orderRoot){
-                var sources=(_orderSources??=GameplayAuthoringDependencyGraph.BuildDefinition(orderRoot)).Nodes.Select(n=>n.Asset);
-                foreach(var issue in GameplayActionOrderValidation.Scan(sources)){
+                _orderSources??=GameplayAuthoringDependencyGraph.BuildDefinition(orderRoot);
+                _orderIssues??=GameplayActionOrderValidation.Scan(_orderSources.Nodes.Where(n=>n.HasActions).Select(n=>n.Asset));
+                foreach(var issue in _orderIssues){
                     EditorGUILayout.HelpBox(issue.Message,issue.Severity==GameplayAuthoringIssueSeverity.Error?MessageType.Error:MessageType.Warning);
                     if(GUILayout.Button("定位结束后动作 · "+issue.Source.name+" / "+issue.Path)){
                         SkillAuthoring.GameplaySkillWorkbench.OpenSource(issue.Source as GameplayDefinitionAsset,issue.Path);
