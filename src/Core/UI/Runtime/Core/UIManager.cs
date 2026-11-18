@@ -618,12 +618,11 @@ namespace FRFrame
 
         public void Close(string formId, object userData = null)
         {
-            if (CancelLoading(formId))
-                return;
-
             UIForm form = Get(formId);
             if (form != null)
                 Close(form, userData);
+            else
+                CancelLoading(formId);
         }
 
         public void Close<T>(object userData = null) where T : UIForm => Close(typeof(T).Name, userData);
@@ -645,7 +644,10 @@ namespace FRFrame
                 return;
 
             form.InternalBeginClose();
+            uint revision = form.CloseRevision;
             await form.InternalPlayCloseAnimationAsync(cancellationToken).SuppressCancellationThrow();
+            if (!form || form.State != UIFormState.Closing || form.CloseRevision != revision)
+                return;
             form.InternalClose(userData);
 
             if (form.Config != null && (form.Config.resident || form.Config.closeMode == UIFormCloseMode.Cache))
@@ -1058,11 +1060,10 @@ namespace FRFrame
 
         public void Close(int serialId, object userData = null)
         {
-            if (CancelLoading(serialId))
-                return;
-
             if (_formsBySerialId.TryGetValue(serialId, out UIForm form))
                 Close(form, userData);
+            else
+                CancelLoading(serialId);
         }
 
         public UniTask CloseAsync(int serialId, object userData = null, CancellationToken cancellationToken = default)
@@ -1086,7 +1087,7 @@ namespace FRFrame
                             form.State == UIFormState.Hidden ||
                             !form.gameObject.activeSelf ||
                             form.State != UIFormState.Opened;
-            if (willOpen)
+            if (willOpen && form.State != UIFormState.Closing)
                 await _maskService.PrepareBlurAsync(form);
 
             if (form.State == UIFormState.Preloaded)

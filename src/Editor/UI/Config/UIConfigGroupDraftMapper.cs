@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -9,6 +10,23 @@ namespace FRFrame.Editor
     /// </summary>
     public static class UIConfigGroupDraftMapper
     {
+        internal static UIFormTransition CloneTransition(UIFormTransition source)
+        {
+            if (source == null) return null;
+            return new UIFormTransition
+            {
+                enabled = source.enabled,
+                duration = source.duration,
+                tracks = source.tracks?.Select(track => track == null ? null : new UITransitionTrack
+                {
+                    targetPath = track.targetPath, property = track.property,
+                    start = track.start, duration = track.duration, from = track.from, to = track.to,
+                    curve = track.curve == null ? null : new AnimationCurve(track.curve.keys)
+                        { preWrapMode = track.curve.preWrapMode, postWrapMode = track.curve.postWrapMode }
+                }).ToArray()
+            };
+        }
+
         /// <summary>
         /// 从真实 UIConfigGroup 资产创建 Draft。
         /// 这里会做深拷贝，避免编辑 Draft 时直接改到原始资产。
@@ -74,7 +92,7 @@ namespace FRFrame.Editor
             }
 
             EditorUtility.SetDirty(asset);
-            AssetDatabase.SaveAssets();
+            AssetDatabase.SaveAssetIfDirty(asset);
         }
 
         /// <summary>
@@ -114,7 +132,9 @@ namespace FRFrame.Editor
                 openAnimationDuration = src.openAnimationDuration,
                 closeAnimationDuration = src.closeAnimationDuration,
                 openAnimationEase = src.openAnimationEase,
-                closeAnimationEase = src.closeAnimationEase
+                closeAnimationEase = src.closeAnimationEase,
+                openTransition = CloneTransition(src.openTransition),
+                closeTransition = CloneTransition(src.closeTransition)
             };
         }
 
@@ -150,6 +170,8 @@ namespace FRFrame.Editor
             target.closeAnimationDuration = source.closeAnimationDuration;
             target.openAnimationEase = source.openAnimationEase;
             target.closeAnimationEase = source.closeAnimationEase;
+            target.openTransition = CloneTransition(source.openTransition);
+            target.closeTransition = CloneTransition(source.closeTransition);
         }
 
         /// <summary>

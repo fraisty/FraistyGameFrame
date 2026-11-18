@@ -149,6 +149,7 @@
                             <uie:FloatField name="field-close-animation-duration" label="Close Duration" />
                             <ui:EnumField name="field-open-animation-ease" label="Open Ease" />
                             <ui:EnumField name="field-close-animation-ease" label="Close Ease" />
+                            <ui:VisualElement name="transition-editor" />
 
                             <ui:VisualElement class="row wrap">
                                 <ui:Button name="btn-pick-script" text="选择脚本" class="mini-btn" />

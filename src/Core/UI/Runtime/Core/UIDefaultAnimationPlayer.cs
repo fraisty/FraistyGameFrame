@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -6,131 +7,113 @@ namespace FRFrame
 {
     public static class UIDefaultAnimationPlayer
     {
-        public static UniTask PlayOpenAsync(UIForm form, UIFormConfig config, CancellationToken cancellationToken)
+        internal sealed class Playback
         {
-            if (form == null || config == null || config.openAnimation == UIAnimationPreset.None)
-                return UniTask.CompletedTask;
-
-            return PlayAsync(form, config.openAnimation, config.openAnimationDuration, config.openAnimationEase, true, cancellationToken);
+            internal UITweenHandle Handle;
+            internal Action Restore;
         }
 
-        public static UniTask PlayCloseAsync(UIForm form, UIFormConfig config, CancellationToken cancellationToken)
-        {
-            if (form == null || config == null || config.closeAnimation == UIAnimationPreset.None)
-                return UniTask.CompletedTask;
+        public static UniTask PlayOpenAsync(UIForm form, UIFormConfig config, CancellationToken token) =>
+            PlayAsync(form, config, true, token);
 
-            return PlayAsync(form, config.closeAnimation, config.closeAnimationDuration, config.closeAnimationEase, false, cancellationToken);
+        public static UniTask PlayCloseAsync(UIForm form, UIFormConfig config, CancellationToken token) =>
+            PlayAsync(form, config, false, token);
+
+        internal static void Stop(UIForm form)
+        {
+            var current = form.DefaultAnimation;
+            if (current == null) return;
+            form.DefaultAnimation = null;
+            current.Handle?.Kill();
+            current.Restore();
         }
 
-        private static async UniTask PlayAsync(UIForm form, UIAnimationPreset preset, float duration, UIAnimationEase ease, bool opening, CancellationToken cancellationToken)
+        private static async UniTask PlayAsync(UIForm form, UIFormConfig config, bool opening, CancellationToken token)
         {
-            RectTransform rect = form.transform as RectTransform;
-            if (rect == null)
-                return;
-
-            CanvasGroup canvasGroup = form.GetComponent<CanvasGroup>();
-            if (canvasGroup == null)
-                canvasGroup = form.gameObject.AddComponent<CanvasGroup>();
-
-            duration = Mathf.Max(0.01f, duration);
-            Vector3 originalScale = rect.localScale;
-            Vector2 originalPosition = rect.anchoredPosition;
-            Vector2 slideOffset = GetSlideOffset(rect, preset);
-
-            Prepare(rect, canvasGroup, preset, opening, originalScale, originalPosition, slideOffset);
-
-            switch (preset)
+            if (!form || config == null) return;
+            Stop(form);
+            if (token.IsCancellationRequested || form.IsCovered && config.coverVisualMode != UICoverVisualMode.KeepVisible ||
+                !(form.transform is RectTransform rect) || !form.gameObject.activeInHierarchy) return;
+            var group = form.GetComponent<CanvasGroup>();
+            UIFormTransition clip = opening ? config.openTransition : config.closeTransition;
+            Action<float> seek;
+            Action restore;
+            float duration;
+            UIAnimationEase ease;
+            if (clip?.enabled == true)
             {
-                case UIAnimationPreset.Fade:
-                    await UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease).ToUniTask(cancellationToken);
-                    break;
-                case UIAnimationPreset.Scale:
-                    UITweenHandle scaleFade = UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease);
-                    UITweenHandle scaleOnly = UITween.Scale(rect, opening ? originalScale : originalScale * 0.85f, duration, ease);
-                    await scaleOnly.ToUniTask(cancellationToken);
-                    scaleFade.Kill(true);
-                    break;
-                case UIAnimationPreset.FadeScale:
-                    UITweenHandle fade = UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease);
-                    UITweenHandle scale = UITween.Scale(rect, opening ? originalScale : originalScale * 0.85f, duration, ease);
-                    await scale.ToUniTask(cancellationToken);
-                    fade.Kill(true);
-                    break;
-                case UIAnimationPreset.SlideFromLeft:
-                case UIAnimationPreset.SlideFromRight:
-                case UIAnimationPreset.SlideFromTop:
-                case UIAnimationPreset.SlideFromBottom:
-                case UIAnimationPreset.SlideToLeft:
-                case UIAnimationPreset.SlideToRight:
-                case UIAnimationPreset.SlideToTop:
-                case UIAnimationPreset.SlideToBottom:
-                    Vector2 target = opening ? originalPosition : originalPosition + slideOffset;
-                    UITweenHandle slideFade = UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease);
-                    UITweenHandle slideMove = UITween.Move(rect, target, duration, ease);
-                    await slideMove.ToUniTask(cancellationToken);
-                    slideFade.Kill(true);
-                    break;
+                UITransitionSample sample;
+                try { sample = new UITransitionSample(rect, clip); }
+                catch (ArgumentException diagnostic)
+                {
+                    FRLog.Warning($"UI transition {config.formId}: {diagnostic.Message}");
+                    return;
+                }
+                duration = clip.duration;
+                ease = UIAnimationEase.Linear;
+                seek = sample.Seek;
+                restore = sample.Restore;
+            }
+            else
+            {
+                var preset = opening ? config.openAnimation : config.closeAnimation;
+                if (preset == UIAnimationPreset.None || !group) return;
+                duration = Mathf.Max(.01f, opening ? config.openAnimationDuration : config.closeAnimationDuration);
+                ease = opening ? config.openAnimationEase : config.closeAnimationEase;
+                float alpha = group.alpha;
+                var scale = rect.localScale;
+                var position = rect.anchoredPosition;
+                bool scales = preset == UIAnimationPreset.Scale || preset == UIAnimationPreset.FadeScale;
+                Vector2 slide = !opening || preset <= UIAnimationPreset.SlideFromBottom ? GetSlideOffset(rect, preset) : Vector2.zero;
+                seek = seconds =>
+                {
+                    float t = seconds / duration;
+                    group.alpha = Mathf.Clamp01(opening ? t : Mathf.LerpUnclamped(alpha, 0, t));
+                    float amount = opening ? 1 - t : t;
+                    if (scales) rect.localScale = scale * (1 - .15f * amount);
+                    if (slide != Vector2.zero) rect.anchoredPosition = position + slide * amount;
+                };
+                restore = () =>
+                {
+                    if (!rect || !group) return;
+                    group.alpha = alpha;
+                    if (scales) rect.localScale = scale;
+                    if (slide != Vector2.zero) rect.anchoredPosition = position;
+                };
             }
 
-            if (form != null && rect != null && canvasGroup != null && !cancellationToken.IsCancellationRequested)
+            var playback = new Playback { Restore = restore };
+            form.DefaultAnimation = playback;
+            try
             {
-                canvasGroup.alpha = opening ? 1f : 0f;
-                rect.localScale = originalScale;
-                rect.anchoredPosition = originalPosition;
+                seek(0);
+                playback.Handle = UITween.Value(0, duration, duration, seconds =>
+                {
+                    if (!form) { playback.Handle?.Kill(); return; }
+                    if (ReferenceEquals(form.DefaultAnimation, playback) && !token.IsCancellationRequested)
+                        seek(seconds);
+                }, ease);
+                await playback.Handle.ToUniTask(token);
             }
-        }
-
-        private static void Prepare(RectTransform rect, CanvasGroup canvasGroup, UIAnimationPreset preset, bool opening, Vector3 originalScale, Vector2 originalPosition, Vector2 slideOffset)
-        {
-            if (!opening)
-                return;
-
-            switch (preset)
+            finally
             {
-                case UIAnimationPreset.Fade:
-                    canvasGroup.alpha = 0f;
-                    break;
-                case UIAnimationPreset.Scale:
-                    canvasGroup.alpha = 0f;
-                    rect.localScale = originalScale * 0.85f;
-                    break;
-                case UIAnimationPreset.FadeScale:
-                    canvasGroup.alpha = 0f;
-                    rect.localScale = originalScale * 0.85f;
-                    break;
-                case UIAnimationPreset.SlideFromLeft:
-                case UIAnimationPreset.SlideFromRight:
-                case UIAnimationPreset.SlideFromTop:
-                case UIAnimationPreset.SlideFromBottom:
-                    canvasGroup.alpha = 0f;
-                    rect.anchoredPosition = originalPosition + slideOffset;
-                    break;
+                if (form && ReferenceEquals(form.DefaultAnimation, playback)) Stop(form);
             }
         }
 
         private static Vector2 GetSlideOffset(RectTransform rect, UIAnimationPreset preset)
         {
-            RectTransform parent = rect.parent as RectTransform;
-            Rect sourceRect = parent != null ? parent.rect : rect.rect;
-            float width = Mathf.Max(sourceRect.width, rect.rect.width, 1f);
-            float height = Mathf.Max(sourceRect.height, rect.rect.height, 1f);
-            switch (preset)
+            Rect source = rect.parent is RectTransform parent ? parent.rect : rect.rect;
+            float width = Mathf.Max(source.width, rect.rect.width, 1f);
+            float height = Mathf.Max(source.height, rect.rect.height, 1f);
+            return preset switch
             {
-                case UIAnimationPreset.SlideFromLeft:
-                case UIAnimationPreset.SlideToLeft:
-                    return new Vector2(-width, 0f);
-                case UIAnimationPreset.SlideFromRight:
-                case UIAnimationPreset.SlideToRight:
-                    return new Vector2(width, 0f);
-                case UIAnimationPreset.SlideFromTop:
-                case UIAnimationPreset.SlideToTop:
-                    return new Vector2(0f, height);
-                case UIAnimationPreset.SlideFromBottom:
-                case UIAnimationPreset.SlideToBottom:
-                    return new Vector2(0f, -height);
-                default:
-                    return Vector2.zero;
-            }
+                UIAnimationPreset.SlideFromLeft or UIAnimationPreset.SlideToLeft => new Vector2(-width, 0),
+                UIAnimationPreset.SlideFromRight or UIAnimationPreset.SlideToRight => new Vector2(width, 0),
+                UIAnimationPreset.SlideFromTop or UIAnimationPreset.SlideToTop => new Vector2(0, height),
+                UIAnimationPreset.SlideFromBottom or UIAnimationPreset.SlideToBottom => new Vector2(0, -height),
+                _ => Vector2.zero
+            };
         }
     }
 }

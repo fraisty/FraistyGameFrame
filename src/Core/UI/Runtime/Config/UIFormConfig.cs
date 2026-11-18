@@ -88,5 +88,11 @@ namespace FRFrame
 
         [Tooltip("关闭动画缓动")]
         public UIAnimationEase closeAnimationEase = UIAnimationEase.InQuad;
+
+        [Tooltip("打开多通道动画；未启用时使用原预设")]
+        public UIFormTransition openTransition;
+
+        [Tooltip("关闭多通道动画；未启用时使用原预设")]
+        public UIFormTransition closeTransition;
     }
 }

@@ -257,6 +257,7 @@ Core/
         UIConfigGroup.cs
         UIConfigRegistry.cs
         UIFormConfig.cs
+        UIFormTransition.cs
         UIGroupConfig.cs
       Core/
         UIDefaultAnimationPlayer.cs
@@ -277,6 +278,7 @@ Core/
         UIOpenResult.cs
         UIPreloadInfo.cs
         UIRedDotTree.cs
+        UITransitionSample.cs
         UIWidget.cs
         UIWidgetSwitcher.cs
       Extensions/
@@ -313,6 +315,7 @@ Core/
         UITweenHandle.cs
         UIVirtualList.cs
         UIVirtualListLayout.cs
+        WorldHealthBar.cs
       Resources/
         UIBackdropBlur.shader
       Services/
@@ -383,6 +386,7 @@ Editor/
   UI/
     Config/
       UIConfigEditorWindow.cs
+      UIConfigEditorWindow.Transitions.cs
       UIConfigEditorWindow.uss
       UIConfigEditorWindow.uxml
       UIConfigGroupDraft.cs
@@ -687,6 +691,7 @@ Gameplay/
         GameplayUnitySummonAsset.cs
         GameplayUnityWorldHost.cs
         GameplayVisualColorTarget.cs
+        GameplayWorldHealth.cs
   Sequence/
     GameplaySequenceContainer.cs
     GameplaySequenceDefinition.cs
@@ -31784,6 +31789,44 @@ namespace FRFrame
 
         [Tooltip("关闭动画缓动")]
         public UIAnimationEase closeAnimationEase = UIAnimationEase.InQuad;
+
+        [Tooltip("打开多通道动画；未启用时使用原预设")]
+        public UIFormTransition openTransition;
+
+        [Tooltip("关闭多通道动画；未启用时使用原预设")]
+        public UIFormTransition closeTransition;
+    }
+}
+</file>
+
+<file path="Core/UI/Runtime/Config/UIFormTransition.cs">
+using System;
+using UnityEngine;
+
+namespace FRFrame
+{
+    public enum UITransitionProperty { Alpha, Position, Scale, Rotation }
+
+    /// <summary>An opt-in open or close clip. Time is expressed in unscaled seconds.</summary>
+    [Serializable]
+    public sealed class UIFormTransition
+    {
+        public bool enabled;
+        public float duration = 0.3f;
+        public UITransitionTrack[] tracks = Array.Empty<UITransitionTrack>();
+    }
+
+    /// <summary>One property on a root-relative RectTransform. The curve maps local 0–1 time to blend.</summary>
+    [Serializable]
+    public sealed class UITransitionTrack
+    {
+        public string targetPath = "";
+        public UITransitionProperty property;
+        public float start;
+        public float duration = 0.3f;
+        public Vector3 from;
+        public Vector3 to = Vector3.one;
+        public AnimationCurve curve = AnimationCurve.Linear(0, 0, 1, 1);
     }
 }
 </file>
@@ -31808,6 +31851,7 @@ namespace FRFrame
 </file>
 
 <file path="Core/UI/Runtime/Core/UIDefaultAnimationPlayer.cs">
+using System;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
@@ -31816,131 +31860,113 @@ namespace FRFrame
 {
     public static class UIDefaultAnimationPlayer
     {
-        public static UniTask PlayOpenAsync(UIForm form, UIFormConfig config, CancellationToken cancellationToken)
+        internal sealed class Playback
         {
-            if (form == null || config == null || config.openAnimation == UIAnimationPreset.None)
-                return UniTask.CompletedTask;
-
-            return PlayAsync(form, config.openAnimation, config.openAnimationDuration, config.openAnimationEase, true, cancellationToken);
+            internal UITweenHandle Handle;
+            internal Action Restore;
         }
 
-        public static UniTask PlayCloseAsync(UIForm form, UIFormConfig config, CancellationToken cancellationToken)
-        {
-            if (form == null || config == null || config.closeAnimation == UIAnimationPreset.None)
-                return UniTask.CompletedTask;
+        public static UniTask PlayOpenAsync(UIForm form, UIFormConfig config, CancellationToken token) =>
+            PlayAsync(form, config, true, token);
 
-            return PlayAsync(form, config.closeAnimation, config.closeAnimationDuration, config.closeAnimationEase, false, cancellationToken);
+        public static UniTask PlayCloseAsync(UIForm form, UIFormConfig config, CancellationToken token) =>
+            PlayAsync(form, config, false, token);
+
+        internal static void Stop(UIForm form)
+        {
+            var current = form.DefaultAnimation;
+            if (current == null) return;
+            form.DefaultAnimation = null;
+            current.Handle?.Kill();
+            current.Restore();
         }
 
-        private static async UniTask PlayAsync(UIForm form, UIAnimationPreset preset, float duration, UIAnimationEase ease, bool opening, CancellationToken cancellationToken)
+        private static async UniTask PlayAsync(UIForm form, UIFormConfig config, bool opening, CancellationToken token)
         {
-            RectTransform rect = form.transform as RectTransform;
-            if (rect == null)
-                return;
-
-            CanvasGroup canvasGroup = form.GetComponent<CanvasGroup>();
-            if (canvasGroup == null)
-                canvasGroup = form.gameObject.AddComponent<CanvasGroup>();
-
-            duration = Mathf.Max(0.01f, duration);
-            Vector3 originalScale = rect.localScale;
-            Vector2 originalPosition = rect.anchoredPosition;
-            Vector2 slideOffset = GetSlideOffset(rect, preset);
-
-            Prepare(rect, canvasGroup, preset, opening, originalScale, originalPosition, slideOffset);
-
-            switch (preset)
+            if (!form || config == null) return;
+            Stop(form);
+            if (token.IsCancellationRequested || form.IsCovered && config.coverVisualMode != UICoverVisualMode.KeepVisible ||
+                !(form.transform is RectTransform rect) || !form.gameObject.activeInHierarchy) return;
+            var group = form.GetComponent<CanvasGroup>();
+            UIFormTransition clip = opening ? config.openTransition : config.closeTransition;
+            Action<float> seek;
+            Action restore;
+            float duration;
+            UIAnimationEase ease;
+            if (clip?.enabled == true)
             {
-                case UIAnimationPreset.Fade:
-                    await UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease).ToUniTask(cancellationToken);
-                    break;
-                case UIAnimationPreset.Scale:
-                    UITweenHandle scaleFade = UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease);
-                    UITweenHandle scaleOnly = UITween.Scale(rect, opening ? originalScale : originalScale * 0.85f, duration, ease);
-                    await scaleOnly.ToUniTask(cancellationToken);
-                    scaleFade.Kill(true);
-                    break;
-                case UIAnimationPreset.FadeScale:
-                    UITweenHandle fade = UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease);
-                    UITweenHandle scale = UITween.Scale(rect, opening ? originalScale : originalScale * 0.85f, duration, ease);
-                    await scale.ToUniTask(cancellationToken);
-                    fade.Kill(true);
-                    break;
-                case UIAnimationPreset.SlideFromLeft:
-                case UIAnimationPreset.SlideFromRight:
-                case UIAnimationPreset.SlideFromTop:
-                case UIAnimationPreset.SlideFromBottom:
-                case UIAnimationPreset.SlideToLeft:
-                case UIAnimationPreset.SlideToRight:
-                case UIAnimationPreset.SlideToTop:
-                case UIAnimationPreset.SlideToBottom:
-                    Vector2 target = opening ? originalPosition : originalPosition + slideOffset;
-                    UITweenHandle slideFade = UITween.Fade(canvasGroup, opening ? 1f : 0f, duration, ease);
-                    UITweenHandle slideMove = UITween.Move(rect, target, duration, ease);
-                    await slideMove.ToUniTask(cancellationToken);
-                    slideFade.Kill(true);
-                    break;
+                UITransitionSample sample;
+                try { sample = new UITransitionSample(rect, clip); }
+                catch (ArgumentException diagnostic)
+                {
+                    FRLog.Warning($"UI transition {config.formId}: {diagnostic.Message}");
+                    return;
+                }
+                duration = clip.duration;
+                ease = UIAnimationEase.Linear;
+                seek = sample.Seek;
+                restore = sample.Restore;
+            }
+            else
+            {
+                var preset = opening ? config.openAnimation : config.closeAnimation;
+                if (preset == UIAnimationPreset.None || !group) return;
+                duration = Mathf.Max(.01f, opening ? config.openAnimationDuration : config.closeAnimationDuration);
+                ease = opening ? config.openAnimationEase : config.closeAnimationEase;
+                float alpha = group.alpha;
+                var scale = rect.localScale;
+                var position = rect.anchoredPosition;
+                bool scales = preset == UIAnimationPreset.Scale || preset == UIAnimationPreset.FadeScale;
+                Vector2 slide = !opening || preset <= UIAnimationPreset.SlideFromBottom ? GetSlideOffset(rect, preset) : Vector2.zero;
+                seek = seconds =>
+                {
+                    float t = seconds / duration;
+                    group.alpha = Mathf.Clamp01(opening ? t : Mathf.LerpUnclamped(alpha, 0, t));
+                    float amount = opening ? 1 - t : t;
+                    if (scales) rect.localScale = scale * (1 - .15f * amount);
+                    if (slide != Vector2.zero) rect.anchoredPosition = position + slide * amount;
+                };
+                restore = () =>
+                {
+                    if (!rect || !group) return;
+                    group.alpha = alpha;
+                    if (scales) rect.localScale = scale;
+                    if (slide != Vector2.zero) rect.anchoredPosition = position;
+                };
             }
 
-            if (form != null && rect != null && canvasGroup != null && !cancellationToken.IsCancellationRequested)
+            var playback = new Playback { Restore = restore };
+            form.DefaultAnimation = playback;
+            try
             {
-                canvasGroup.alpha = opening ? 1f : 0f;
-                rect.localScale = originalScale;
-                rect.anchoredPosition = originalPosition;
+                seek(0);
+                playback.Handle = UITween.Value(0, duration, duration, seconds =>
+                {
+                    if (!form) { playback.Handle?.Kill(); return; }
+                    if (ReferenceEquals(form.DefaultAnimation, playback) && !token.IsCancellationRequested)
+                        seek(seconds);
+                }, ease);
+                await playback.Handle.ToUniTask(token);
             }
-        }
-
-        private static void Prepare(RectTransform rect, CanvasGroup canvasGroup, UIAnimationPreset preset, bool opening, Vector3 originalScale, Vector2 originalPosition, Vector2 slideOffset)
-        {
-            if (!opening)
-                return;
-
-            switch (preset)
+            finally
             {
-                case UIAnimationPreset.Fade:
-                    canvasGroup.alpha = 0f;
-                    break;
-                case UIAnimationPreset.Scale:
-                    canvasGroup.alpha = 0f;
-                    rect.localScale = originalScale * 0.85f;
-                    break;
-                case UIAnimationPreset.FadeScale:
-                    canvasGroup.alpha = 0f;
-                    rect.localScale = originalScale * 0.85f;
-                    break;
-                case UIAnimationPreset.SlideFromLeft:
-                case UIAnimationPreset.SlideFromRight:
-                case UIAnimationPreset.SlideFromTop:
-                case UIAnimationPreset.SlideFromBottom:
-                    canvasGroup.alpha = 0f;
-                    rect.anchoredPosition = originalPosition + slideOffset;
-                    break;
+                if (form && ReferenceEquals(form.DefaultAnimation, playback)) Stop(form);
             }
         }
 
         private static Vector2 GetSlideOffset(RectTransform rect, UIAnimationPreset preset)
         {
-            RectTransform parent = rect.parent as RectTransform;
-            Rect sourceRect = parent != null ? parent.rect : rect.rect;
-            float width = Mathf.Max(sourceRect.width, rect.rect.width, 1f);
-            float height = Mathf.Max(sourceRect.height, rect.rect.height, 1f);
-            switch (preset)
+            Rect source = rect.parent is RectTransform parent ? parent.rect : rect.rect;
+            float width = Mathf.Max(source.width, rect.rect.width, 1f);
+            float height = Mathf.Max(source.height, rect.rect.height, 1f);
+            return preset switch
             {
-                case UIAnimationPreset.SlideFromLeft:
-                case UIAnimationPreset.SlideToLeft:
-                    return new Vector2(-width, 0f);
-                case UIAnimationPreset.SlideFromRight:
-                case UIAnimationPreset.SlideToRight:
-                    return new Vector2(width, 0f);
-                case UIAnimationPreset.SlideFromTop:
-                case UIAnimationPreset.SlideToTop:
-                    return new Vector2(0f, height);
-                case UIAnimationPreset.SlideFromBottom:
-                case UIAnimationPreset.SlideToBottom:
-                    return new Vector2(0f, -height);
-                default:
-                    return Vector2.zero;
-            }
+                UIAnimationPreset.SlideFromLeft or UIAnimationPreset.SlideToLeft => new Vector2(-width, 0),
+                UIAnimationPreset.SlideFromRight or UIAnimationPreset.SlideToRight => new Vector2(width, 0),
+                UIAnimationPreset.SlideFromTop or UIAnimationPreset.SlideToTop => new Vector2(0, height),
+                UIAnimationPreset.SlideFromBottom or UIAnimationPreset.SlideToBottom => new Vector2(0, -height),
+                _ => Vector2.zero
+            };
         }
     }
 }
@@ -32380,6 +32406,9 @@ namespace FRFrame
     [DisallowMultipleComponent]
     public abstract class UIForm : MonoBehaviour
     {
+        internal UIDefaultAnimationPlayer.Playback DefaultAnimation;
+        internal uint CloseRevision { get; private set; }
+
         public int SerialId { get; internal set; }
         public string FormId { get; internal set; }
         public UIFormConfig Config { get; internal set; }
@@ -32457,6 +32486,8 @@ namespace FRFrame
 
         internal void InternalOpen(object userData)
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             IsPaused = false;
@@ -32474,6 +32505,8 @@ namespace FRFrame
 
         internal void InternalBeginClose()
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             State = UIFormState.Closing;
         }
 
@@ -32502,6 +32535,7 @@ namespace FRFrame
         internal void InternalCover()
         {
             if (IsCovered) return;
+            UIDefaultAnimationPlayer.Stop(this);
             IsCovered = true;
             _eventScopes.ClearVisible();
 
@@ -32558,6 +32592,8 @@ namespace FRFrame
 
         internal void InternalHide()
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             _eventScopes.ClearVisible();
             for (int i = 0; i < _widgets.Count; i++)
             {
@@ -32574,6 +32610,8 @@ namespace FRFrame
 
         internal void InternalShow(object userData)
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             State = UIFormState.Opened;
@@ -32584,6 +32622,8 @@ namespace FRFrame
         {
             if (State == UIFormState.Disposed)
                 return;
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
 
             ReleaseAllWidgets();
             _eventScopes.Dispose();
@@ -33834,12 +33874,11 @@ namespace FRFrame
 
         public void Close(string formId, object userData = null)
         {
-            if (CancelLoading(formId))
-                return;
-
             UIForm form = Get(formId);
             if (form != null)
                 Close(form, userData);
+            else
+                CancelLoading(formId);
         }
 
         public void Close<T>(object userData = null) where T : UIForm => Close(typeof(T).Name, userData);
@@ -33861,7 +33900,10 @@ namespace FRFrame
                 return;
 
             form.InternalBeginClose();
+            uint revision = form.CloseRevision;
             await form.InternalPlayCloseAnimationAsync(cancellationToken).SuppressCancellationThrow();
+            if (!form || form.State != UIFormState.Closing || form.CloseRevision != revision)
+                return;
             form.InternalClose(userData);
 
             if (form.Config != null && (form.Config.resident || form.Config.closeMode == UIFormCloseMode.Cache))
@@ -34274,11 +34316,10 @@ namespace FRFrame
 
         public void Close(int serialId, object userData = null)
         {
-            if (CancelLoading(serialId))
-                return;
-
             if (_formsBySerialId.TryGetValue(serialId, out UIForm form))
                 Close(form, userData);
+            else
+                CancelLoading(serialId);
         }
 
         public UniTask CloseAsync(int serialId, object userData = null, CancellationToken cancellationToken = default)
@@ -34302,7 +34343,7 @@ namespace FRFrame
                             form.State == UIFormState.Hidden ||
                             !form.gameObject.activeSelf ||
                             form.State != UIFormState.Opened;
-            if (willOpen)
+            if (willOpen && form.State != UIFormState.Closing)
                 await _maskService.PrepareBlurAsync(form);
 
             if (form.State == UIFormState.Preloaded)
@@ -35320,6 +35361,160 @@ namespace FRFrame
             public Binding(Node node,Action<bool> callback){_node=node;_callback=callback;}
             public void Dispose(){if(_node==null)return;_node.Changed-=_callback;_node=null;_callback=null;}
         }
+    }
+}
+</file>
+
+<file path="Core/UI/Runtime/Core/UITransitionSample.cs">
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace FRFrame
+{
+    /// <summary>Resolved pose for one clip and one actual prefab instance. The player and editor seek the same pose.</summary>
+    public sealed class UITransitionSample
+    {
+        private readonly List<Channel> _channels = new List<Channel>();
+        private readonly float _duration;
+
+        private sealed class Channel
+        {
+            internal RectTransform Rect;
+            internal CanvasGroup Group;
+            internal UITransitionProperty Property;
+            internal Vector3 Baseline;
+            internal Quaternion Rotation;
+            internal readonly List<UITransitionTrack> Tracks = new List<UITransitionTrack>();
+
+            internal void Write(Vector3 value)
+            {
+                if (!Rect) return;
+                switch (Property)
+                {
+                    case UITransitionProperty.Alpha: if(Group) Group.alpha = Mathf.Clamp01(value.x); break;
+                    case UITransitionProperty.Position: Rect.anchoredPosition = Baseline + value; break;
+                    case UITransitionProperty.Scale: Rect.localScale = Vector3.Scale(Baseline, value); break;
+                    case UITransitionProperty.Rotation: Rect.localRotation = Rotation * Quaternion.Euler(value); break;
+                }
+            }
+        }
+
+        public UITransitionSample(RectTransform root, UIFormTransition clip)
+        {
+            if (!TryValidate(clip, root, out string error)) throw new ArgumentException(error, nameof(clip));
+            _duration = clip.duration;
+            foreach (var track in clip.tracks)
+            {
+                var rect = (RectTransform)Resolve(root, track.targetPath);
+                var channel = _channels.Find(c => c.Rect == rect && c.Property == track.property);
+                if (channel == null)
+                {
+                    channel = new Channel { Rect = rect, Property = track.property };
+                    switch (track.property)
+                    {
+                        case UITransitionProperty.Alpha:
+                            channel.Group = rect.GetComponent<CanvasGroup>();
+                            channel.Baseline = new Vector3(channel.Group.alpha, 0, 0);
+                            break;
+                        case UITransitionProperty.Position: channel.Baseline = rect.anchoredPosition; break;
+                        case UITransitionProperty.Scale: channel.Baseline = rect.localScale; break;
+                        case UITransitionProperty.Rotation: channel.Rotation = rect.localRotation; break;
+                    }
+                    _channels.Add(channel);
+                }
+                channel.Tracks.Add(track);
+            }
+            foreach (var channel in _channels) channel.Tracks.Sort((a,b) => a.start.CompareTo(b.start));
+        }
+
+        /// <summary>Seek by seconds. Gaps hold the previous track, and a touching successor wins at its start.</summary>
+        public void Seek(float seconds)
+        {
+            seconds = Mathf.Clamp(seconds, 0, _duration);
+            foreach (var channel in _channels)
+            {
+                var track = channel.Tracks[0];
+                for (int i = 1; i < channel.Tracks.Count && channel.Tracks[i].start <= seconds; i++)
+                    track = channel.Tracks[i];
+                float blend = track.curve.Evaluate(Mathf.Clamp01((seconds - track.start) / track.duration));
+                channel.Write(Vector3.LerpUnclamped(track.from, track.to, blend));
+            }
+        }
+
+        /// <summary>Return this binding to its captured base pose and leave raycast state to UIForm.</summary>
+        public void Restore()
+        {
+            foreach (var channel in _channels)
+                channel.Write(channel.Property switch
+                {
+                    UITransitionProperty.Alpha => channel.Baseline,
+                    UITransitionProperty.Scale => Vector3.one,
+                    _ => Vector3.zero
+                });
+        }
+
+        /// <summary>Validate authored time, paths, layout ownership and writable intervals before playback.</summary>
+        public static bool TryValidate(UIFormTransition clip, RectTransform root, out string error,bool allowFormCanvasGroup = false)
+        {
+            error = null;
+            if (clip == null || !float.IsFinite(clip.duration) || clip.duration <= 0 || clip.tracks == null || clip.tracks.Length == 0)
+                error = "多通道动画需要正数总时长和至少一个通道。";
+            if (error != null) return false;
+            for (int i = 0; i < clip.tracks.Length; i++)
+            {
+                var track = clip.tracks[i];
+                if (track == null || !Enum.IsDefined(typeof(UITransitionProperty), track.property) ||
+                    !float.IsFinite(track.start) || track.start < 0 || !float.IsFinite(track.duration) || track.duration <= 0 ||
+                    track.start + track.duration > clip.duration + .00001f || !Finite(track.from) || !Finite(track.to) ||
+                    track.curve == null || track.curve.length == 0)
+                { error = $"通道 {i + 1} 的属性、时间、值或曲线无效。"; return false; }
+                foreach (var key in track.curve.keys)
+                    if (!float.IsFinite(key.time) || !float.IsFinite(key.value) || key.time < 0 || key.time > 1 ||
+                        float.IsNaN(key.inTangent) || float.IsNaN(key.outTangent))
+                    { error = $"通道 {i + 1} 的曲线须使用 0–1 时间与有限键值。"; return false; }
+
+                if (root)
+                {
+                    var target = Resolve(root, track.targetPath) as RectTransform;
+                    if (!target || track.property == UITransitionProperty.Alpha && !target.GetComponent<CanvasGroup>() &&
+                        !(allowFormCanvasGroup && target == root))
+                    { error = $"通道 {i + 1} 需要唯一的 RectTransform 路径，透明度还需 CanvasGroup。"; return false; }
+                    if (track.property == UITransitionProperty.Position && target.drivenByObject)
+                    { error = $"通道 {i + 1} 的位置由布局驱动。请选择布局节点内的视觉子节点。"; return false; }
+                }
+                for (int j = 0; j < i; j++)
+                {
+                    var prior = clip.tracks[j];
+                    if ((prior.targetPath ?? "") == (track.targetPath ?? "") && prior.property == track.property &&
+                        prior.start < track.start + track.duration - .00001f &&
+                        track.start < prior.start + prior.duration - .00001f)
+                    { error = $"通道 {j + 1} 和 {i + 1} 同时写入同一属性。"; return false; }
+                }
+            }
+            return true;
+        }
+
+        private static Transform Resolve(Transform root, string path)
+        {
+            if (string.IsNullOrEmpty(path)) return root;
+            foreach (string name in path.Split('/'))
+            {
+                Transform next = null;
+                for (int i = 0; i < root.childCount; i++)
+                {
+                    var child = root.GetChild(i);
+                    if (child.name != name) continue;
+                    if (next) return null;
+                    next = child;
+                }
+                if (!next) return null;
+                root = next;
+            }
+            return root;
+        }
+
+        private static bool Finite(Vector3 v) => float.IsFinite(v.x) && float.IsFinite(v.y) && float.IsFinite(v.z);
     }
 }
 </file>
@@ -42226,6 +42421,176 @@ namespace FRFrame
         public float right;
         public float top;
         public float bottom;
+    }
+}
+</file>
+
+<file path="Core/UI/Runtime/Extensions/WorldHealthBar.cs">
+using System;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace FRFrame
+{
+    /// <summary>One presentation sample. Hidden and unbound objects can use the default value.</summary>
+    public readonly struct WorldHealthSnapshot
+    {
+        public readonly float Current, Maximum, Shield;
+        public readonly bool Visible;
+
+        public WorldHealthSnapshot(float current, float maximum, float shield = 0, bool visible = true)
+        {
+            Current = current; Maximum = maximum; Shield = shield; Visible = visible;
+        }
+    }
+
+    /// <summary>Camera-facing world-space UI with no dependency on a game or health authority.
+    /// Keep the view under a neutral presentation root and pass the actor as a separate anchor.</summary>
+    [RequireComponent(typeof(Canvas),typeof(RectTransform))]
+    public sealed class WorldHealthBar : MonoBehaviour, IPoolRecycleHandler
+    {
+        [SerializeField] private Image background, health, shield;
+        [SerializeField] private Text numbers;
+        [SerializeField] private Vector2 size = new Vector2(100,8);
+        [SerializeField, Min(.001f)] private float worldScale = .01f;
+        [SerializeField] private Vector3 worldOffset;
+        [SerializeField] private bool hideAtFullHealth;
+        [SerializeField, Min(0)] private float response = 16;
+        [SerializeField, Min(0)] private float followResponse;
+
+        private Canvas _canvas;
+        private float _healthFill, _shieldFill;
+        private bool _hasSample;
+        private Vector3 _shownPoint;
+        private int _generation;
+        private int _lastHp, _lastMax;
+
+        /// <summary>Bind this view or a pooled prefab instance. Rebinding immediately invalidates the old handle.</summary>
+        public Lease Bind(Transform anchor = null)
+        {
+            ResetBinding();
+            return new Lease(this,_generation,anchor);
+        }
+
+        public sealed class Lease : IDisposable
+        {
+            private readonly WorldHealthBar _view;
+            private readonly int _generation;
+            private readonly Transform _anchor;
+
+            internal Lease(WorldHealthBar view,int generation,Transform anchor)
+            { _view=view; _generation=generation; _anchor=anchor; }
+
+            /// <summary>Read the anchor position and render the supplied authoritative values.</summary>
+            public void Present(WorldHealthSnapshot snapshot, Camera camera, float viewDelta)
+            {
+                if (_anchor && _anchor.gameObject.activeInHierarchy)
+                    Present(snapshot,_anchor.position,camera,viewDelta);
+                else
+                    Present(default,Vector3.zero,camera,viewDelta);
+            }
+
+            /// <summary>Use an explicit world point, for example for a snapshot-driven stage avatar.</summary>
+            public void Present(WorldHealthSnapshot snapshot, Vector3 point, Camera camera, float viewDelta)
+            {
+                if (_view && _view._generation == _generation && _view.isActiveAndEnabled)
+                    _view.Render(snapshot,point,camera,viewDelta);
+            }
+
+            public void Dispose()
+            {
+                if (_view && _view._generation == _generation) _view.ResetBinding();
+            }
+        }
+
+        private void Awake()
+        {
+            _canvas = GetComponent<Canvas>();
+            _canvas.renderMode = RenderMode.WorldSpace;
+            _canvas.enabled = false;
+        }
+
+        private void OnDisable() => ResetBinding();
+        public void OnRecycleToPool() => ResetBinding();
+
+        private void ResetBinding()
+        {
+            _generation++;
+            _hasSample = false;
+            _healthFill = _shieldFill = 0;
+            _lastHp = _lastMax = -1;
+            if (_canvas) { _canvas.enabled = false; _canvas.worldCamera = null; }
+            if (numbers) numbers.text = "";
+        }
+
+        private void Render(WorldHealthSnapshot snapshot,Vector3 point,Camera camera,float viewDelta)
+        {
+            point += worldOffset;
+            bool show = snapshot.Visible && snapshot.Maximum > 0 && snapshot.Current > 0 &&
+                float.IsFinite(snapshot.Current) && float.IsFinite(snapshot.Maximum) && float.IsFinite(snapshot.Shield) &&
+                (!hideAtFullHealth || snapshot.Current < snapshot.Maximum || snapshot.Shield > 0) &&
+                camera && camera.isActiveAndEnabled;
+            if (show)
+            {
+                Vector3 viewport = camera.WorldToViewportPoint(point);
+                show = viewport.z >= camera.nearClipPlane && viewport.z <= camera.farClipPlane &&
+                    viewport.x >= 0 && viewport.x <= 1 && viewport.y >= 0 && viewport.y <= 1;
+            }
+            _canvas.enabled = show;
+            if (!show) { _hasSample = false; return; }
+            if (_canvas.worldCamera != camera) _canvas.worldCamera = camera;
+            float follow = !_hasSample || followResponse == 0 ? 1 : 1 - Mathf.Exp(-followResponse * viewDelta);
+            _shownPoint = Vector3.Lerp(_shownPoint,point,follow);
+            transform.SetPositionAndRotation(_shownPoint,camera.transform.rotation);
+            transform.localScale = Vector3.one * worldScale;
+            float ease = !_hasSample || response == 0 ? 1 : 1 - Mathf.Exp(-response * viewDelta);
+            _hasSample = true;
+            _healthFill = Mathf.Lerp(_healthFill,Mathf.Clamp01(snapshot.Current / snapshot.Maximum),ease);
+            _shieldFill = Mathf.Lerp(_shieldFill,Mathf.Clamp01(snapshot.Shield / snapshot.Maximum),ease);
+            SetBand(background,size.x,size.y,0);
+            SetBand(health,size.x * _healthFill,size.y,0);
+            SetBand(shield,size.x * _shieldFill,size.y * .45f,size.y * .72f);
+            if (numbers)
+            {
+                int hp = Mathf.CeilToInt(snapshot.Current), max = Mathf.CeilToInt(snapshot.Maximum);
+                if (hp != _lastHp || max != _lastMax)
+                { _lastHp=hp; _lastMax=max; numbers.text=$"{hp}/{max}"; }
+            }
+        }
+
+        private void SetBand(Image band,float width,float height,float y)
+        {
+            if (!band) return;
+            band.enabled = width > .001f;
+            band.rectTransform.anchoredPosition = new Vector2(-size.x / 2,y);
+            band.rectTransform.sizeDelta = new Vector2(width,height);
+        }
+
+        /// <summary>Small default view used by hosts without a configured prefab. The scene owns its lifetime.</summary>
+        public static WorldHealthBar CreateDefault(Transform viewRoot,int layer,float width = 1)
+        {
+            var root = new GameObject("World Health Bar",typeof(RectTransform),typeof(Canvas),typeof(WorldHealthBar));
+            root.layer = layer;
+            root.transform.SetParent(viewRoot,false);
+            var bar = root.GetComponent<WorldHealthBar>();
+            bar.worldScale = width / bar.size.x;
+            bar.background = AddBand(root.transform,layer,"Background",new Color(.04f,.07f,.11f,.9f));
+            bar.health = AddBand(root.transform,layer,"Health",new Color(.23f,.85f,.60f));
+            bar.shield = AddBand(root.transform,layer,"Shield",new Color(.28f,.72f,1));
+            return bar;
+        }
+
+        private static Image AddBand(Transform parent,int layer,string name,Color color)
+        {
+            var child = new GameObject(name,typeof(RectTransform),typeof(Image));
+            child.layer = layer;
+            child.transform.SetParent(parent,false);
+            var image = child.GetComponent<Image>();
+            image.raycastTarget = false;
+            image.color = color;
+            image.rectTransform.pivot = new Vector2(0,.5f);
+            return image;
+        }
     }
 }
 </file>
@@ -53158,7 +53523,7 @@ namespace FRFrame.Editor
         }
     }
 
-    public sealed class UIConfigEditorWindow : EditorWindow
+    public sealed partial class UIConfigEditorWindow : EditorWindow
     {
         private const string MenuPath = "FRFrame/UI/UI Config Editor";
         private const string DefaultCreateFolder = "Assets/Resources/UIConfigs";
@@ -53341,6 +53706,7 @@ namespace FRFrame.Editor
 
         private void OnEnable()
         {
+            Undo.undoRedoPerformed += UndoTransitionDraft;
             RefreshGroups();
         }
 
@@ -53365,6 +53731,7 @@ namespace FRFrame.Editor
             }
 
             QueryElements();
+            rootVisualElement.Q("transition-editor")?.Add(new IMGUIContainer(DrawTransitionEditor));
             EnsureUnconfiguredToolbar();
             BindToolbarButtons();
             BindInputs();
@@ -54705,6 +55072,7 @@ namespace FRFrame.Editor
 
         private void RefreshFormDetailFromSelection()
         {
+            BindTransitionEditor();
             if (_selectedFormItem == null || _selectedFormItem.data == null)
             {
                 if (_detailTitleLabel != null)
@@ -56432,6 +56800,271 @@ namespace FRFrame.Editor
 }
 </file>
 
+<file path="Editor/UI/Config/UIConfigEditorWindow.Transitions.cs">
+using System;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace FRFrame.Editor
+{
+    public sealed partial class UIConfigEditorWindow
+    {
+        private sealed class TransitionDraftBuffer : ScriptableObject
+        {
+            public UIFormTransition open;
+            public UIFormTransition close;
+        }
+
+        private UIFormConfig _transitionForm;
+        private UIFormTransition _mappedOpen, _mappedClose;
+        private TransitionDraftBuffer _transitionDraft;
+        private string _committedTransition;
+        private bool _transitionFold, _previewClose, _playingTransition;
+        private double _previewStarted;
+        private float _previewSeconds;
+        private PreviewRenderUtility _transitionPreview;
+        private RectTransform _previewRoot;
+        private UITransitionSample _previewSample;
+        private string _previewError;
+        private string _transitionAssetPath;
+
+        private void BindTransitionEditor()
+        {
+            var form = _selectedFormItem?.data;
+            if (form == _transitionForm && form?.assetPath == _transitionAssetPath &&
+                form?.openTransition == _mappedOpen && form?.closeTransition == _mappedClose) return;
+            DiscardTransitionEditor();
+            _transitionForm = form;
+            if (form == null) return;
+            _transitionAssetPath = form.assetPath;
+            _mappedOpen = form.openTransition;
+            _mappedClose = form.closeTransition;
+            _transitionDraft = CreateInstance<TransitionDraftBuffer>();
+            _transitionDraft.hideFlags = HideFlags.HideAndDontSave;
+            _transitionDraft.open = UIConfigGroupDraftMapper.CloneTransition(_mappedOpen) ?? new UIFormTransition();
+            _transitionDraft.close = UIConfigGroupDraftMapper.CloneTransition(_mappedClose) ?? new UIFormTransition();
+            _committedTransition = EditorJsonUtility.ToJson(_transitionDraft);
+        }
+
+        private void OnDisable()
+        {
+            Undo.undoRedoPerformed -= UndoTransitionDraft;
+            DiscardTransitionEditor();
+        }
+
+        private void DiscardTransitionEditor()
+        {
+            StopTransitionPreview();
+            if (_transitionDraft)
+            {
+                Undo.ClearUndo(_transitionDraft);
+                DestroyImmediate(_transitionDraft);
+            }
+            _transitionDraft = null;
+            _committedTransition = null;
+            _transitionForm = null;
+            _mappedOpen = _mappedClose = null;
+            _transitionAssetPath = null;
+        }
+
+        private void EditTransition(Action update)
+        {
+            Undo.RegisterCompleteObjectUndo(_transitionDraft,"修改 Form 多通道动画");
+            update();
+            UndoTransitionDraft();
+        }
+
+        private void UndoTransitionDraft()
+        {
+            if (!_transitionDraft || _selectedFormItem?.data != _transitionForm) return;
+            string revision = EditorJsonUtility.ToJson(_transitionDraft);
+            if (revision == _committedTransition) return;
+            _committedTransition = revision;
+            StopTransitionPreview();
+            _transitionForm.openTransition = _mappedOpen = UIConfigGroupDraftMapper.CloneTransition(_transitionDraft.open);
+            _transitionForm.closeTransition = _mappedClose = UIConfigGroupDraftMapper.CloneTransition(_transitionDraft.close);
+            _selectedFormItem.isModified = true;
+            MarkCurrentDraftDirty();
+            Repaint();
+        }
+
+        private void DrawTransitionEditor()
+        {
+            if (!_transitionDraft) return;
+            bool expanded = EditorGUILayout.Foldout(_transitionFold,"多通道动画与 Prefab 预览",true);
+            if (expanded != _transitionFold && !expanded) StopTransitionPreview();
+            _transitionFold = expanded;
+            if (!expanded) return;
+            int mode = GUILayout.Toolbar(_previewClose ? 1 : 0,new[] { "打开", "关闭" });
+            if (_previewClose != (mode == 1))
+            {
+                _previewClose = mode == 1;
+                StopTransitionPreview();
+            }
+            var clip = _previewClose ? _transitionDraft.close : _transitionDraft.open;
+            int method = EditorGUILayout.Popup("方式",clip.enabled ? 1 : 0,new[] { "预设", "多通道" });
+            if (clip.enabled != (method == 1)) EditTransition(() => clip.enabled = method == 1);
+            if (!clip.enabled) return;
+            float duration = EditorGUILayout.DelayedFloatField("总时长（秒）",clip.duration);
+            if (duration != clip.duration) EditTransition(() => clip.duration = duration);
+            GameObject prefab = string.IsNullOrEmpty(_transitionAssetPath) ? null : AssetDatabase.LoadAssetAtPath<GameObject>(
+                UIConfigEditorWindowHelper.TryLoadPrefabAtRuntimeStylePath(_transitionAssetPath) ?? _transitionAssetPath);
+            for (int i = 0; i < clip.tracks.Length; i++)
+            {
+                var track = clip.tracks[i];
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        GUILayout.Label($"通道 {i + 1}");
+                        int slot = i;
+                        using (new EditorGUI.DisabledScope(slot == 0))
+                            if (GUILayout.Button("↑",GUILayout.Width(27)))
+                                EditTransition(() => (clip.tracks[slot - 1],clip.tracks[slot]) = (clip.tracks[slot],clip.tracks[slot - 1]));
+                        using (new EditorGUI.DisabledScope(slot == clip.tracks.Length - 1))
+                            if (GUILayout.Button("↓",GUILayout.Width(27)))
+                                EditTransition(() => (clip.tracks[slot + 1],clip.tracks[slot]) = (clip.tracks[slot],clip.tracks[slot + 1]));
+                        if (GUILayout.Button("移除",GUILayout.Width(46)))
+                        {
+                            EditTransition(() => clip.tracks = clip.tracks.Where((_,index) => index != slot).ToArray());
+                            GUIUtility.ExitGUI();
+                        }
+                    }
+                    var property = (UITransitionProperty)EditorGUILayout.EnumPopup("属性",track.property);
+                    string path = EditorGUILayout.DelayedTextField("相对路径（空 = 根）",track.targetPath ?? "");
+                    if (prefab && GUILayout.Button("选择目标…")) ShowTransitionTargets(prefab,track);
+                    float start = EditorGUILayout.DelayedFloatField("起点（秒）",track.start);
+                    float length = EditorGUILayout.DelayedFloatField("时长（秒）",track.duration);
+                    string units = property switch { UITransitionProperty.Alpha => "透明度", UITransitionProperty.Scale => "倍率", UITransitionProperty.Rotation => "角度", _ => "偏移" };
+                    Vector3 from = property == UITransitionProperty.Alpha
+                        ? new Vector3(EditorGUILayout.DelayedFloatField($"{units} · 从",track.from.x),0,0)
+                        : EditorGUILayout.Vector3Field($"{units} · 从",track.from);
+                    Vector3 to = property == UITransitionProperty.Alpha
+                        ? new Vector3(EditorGUILayout.DelayedFloatField($"{units} · 到",track.to.x),0,0)
+                        : EditorGUILayout.Vector3Field($"{units} · 到",track.to);
+                    EditorGUI.BeginChangeCheck();
+                    var curve = EditorGUILayout.CurveField("曲线（0–1 时间）",track.curve);
+                    if (EditorGUI.EndChangeCheck() || property != track.property || path != track.targetPath ||
+                        start != track.start || length != track.duration || from != track.from || to != track.to)
+                        EditTransition(() => {track.property = property; track.targetPath = path; track.start = start;
+                            track.duration = length; track.from = from; track.to = to; track.curve = curve;});
+                }
+            }
+            if (GUILayout.Button("增加通道"))
+            {
+                EditTransition(() => clip.tracks = clip.tracks.Append(new UITransitionTrack { duration = clip.duration }).ToArray());
+                GUIUtility.ExitGUI();
+            }
+            if (!prefab)
+            {
+                EditorGUILayout.HelpBox("先配置实际 UI Prefab，才能绑定子路径并预览。",MessageType.Info);
+                return;
+            }
+            if (!(prefab.transform is RectTransform root))
+            {
+                EditorGUILayout.HelpBox("Form Prefab 根需要 RectTransform。",MessageType.Warning);
+                return;
+            }
+            if (!UITransitionSample.TryValidate(clip,root,out string error,allowFormCanvasGroup:true))
+            {
+                EditorGUILayout.HelpBox(error,MessageType.Warning);
+                return;
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("加载 / 重建预览")) BuildTransitionPreview(prefab,clip);
+                using (new EditorGUI.DisabledScope(_previewSample == null))
+                {
+                    if (GUILayout.Button("播放"))
+                    {
+                        _previewStarted = EditorApplication.timeSinceStartup;
+                        _playingTransition = true;
+                        Repaint();
+                    }
+                    if (GUILayout.Button("停止")) _playingTransition = false;
+                }
+            }
+            if (_previewError != null) EditorGUILayout.HelpBox(_previewError,MessageType.Warning);
+            if (_previewSample == null) return;
+            if (_playingTransition)
+            {
+                _previewSeconds = Mathf.Min((float)(EditorApplication.timeSinceStartup - _previewStarted),clip.duration);
+                _playingTransition = _previewSeconds < clip.duration;
+                if (_playingTransition) Repaint();
+            }
+            float seek = EditorGUILayout.Slider("时间游标",_previewSeconds,0,clip.duration);
+            if (seek != _previewSeconds) { _playingTransition = false; _previewSeconds = seek; }
+            var rect = GUILayoutUtility.GetRect(1,210,GUILayout.ExpandWidth(true));
+            if (Event.current.type != EventType.Repaint) return;
+            _previewSample.Seek(_previewSeconds);
+            _transitionPreview.BeginPreview(rect,GUIStyle.none);
+            _transitionPreview.Render(true);
+            var texture = _transitionPreview.EndPreview();
+            GUI.DrawTexture(rect,texture,ScaleMode.ScaleToFit,false);
+        }
+
+        private void ShowTransitionTargets(GameObject prefab,UITransitionTrack track)
+        {
+            var menu = new GenericMenu();
+            var draft = _transitionDraft;
+            void Apply(string path)
+            {
+                if (draft && draft == _transitionDraft) EditTransition(() => track.targetPath = path);
+            }
+            menu.AddItem(new GUIContent("根"),string.IsNullOrEmpty(track.targetPath),() => Apply(""));
+            foreach (var target in prefab.GetComponentsInChildren<RectTransform>(true))
+            {
+                if (target == prefab.transform) continue;
+                string path = AnimationUtility.CalculateTransformPath(target,prefab.transform);
+                menu.AddItem(new GUIContent(path),track.targetPath == path,() => Apply(path));
+            }
+            menu.ShowAsContext();
+        }
+
+        private void BuildTransitionPreview(GameObject prefab,UIFormTransition clip)
+        {
+            StopTransitionPreview();
+            if (!(prefab.transform is RectTransform))
+            { _previewError = "预览根必须是 RectTransform。"; return; }
+            _transitionPreview = new PreviewRenderUtility();
+            var camera = _transitionPreview.camera;
+            camera.orthographic = true;
+            camera.orthographicSize = 300;
+            camera.farClipPlane = 2000;
+            camera.transform.position = new Vector3(0,0,-600);
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = new Color(.12f,.14f,.18f);
+            var surface = new GameObject("UI Form Preview",typeof(RectTransform),typeof(Canvas));
+            _transitionPreview.AddSingleGO(surface);
+            var canvas = surface.GetComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            canvas.worldCamera = camera;
+            ((RectTransform)surface.transform).sizeDelta = new Vector2(960,540);
+            var instance = _transitionPreview.InstantiatePrefabInScene(prefab);
+            _previewRoot = (RectTransform)instance.transform;
+            _previewRoot.SetParent(surface.transform,false);
+            if (!instance.GetComponent<CanvasGroup>()) instance.AddComponent<CanvasGroup>();
+            LayoutRebuilder.ForceRebuildLayoutImmediate(_previewRoot);
+            try { _previewSample = new UITransitionSample(_previewRoot,clip); }
+            catch (ArgumentException error) { StopTransitionPreview(); _previewError = error.Message; }
+        }
+
+        private void StopTransitionPreview()
+        {
+            _playingTransition = false;
+            _previewSeconds = 0;
+            _transitionPreview?.Cleanup();
+            _transitionPreview = null;
+            _previewRoot = null;
+            _previewSample = null;
+            _previewError = null;
+        }
+    }
+}
+</file>
+
 <file path="Editor/UI/Config/UIConfigEditorWindow.uss">
 .page-root {
     flex-direction: column;
@@ -57022,6 +57655,7 @@ namespace FRFrame.Editor
                             <uie:FloatField name="field-close-animation-duration" label="Close Duration" />
                             <ui:EnumField name="field-open-animation-ease" label="Open Ease" />
                             <ui:EnumField name="field-close-animation-ease" label="Close Ease" />
+                            <ui:VisualElement name="transition-editor" />
 
                             <ui:VisualElement class="row wrap">
                                 <ui:Button name="btn-pick-script" text="选择脚本" class="mini-btn" />
@@ -57198,6 +57832,7 @@ namespace FRFrame.Editor
 
 <file path="Editor/UI/Config/UIConfigGroupDraftMapper.cs">
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -57208,6 +57843,23 @@ namespace FRFrame.Editor
     /// </summary>
     public static class UIConfigGroupDraftMapper
     {
+        internal static UIFormTransition CloneTransition(UIFormTransition source)
+        {
+            if (source == null) return null;
+            return new UIFormTransition
+            {
+                enabled = source.enabled,
+                duration = source.duration,
+                tracks = source.tracks?.Select(track => track == null ? null : new UITransitionTrack
+                {
+                    targetPath = track.targetPath, property = track.property,
+                    start = track.start, duration = track.duration, from = track.from, to = track.to,
+                    curve = track.curve == null ? null : new AnimationCurve(track.curve.keys)
+                        { preWrapMode = track.curve.preWrapMode, postWrapMode = track.curve.postWrapMode }
+                }).ToArray()
+            };
+        }
+
         /// <summary>
         /// 从真实 UIConfigGroup 资产创建 Draft。
         /// 这里会做深拷贝，避免编辑 Draft 时直接改到原始资产。
@@ -57273,7 +57925,7 @@ namespace FRFrame.Editor
             }
 
             EditorUtility.SetDirty(asset);
-            AssetDatabase.SaveAssets();
+            AssetDatabase.SaveAssetIfDirty(asset);
         }
 
         /// <summary>
@@ -57313,7 +57965,9 @@ namespace FRFrame.Editor
                 openAnimationDuration = src.openAnimationDuration,
                 closeAnimationDuration = src.closeAnimationDuration,
                 openAnimationEase = src.openAnimationEase,
-                closeAnimationEase = src.closeAnimationEase
+                closeAnimationEase = src.closeAnimationEase,
+                openTransition = CloneTransition(src.openTransition),
+                closeTransition = CloneTransition(src.closeTransition)
             };
         }
 
@@ -57349,6 +58003,8 @@ namespace FRFrame.Editor
             target.closeAnimationDuration = source.closeAnimationDuration;
             target.openAnimationEase = source.openAnimationEase;
             target.closeAnimationEase = source.closeAnimationEase;
+            target.openTransition = CloneTransition(source.openTransition);
+            target.closeTransition = CloneTransition(source.closeTransition);
         }
 
         /// <summary>
@@ -57372,6 +58028,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using UnityEditor;
+using UnityEngine;
 
 namespace FRFrame.Editor
 {
@@ -57735,7 +58393,7 @@ namespace FRFrame.Editor
                     });
                 }
 
-                if (cfg.openAnimation != UIAnimationPreset.None && cfg.openAnimationDuration <= 0f)
+                if (cfg.openTransition?.enabled != true && cfg.openAnimation != UIAnimationPreset.None && cfg.openAnimationDuration <= 0f)
                 {
                     messages.Add(new ValidationMessage
                     {
@@ -57749,7 +58407,7 @@ namespace FRFrame.Editor
                     });
                 }
 
-                if (cfg.closeAnimation != UIAnimationPreset.None && cfg.closeAnimationDuration <= 0f)
+                if (cfg.closeTransition?.enabled != true && cfg.closeAnimation != UIAnimationPreset.None && cfg.closeAnimationDuration <= 0f)
                 {
                     messages.Add(new ValidationMessage
                     {
@@ -57760,6 +58418,22 @@ namespace FRFrame.Editor
                         LogicType = cfg.logicType,
                         AssetPath = cfg.assetPath,
                         Message = $"{SafeFormId(cfg)} 配置了关闭动画但 closeAnimationDuration <= 0。"
+                    });
+                }
+                foreach (var pair in new[] { ("打开",cfg.openTransition), ("关闭",cfg.closeTransition) })
+                {
+                    if (pair.Item2?.enabled != true) continue;
+                    var path = UIConfigEditorWindowHelper.TryLoadPrefabAtRuntimeStylePath(cfg.assetPath);
+                    var prefab = string.IsNullOrEmpty(path) ? null : AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    var root = prefab ? prefab.transform as RectTransform : null;
+                    string error = null;
+                    if (prefab && !root) error = "Form Prefab 根需要 RectTransform。";
+                    else if (UITransitionSample.TryValidate(pair.Item2,root,out error,allowFormCanvasGroup:true)) continue;
+                    messages.Add(new ValidationMessage
+                    {
+                        Severity = ValidationSeverity.Error, FormIndex = i, RowId = item.rowId,
+                        FormId = cfg.formId, LogicType = cfg.logicType, AssetPath = cfg.assetPath,
+                        Message = $"{SafeFormId(cfg)} {pair.Item1}多通道 · {error}"
                     });
                 }
             }
@@ -85734,6 +86408,27 @@ namespace FRFrame.Gameplay.Unity
 }
 </file>
 
+<file path="Gameplay/Integrations/UnityCommon/Runtime/GameplayWorldHealth.cs">
+using FRFrame.Gameplay.Standard;
+
+namespace FRFrame.Gameplay.Unity
+{
+    /// <summary>Maps the actual Standard Actor combat resources without writing to gameplay.</summary>
+    public static class GameplayWorldHealth
+    {
+        public static WorldHealthSnapshot Read(GameplayStandardActor actor)
+        {
+            var map = actor?.CombatAttributes;
+            if (map == null || !actor.IsTargetable || !actor.Resources.TryGetBalance(map.Health,out float health))
+                return default;
+            float shield = 0;
+            if (map.Shield.IsValid) actor.Resources.TryGetBalance(map.Shield,out shield);
+            return new WorldHealthSnapshot(health,actor.Attributes.GetCurrentValue(map.MaxHealth),shield);
+        }
+    }
+}
+</file>
+
 <file path="Gameplay/Sequence/GameplaySequenceContainer.cs">
 using System;
 using System.Collections.Generic;
@@ -100312,6 +101007,31 @@ namespace FRFrame.Tests.UIExtensions
     {
         private readonly List<Object> _created = new List<Object>();
 
+        [Test]
+        public void TransitionSeekUsesTheCapturedPoseAndRejectsOverlappingWrites()
+        {
+            var root = new GameObject("Form",typeof(RectTransform),typeof(CanvasGroup));
+            _created.Add(root);
+            var child = new GameObject("Child",typeof(RectTransform));
+            var rect = (RectTransform)child.transform;
+            rect.SetParent(root.transform,false);
+            rect.anchoredPosition = new Vector2(8,3);
+            var track = new UITransitionTrack { targetPath = "Child", property = UITransitionProperty.Position,
+                duration = .5f, from = Vector3.zero, to = new Vector3(30,0,0) };
+            var clip = new UIFormTransition { enabled = true, duration = 1, tracks = new[] { track } };
+            var sampled = new UITransitionSample((RectTransform)root.transform,clip);
+            sampled.Seek(.25f);
+            Assert.That(rect.anchoredPosition.x,Is.EqualTo(23).Within(.001f));
+            sampled.Seek(1);
+            sampled.Seek(.25f);
+            Assert.That(rect.anchoredPosition.x,Is.EqualTo(23).Within(.001f));
+            sampled.Restore();
+            Assert.That(rect.anchoredPosition,Is.EqualTo(new Vector2(8,3)));
+            clip.tracks = new[] { track, new UITransitionTrack { targetPath = "Child", property = track.property,
+                start = .25f, duration = .5f } };
+            Assert.That(UITransitionSample.TryValidate(clip,(RectTransform)root.transform,out _),Is.False);
+        }
+
         [Test] public void RedDotHierarchyReparentsAndRebindingReleasesOnlyItsBinding()
         {
             var tree=new UIRedDotTree();tree.SetParent("Learn","Skills");tree.SetParent("Restore","Skills");
@@ -100514,6 +101234,32 @@ namespace FRFrame.Tests.UIExtensions
     public sealed class UIRuntimeExtensionsPlayModeTests
     {
         private readonly List<Object> _created = new List<Object>();
+
+        [UnityTest]
+        public IEnumerator WorldHealthBarRebindAndPoolReturnRevokePreviousLease()
+        {
+            var root = Track(new GameObject("World bars"));
+            var camera = Track(new GameObject("World camera",typeof(Camera))).GetComponent<Camera>();
+            camera.transform.position = new Vector3(0,0,-10);
+            var bar = WorldHealthBar.CreateDefault(root.transform,0);
+            var canvas = bar.GetComponent<Canvas>();
+            var old = bar.Bind();
+            old.Present(new WorldHealthSnapshot(25,100),Vector3.zero,camera,.02f);
+            Assert.That(canvas.enabled,Is.True);
+            var pool = new GameObjectPoolModule();
+            var key = new ResourceKey("Tests","WorldBar");
+            pool.SetRoot(root.transform);
+            pool.Release(key,"WorldBar",bar.gameObject);
+            Assert.That(pool.TryGet(key),Is.SameAs(bar.gameObject));
+            var next = bar.Bind();
+            next.Present(new WorldHealthSnapshot(80,100),Vector3.zero,camera,.02f);
+            old.Dispose();
+            old.Present(default,Vector3.zero,camera,.02f);
+            Assert.That(canvas.enabled,Is.True);
+            next.Present(new WorldHealthSnapshot(80,100),new Vector3(100,0,0),camera,.02f);
+            Assert.That(canvas.enabled,Is.False);
+            yield return null;
+        }
 
         [UnityTearDown]
         public IEnumerator TearDown()

@@ -13,6 +13,9 @@ namespace FRFrame
     [DisallowMultipleComponent]
     public abstract class UIForm : MonoBehaviour
     {
+        internal UIDefaultAnimationPlayer.Playback DefaultAnimation;
+        internal uint CloseRevision { get; private set; }
+
         public int SerialId { get; internal set; }
         public string FormId { get; internal set; }
         public UIFormConfig Config { get; internal set; }
@@ -90,6 +93,8 @@ namespace FRFrame
 
         internal void InternalOpen(object userData)
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             IsPaused = false;
@@ -107,6 +112,8 @@ namespace FRFrame
 
         internal void InternalBeginClose()
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             State = UIFormState.Closing;
         }
 
@@ -135,6 +142,7 @@ namespace FRFrame
         internal void InternalCover()
         {
             if (IsCovered) return;
+            UIDefaultAnimationPlayer.Stop(this);
             IsCovered = true;
             _eventScopes.ClearVisible();
 
@@ -191,6 +199,8 @@ namespace FRFrame
 
         internal void InternalHide()
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             _eventScopes.ClearVisible();
             for (int i = 0; i < _widgets.Count; i++)
             {
@@ -207,6 +217,8 @@ namespace FRFrame
 
         internal void InternalShow(object userData)
         {
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
             gameObject.SetActive(true);
             SetVisible(true);
             State = UIFormState.Opened;
@@ -217,6 +229,8 @@ namespace FRFrame
         {
             if (State == UIFormState.Disposed)
                 return;
+            CloseRevision++;
+            UIDefaultAnimationPlayer.Stop(this);
 
             ReleaseAllWidgets();
             _eventScopes.Dispose();

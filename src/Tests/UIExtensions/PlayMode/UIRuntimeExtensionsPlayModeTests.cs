@@ -13,6 +13,32 @@ namespace FRFrame.Tests.UIExtensions
     {
         private readonly List<Object> _created = new List<Object>();
 
+        [UnityTest]
+        public IEnumerator WorldHealthBarRebindAndPoolReturnRevokePreviousLease()
+        {
+            var root = Track(new GameObject("World bars"));
+            var camera = Track(new GameObject("World camera",typeof(Camera))).GetComponent<Camera>();
+            camera.transform.position = new Vector3(0,0,-10);
+            var bar = WorldHealthBar.CreateDefault(root.transform,0);
+            var canvas = bar.GetComponent<Canvas>();
+            var old = bar.Bind();
+            old.Present(new WorldHealthSnapshot(25,100),Vector3.zero,camera,.02f);
+            Assert.That(canvas.enabled,Is.True);
+            var pool = new GameObjectPoolModule();
+            var key = new ResourceKey("Tests","WorldBar");
+            pool.SetRoot(root.transform);
+            pool.Release(key,"WorldBar",bar.gameObject);
+            Assert.That(pool.TryGet(key),Is.SameAs(bar.gameObject));
+            var next = bar.Bind();
+            next.Present(new WorldHealthSnapshot(80,100),Vector3.zero,camera,.02f);
+            old.Dispose();
+            old.Present(default,Vector3.zero,camera,.02f);
+            Assert.That(canvas.enabled,Is.True);
+            next.Present(new WorldHealthSnapshot(80,100),new Vector3(100,0,0),camera,.02f);
+            Assert.That(canvas.enabled,Is.False);
+            yield return null;
+        }
+
         [UnityTearDown]
         public IEnumerator TearDown()
         {

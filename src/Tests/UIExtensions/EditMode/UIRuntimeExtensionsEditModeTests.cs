@@ -10,6 +10,31 @@ namespace FRFrame.Tests.UIExtensions
     {
         private readonly List<Object> _created = new List<Object>();
 
+        [Test]
+        public void TransitionSeekUsesTheCapturedPoseAndRejectsOverlappingWrites()
+        {
+            var root = new GameObject("Form",typeof(RectTransform),typeof(CanvasGroup));
+            _created.Add(root);
+            var child = new GameObject("Child",typeof(RectTransform));
+            var rect = (RectTransform)child.transform;
+            rect.SetParent(root.transform,false);
+            rect.anchoredPosition = new Vector2(8,3);
+            var track = new UITransitionTrack { targetPath = "Child", property = UITransitionProperty.Position,
+                duration = .5f, from = Vector3.zero, to = new Vector3(30,0,0) };
+            var clip = new UIFormTransition { enabled = true, duration = 1, tracks = new[] { track } };
+            var sampled = new UITransitionSample((RectTransform)root.transform,clip);
+            sampled.Seek(.25f);
+            Assert.That(rect.anchoredPosition.x,Is.EqualTo(23).Within(.001f));
+            sampled.Seek(1);
+            sampled.Seek(.25f);
+            Assert.That(rect.anchoredPosition.x,Is.EqualTo(23).Within(.001f));
+            sampled.Restore();
+            Assert.That(rect.anchoredPosition,Is.EqualTo(new Vector2(8,3)));
+            clip.tracks = new[] { track, new UITransitionTrack { targetPath = "Child", property = track.property,
+                start = .25f, duration = .5f } };
+            Assert.That(UITransitionSample.TryValidate(clip,(RectTransform)root.transform,out _),Is.False);
+        }
+
         [Test] public void RedDotHierarchyReparentsAndRebindingReleasesOnlyItsBinding()
         {
             var tree=new UIRedDotTree();tree.SetParent("Learn","Skills");tree.SetParent("Restore","Skills");

@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using UnityEditor;
+using UnityEngine;
 
 namespace FRFrame.Editor
 {
@@ -365,7 +367,7 @@ namespace FRFrame.Editor
                     });
                 }
 
-                if (cfg.openAnimation != UIAnimationPreset.None && cfg.openAnimationDuration <= 0f)
+                if (cfg.openTransition?.enabled != true && cfg.openAnimation != UIAnimationPreset.None && cfg.openAnimationDuration <= 0f)
                 {
                     messages.Add(new ValidationMessage
                     {
@@ -379,7 +381,7 @@ namespace FRFrame.Editor
                     });
                 }
 
-                if (cfg.closeAnimation != UIAnimationPreset.None && cfg.closeAnimationDuration <= 0f)
+                if (cfg.closeTransition?.enabled != true && cfg.closeAnimation != UIAnimationPreset.None && cfg.closeAnimationDuration <= 0f)
                 {
                     messages.Add(new ValidationMessage
                     {
@@ -390,6 +392,22 @@ namespace FRFrame.Editor
                         LogicType = cfg.logicType,
                         AssetPath = cfg.assetPath,
                         Message = $"{SafeFormId(cfg)} 配置了关闭动画但 closeAnimationDuration <= 0。"
+                    });
+                }
+                foreach (var pair in new[] { ("打开",cfg.openTransition), ("关闭",cfg.closeTransition) })
+                {
+                    if (pair.Item2?.enabled != true) continue;
+                    var path = UIConfigEditorWindowHelper.TryLoadPrefabAtRuntimeStylePath(cfg.assetPath);
+                    var prefab = string.IsNullOrEmpty(path) ? null : AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    var root = prefab ? prefab.transform as RectTransform : null;
+                    string error = null;
+                    if (prefab && !root) error = "Form Prefab 根需要 RectTransform。";
+                    else if (UITransitionSample.TryValidate(pair.Item2,root,out error,allowFormCanvasGroup:true)) continue;
+                    messages.Add(new ValidationMessage
+                    {
+                        Severity = ValidationSeverity.Error, FormIndex = i, RowId = item.rowId,
+                        FormId = cfg.formId, LogicType = cfg.logicType, AssetPath = cfg.assetPath,
+                        Message = $"{SafeFormId(cfg)} {pair.Item1}多通道 · {error}"
                     });
                 }
             }

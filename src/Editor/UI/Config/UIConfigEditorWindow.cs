@@ -148,7 +148,7 @@ namespace FRFrame.Editor
         }
     }
 
-    public sealed class UIConfigEditorWindow : EditorWindow
+    public sealed partial class UIConfigEditorWindow : EditorWindow
     {
         private const string MenuPath = "FRFrame/UI/UI Config Editor";
         private const string DefaultCreateFolder = "Assets/Resources/UIConfigs";
@@ -331,6 +331,7 @@ namespace FRFrame.Editor
 
         private void OnEnable()
         {
+            Undo.undoRedoPerformed += UndoTransitionDraft;
             RefreshGroups();
         }
 
@@ -355,6 +356,7 @@ namespace FRFrame.Editor
             }
 
             QueryElements();
+            rootVisualElement.Q("transition-editor")?.Add(new IMGUIContainer(DrawTransitionEditor));
             EnsureUnconfiguredToolbar();
             BindToolbarButtons();
             BindInputs();
@@ -1695,6 +1697,7 @@ namespace FRFrame.Editor
 
         private void RefreshFormDetailFromSelection()
         {
+            BindTransitionEditor();
             if (_selectedFormItem == null || _selectedFormItem.data == null)
             {
                 if (_detailTitleLabel != null)
