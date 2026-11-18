@@ -24,15 +24,17 @@ namespace FRFrame
             var current = form.DefaultAnimation;
             if (current == null) return;
             form.DefaultAnimation = null;
-            current.Handle?.Kill();
             current.Restore();
+            current.Handle?.Kill();
         }
 
         private static async UniTask PlayAsync(UIForm form, UIFormConfig config, bool opening, CancellationToken token)
         {
             if (!form || config == null) return;
+            uint revision = form.OperationRevision;
             Stop(form);
-            if (token.IsCancellationRequested || form.IsCovered && config.coverVisualMode != UICoverVisualMode.KeepVisible ||
+            if (form.OperationRevision != revision || token.IsCancellationRequested ||
+                form.IsCovered && config.coverVisualMode != UICoverVisualMode.KeepVisible ||
                 !(form.transform is RectTransform rect) || !form.gameObject.activeInHierarchy) return;
             var group = form.GetComponent<CanvasGroup>();
             UIFormTransition clip = opening ? config.openTransition : config.closeTransition;

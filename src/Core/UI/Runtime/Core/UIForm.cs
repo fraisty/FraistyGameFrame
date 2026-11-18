@@ -15,8 +15,7 @@ namespace FRFrame
     {
         internal UIDefaultAnimationPlayer.Playback DefaultAnimation;
         internal uint OperationRevision { get; private set; }
-        internal bool HasOpened { get; private set; }
-        private bool _hasOpenSession;
+        internal bool HasOpenSession { get; private set; }
 
         // A synchronous callback can request another operation, just as it can during an await.
         internal uint BeginOperation() => ++OperationRevision;
@@ -99,36 +98,39 @@ namespace FRFrame
 
         internal void InternalOpen(object userData)
         {
+            uint revision = OperationRevision;
             UIDefaultAnimationPlayer.Stop(this);
+            if (OperationRevision != revision) return;
             gameObject.SetActive(true);
+            if (OperationRevision != revision) return;
             SetVisible(true);
             IsPaused = false;
             IsCovered = false;
             State = UIFormState.Opened;
-            HasOpened = _hasOpenSession = true;
+            HasOpenSession = true;
             OnOpen(userData);
         }
 
         internal void InternalClose(object userData)
         {
             State = UIFormState.Closed;
-            if (!_hasOpenSession) return;
-            _hasOpenSession = false;
+            if (!HasOpenSession) return;
+            HasOpenSession = false;
             _eventScopes.ClearOpen();
             OnClose(userData);
         }
 
         internal void InternalBeginClose()
         {
-            UIDefaultAnimationPlayer.Stop(this);
             State = UIFormState.Closing;
+            UIDefaultAnimationPlayer.Stop(this);
         }
 
         internal void InternalPreload()
         {
-            gameObject.SetActive(false);
             SetVisible(false);
             State = UIFormState.Preloaded;
+            gameObject.SetActive(false);
         }
 
         internal void InternalPause()
@@ -206,28 +208,34 @@ namespace FRFrame
 
         internal void InternalHide()
         {
+            uint revision = OperationRevision;
             UIDefaultAnimationPlayer.Stop(this);
+            if (OperationRevision != revision) return;
+            SetVisible(false);
+            State = UIFormState.Hidden;
             _eventScopes.ClearVisible();
+            if (OperationRevision != revision) return;
             for (int i = 0; i < _widgets.Count; i++)
             {
                 if (_widgets[i] != null && _widgets[i].IsVisible)
                     _widgets[i].InternalHide();
+                if (OperationRevision != revision) return;
             }
 
-            SetVisible(false);
-            State = UIFormState.Hidden;
             OnHide();
-            if (Config != null && Config.disableGameObjectWhenHidden)
+            if (OperationRevision == revision && Config != null && Config.disableGameObjectWhenHidden)
                 gameObject.SetActive(false);
         }
 
         internal void InternalShow(object userData, bool notify = true)
         {
+            uint revision = OperationRevision;
             UIDefaultAnimationPlayer.Stop(this);
+            if (OperationRevision != revision) return;
             gameObject.SetActive(true);
+            if (OperationRevision != revision) return;
             SetVisible(true);
             State = UIFormState.Opened;
-            _hasOpenSession = true;
             if (notify) OnShow(userData);
         }
 
@@ -236,6 +244,7 @@ namespace FRFrame
             if (State == UIFormState.Disposed)
                 return;
             State = UIFormState.Disposed;
+            HasOpenSession = false;
             UIDefaultAnimationPlayer.Stop(this);
 
             ReleaseAllWidgets();
@@ -534,13 +543,16 @@ namespace FRFrame
         internal bool InternalTryHandleBack() => OnBackRequested();
         protected virtual bool OnBackRequested() => false;
         protected virtual void OnInit(object userData) { }
+        /// <summary>Starts an open session, including a cached reopen after a completed Close.</summary>
         protected virtual void OnOpen(object userData) { }
+        /// <summary>Ends the open session and releases its WhileOpen subscriptions.</summary>
         protected virtual void OnClose(object userData) { }
         protected virtual void OnPause() { }
         protected virtual void OnResume() { }
         protected virtual void OnCover() { }
         protected virtual void OnReveal() { }
         protected virtual void OnHide() { }
+        /// <summary>Shows a form within its current open session after a temporary hide.</summary>
         protected virtual void OnShow(object userData) { }
         protected virtual void OnDepthChanged(int sortingOrder) { }
         protected virtual void OnUpdate(float deltaTime, float unscaledDeltaTime) { }

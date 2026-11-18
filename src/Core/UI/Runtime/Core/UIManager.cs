@@ -23,6 +23,7 @@ namespace FRFrame
             public int SerialId;
             public UniTaskCompletionSource<UIForm> Source;
             public CancellationTokenSource CancellationSource;
+            public bool IsPreload;
             public bool CancelRequested;
         }
 
@@ -37,6 +38,7 @@ namespace FRFrame
         private readonly List<UIForm> _updateForms = new List<UIForm>();
 
         private int _serialSeed;
+        private bool _destroying;
         private GameObject _uiRootGo;
         private Canvas _rootCanvas;
         private Camera _uiCamera;
@@ -97,8 +99,11 @@ namespace FRFrame
 
         public override void Destroy()
         {
+            if (_destroying) return;
+            _destroying = true;
             SceneManager.sceneLoaded -= OnSceneLoaded;
             CancelAllLoading();
+            _sceneCancellationSource.Cancel();
             var forms = new List<UIForm>(_formsBySerialId.Values);
             for (int i = 0; i < forms.Count; i++)
             {
@@ -429,6 +434,7 @@ namespace FRFrame
 
         public async UniTask<UIForm> OpenAsync(string formId, UIOpenOptions options)
         {
+            if (_destroying) return null;
             options = UIOpenOptions.Normalize(options);
 
             if (string.IsNullOrEmpty(formId))
@@ -454,11 +460,11 @@ namespace FRFrame
                 if (!config.allowMultiInstance)
                 {
                     UIForm existing = Get(formId);
-                    if ((existing == null || existing.State == UIFormState.Initialized) &&
-                        _loadingFormsById.TryGetValue(formId, out UILoadingOperation loadingOperation))
+                    if (_loadingFormsById.TryGetValue(formId, out UILoadingOperation loadingOperation) &&
+                        (existing == null || existing.State == UIFormState.Initialized && !loadingOperation.IsPreload))
                     {
-                        existing = await loadingOperation.Source.Task;
-                        return existing == null ? null : await OpenExistingFormAsync(existing, options, cancellationToken);
+                        var (canceled, loaded) = await loadingOperation.Source.Task.AttachExternalCancellation(cancellationToken).SuppressCancellationThrow();
+                        return canceled || loaded == null ? null : await OpenExistingFormAsync(loaded, options, cancellationToken);
                     }
                     if (existing != null)
                         return await OpenExistingFormAsync(existing, options, cancellationToken);
@@ -466,15 +472,11 @@ namespace FRFrame
 
                 int serialId = ++_serialSeed;
                 UILoadingOperation operation = CreateLoadingOperation(formId, serialId, config, linkedSource);
+                UIForm opened = null;
 
                 try
                 {
-                    GameObject instance = string.IsNullOrEmpty(config.assetPath)
-                        ? CreateCodeFormRoot(formId, GetGroupRoot(config.layer))
-                        : await FRFM.Resource.InstantiateAsync(config.assetPath, GetGroupRoot(config.layer), new ResourceLoadOptions
-                        {
-                            PackageName = ResolvePackageName(config),
-                        });
+                    GameObject instance = await InstantiateFormAsync(config);
 
                     if (instance == null || operation.CancelRequested || cancellationToken.IsCancellationRequested)
                     {
@@ -498,14 +500,12 @@ namespace FRFrame
 
                     uint revision = form.BeginOperation();
                     RegisterForm(form, config);
-                    UIForm opened = await OpenExistingFormAsync(form, options, cancellationToken, revision);
-                    operation.Source?.TrySetResult(opened);
+                    opened = await OpenExistingFormAsync(form, options, cancellationToken, revision);
                     return opened;
                 }
                 finally
                 {
-                    RemoveLoadingOperation(operation);
-                    operation.Source?.TrySetResult(null);
+                    FinishLoadingOperation(operation, opened);
                 }
             }
             finally
@@ -640,7 +640,9 @@ namespace FRFrame
 
             uint revision = form.BeginOperation();
             form.InternalBeginClose();
+            if (!OwnsFormOperation(form, revision)) return;
             CancelLoading(form.SerialId);
+            if (!OwnsFormOperation(form, revision)) return;
             if (form.IsVisible)
                 await form.InternalPlayCloseAnimationAsync(cancellationToken).SuppressCancellationThrow();
             if (!OwnsFormOperation(form, revision))
@@ -664,8 +666,9 @@ namespace FRFrame
             if (!IsRegistered(form))
                 return;
 
-            form.BeginOperation();
+            uint revision = form.BeginOperation();
             CancelLoading(form.SerialId);
+            if (!OwnsFormOperation(form, revision)) return;
             form.InternalHide();
             RefreshAllVisualStates();
         }
@@ -685,12 +688,14 @@ namespace FRFrame
             if (!IsRegistered(form))
                 return;
 
-            form.BeginOperation();
+            uint revision = form.BeginOperation();
             CancelLoading(form.SerialId);
+            if (!OwnsFormOperation(form, revision)) return;
             if (form.Config != null && form.Config.bringToFrontOnOpen)
                 form.Group?.BringToFront(form);
 
-            if (form.HasOpened) form.InternalShow(userData, notify: form.State != UIFormState.Closing || !form.IsVisible);
+            if (!OwnsFormOperation(form, revision)) return;
+            if (form.HasOpenSession) form.InternalShow(userData, notify: form.State != UIFormState.Closing || !form.IsVisible);
             else form.InternalOpen(userData);
             RefreshAllVisualStates();
         }
@@ -705,71 +710,90 @@ namespace FRFrame
             Show(typeof(T).Name, userData);
         }
 
+        /// <summary>An instance warmup shares pending resource loads with Open. Once registered,
+        /// the instance can be opened immediately, canceling its unfinished handler.</summary>
         public async UniTask PreloadAsync(string formId, UIPreloadMode mode = UIPreloadMode.AssetOnly, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrEmpty(formId) || !_configRegistry.TryGet(formId, out UIFormConfig config))
-                return;
+            if (_destroying || string.IsNullOrEmpty(formId) || !_configRegistry.TryGet(formId, out UIFormConfig config)) return;
 
+            using var linked = CreateLinkedCancellation(cancellationToken, 0);
+            var token = linked.Token;
+            if (token.IsCancellationRequested) return;
+
+            UILoadingOperation operation = null;
+            if (mode != UIPreloadMode.AssetOnly)
+            {
+                if (_loadingFormsById.TryGetValue(formId, out var pending))
+                {
+                    await pending.Source.Task.AttachExternalCancellation(token).SuppressCancellationThrow();
+                    return;
+                }
+                if (Get(formId) != null) return;
+                operation = CreateLoadingOperation(formId, ++_serialSeed, config, linked, isPreload: true);
+            }
             UIPreloadInfo info = GetOrCreatePreloadInfo(formId, config, mode);
             info.Mode = mode;
 
-            if ((mode == UIPreloadMode.AssetOnly || mode == UIPreloadMode.AssetAndInstance) && !string.IsNullOrEmpty(config.assetPath))
+            UIForm form = null;
+            UIForm warmed = null;
+            uint revision = 0;
+            try
             {
-                await FRFM.Resource.PreloadAssetAsync<GameObject>(config.assetPath, new ResourceLoadOptions
+                if (mode != UIPreloadMode.InstanceWarmup && !string.IsNullOrEmpty(config.assetPath))
                 {
-                    PackageName = ResolvePackageName(config),
-                    TrackReference = false,
-                    AllowCache = true
-                });
+                    var asset = await FRFM.Resource.PreloadAssetAsync<GameObject>(config.assetPath, new ResourceLoadOptions
+                    {
+                        PackageName = ResolvePackageName(config),
+                        TrackReference = false,
+                        AllowCache = true
+                    });
+                    if (!asset || token.IsCancellationRequested) return;
+                    info.AssetPreloaded = true;
+                    info.LastPreloadTime = Time.realtimeSinceStartup;
+                }
+                if (operation == null) return;
 
-                if (cancellationToken.IsCancellationRequested)
+                GameObject instance = await InstantiateFormAsync(config);
+                if (instance == null || token.IsCancellationRequested || Get(formId) != null)
+                {
+                    if (instance != null) RecycleOrDestroyFormInstance(instance, config);
                     return;
+                }
 
-                info.AssetPreloaded = true;
-                info.LastPreloadTime = Time.realtimeSinceStartup;
-            }
+                instance.SetActive(false);
+                form = CreateFormInstance(instance, config, formId, operation.SerialId, null);
+                if (form == null)
+                {
+                    RecycleOrDestroyFormInstance(instance, config);
+                    return;
+                }
+                if (token.IsCancellationRequested)
+                {
+                    DisposeForm(form, null);
+                    return;
+                }
 
-            if (mode == UIPreloadMode.AssetOnly)
-                return;
+                revision = form.BeginOperation();
+                form.ApplyOpenOptions(UIOpenOptions.Default);
+                RegisterForm(form, config);
+                if (!OwnsFormOperation(form, revision)) return;
+                if (!token.IsCancellationRequested && form is IUIPreloadHandler handler &&
+                    await handler.OnPreloadAsync(token).AttachExternalCancellation(token).SuppressCancellationThrow())
+                    return;
+                if (!OwnsFormOperation(form, revision) || token.IsCancellationRequested) return;
 
-            if (Get(formId) != null)
-            {
+                form.InternalPreload();
+                if (!OwnsFormOperation(form, revision)) return;
+                warmed = form;
                 info.InstanceWarmed = true;
                 info.LastPreloadTime = Time.realtimeSinceStartup;
-                return;
+                RefreshAllVisualStates();
             }
-
-            GameObject instance = string.IsNullOrEmpty(config.assetPath)
-                ? CreateCodeFormRoot(formId, GetGroupRoot(config.layer))
-                : await FRFM.Resource.InstantiateAsync(config.assetPath, GetGroupRoot(config.layer), new ResourceLoadOptions
-                {
-                    PackageName = ResolvePackageName(config),
-                });
-
-            if (instance == null || cancellationToken.IsCancellationRequested)
+            finally
             {
-                if (instance != null)
-                    RecycleOrDestroyFormInstance(instance, config);
-                return;
+                if (warmed == null && OwnsFormOperation(form, revision)) DisposeForm(form, null);
+                if (operation != null) FinishLoadingOperation(operation, warmed);
             }
-
-            instance.SetActive(false);
-            int serialId = ++_serialSeed;
-            UIForm form = CreateFormInstance(instance, config, formId, serialId, null);
-            if (form == null)
-            {
-                RecycleOrDestroyFormInstance(instance, config);
-                return;
-            }
-
-            RegisterForm(form, config);
-            form.ApplyOpenOptions(UIOpenOptions.Default);
-            if (form is IUIPreloadHandler preloadHandler)
-                await preloadHandler.OnPreloadAsync(cancellationToken).SuppressCancellationThrow();
-            form.InternalPreload();
-            info.InstanceWarmed = true;
-            info.LastPreloadTime = Time.realtimeSinceStartup;
-            RefreshAllVisualStates();
         }
 
         public UniTask PreloadAsync<T>(UIPreloadMode mode = UIPreloadMode.AssetOnly, CancellationToken cancellationToken = default) where T : UIForm
@@ -1080,7 +1104,7 @@ namespace FRFrame
         }
 
         private bool IsRegistered(UIForm form) =>
-            form && _formsBySerialId.TryGetValue(form.SerialId, out var current) && ReferenceEquals(form, current);
+            !_destroying && form && _formsBySerialId.TryGetValue(form.SerialId, out var current) && ReferenceEquals(form, current);
 
         private bool OwnsFormOperation(UIForm form, uint revision) =>
             IsRegistered(form) && form.OperationRevision == revision;
@@ -1089,12 +1113,18 @@ namespace FRFrame
         {
             if (registeredRevision.HasValue ? !OwnsFormOperation(form, registeredRevision.Value) : !IsRegistered(form)) return null;
             uint revision = registeredRevision ?? form.BeginOperation();
+            if (_loadingFormsBySerialId.TryGetValue(form.SerialId, out var pending) && pending.IsPreload)
+            {
+                CancelLoading(pending);
+                if (!OwnsFormOperation(form, revision)) return null;
+            }
             form.ApplyOpenOptions(options);
             ApplyOpenParam(form, options.UserData, options.StrongParamType);
             if (!OwnsFormOperation(form, revision)) return null;
             if (form.Config != null && (options.BringToFront ?? form.Config.bringToFrontOnOpen))
                 form.Group?.BringToFront(form);
 
+            if (!OwnsFormOperation(form, revision)) return null;
             if (!cancellationToken.IsCancellationRequested &&
                 form.State != UIFormState.Opened && form.State != UIFormState.Closing)
                 await _maskService.PrepareBlurAsync(form, revision, cancellationToken);
@@ -1106,7 +1136,7 @@ namespace FRFrame
                 return null;
             }
 
-            if (!form.HasOpened)
+            if (!form.HasOpenSession)
                 form.InternalOpen(options.UserData);
             else if (form.State == UIFormState.Hidden || form.State == UIFormState.Closing)
                 form.InternalShow(options.UserData, notify: form.State != UIFormState.Closing || !form.IsVisible);
@@ -1120,6 +1150,17 @@ namespace FRFrame
                 await form.InternalPlayOpenAnimationAsync(cancellationToken).SuppressCancellationThrow();
             // An already opened form stays open if only its animation was cancelled.
             return OwnsFormOperation(form, revision) && form.State == UIFormState.Opened ? form : null;
+        }
+
+        private UniTask<GameObject> InstantiateFormAsync(UIFormConfig config)
+        {
+            Transform parent = GetGroupRoot(config.layer);
+            return string.IsNullOrEmpty(config.assetPath)
+                ? UniTask.FromResult(CreateCodeFormRoot(config.formId, parent))
+                : FRFM.Resource.InstantiateAsync(config.assetPath, parent, new ResourceLoadOptions
+                {
+                    PackageName = ResolvePackageName(config)
+                });
         }
 
         private GameObject CreateCodeFormRoot(string formId, Transform parent)
@@ -1192,14 +1233,17 @@ namespace FRFrame
 
             form.BeginOperation();
             RemoveFromNavigation(form);
-            form.Group?.Remove(form);
             _formsBySerialId.Remove(form.SerialId);
             if (_formsById.TryGetValue(form.FormId, out var list))
             {
                 list.Remove(form);
                 if (list.Count == 0)
+                {
                     _formsById.Remove(form.FormId);
+                    if (_preloadInfos.TryGetValue(form.FormId, out var info)) info.InstanceWarmed = false;
+                }
             }
+            form.Group?.Remove(form);
             CancelLoading(form.SerialId);
 
             form.InternalDispose();
@@ -1234,20 +1278,28 @@ namespace FRFrame
             }
         }
 
-        private UILoadingOperation CreateLoadingOperation(string formId, int serialId, UIFormConfig config, CancellationTokenSource cancellationSource)
+        private UILoadingOperation CreateLoadingOperation(string formId, int serialId, UIFormConfig config, CancellationTokenSource cancellationSource, bool isPreload = false)
         {
+            bool reserveById = isPreload || !config.allowMultiInstance;
             UILoadingOperation operation = new UILoadingOperation
             {
                 FormId = formId,
                 SerialId = serialId,
                 CancellationSource = cancellationSource,
-                Source = config.allowMultiInstance ? null : new UniTaskCompletionSource<UIForm>()
+                IsPreload = isPreload,
+                Source = reserveById ? new UniTaskCompletionSource<UIForm>() : null
             };
             _loadingSerialIds.Add(serialId);
             _loadingFormsBySerialId.Add(serialId, operation);
-            if (!config.allowMultiInstance)
+            if (reserveById)
                 _loadingFormsById.Add(formId, operation);
             return operation;
+        }
+
+        private void FinishLoadingOperation(UILoadingOperation operation, UIForm form)
+        {
+            RemoveLoadingOperation(operation);
+            operation.Source?.TrySetResult(form);
         }
 
         private void RemoveLoadingOperation(UILoadingOperation operation)

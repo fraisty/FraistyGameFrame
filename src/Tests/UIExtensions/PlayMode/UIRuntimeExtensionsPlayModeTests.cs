@@ -22,13 +22,7 @@ namespace FRFrame.Tests.UIExtensions
 
         private async UniTask VerifyFormOwnership()
         {
-            var root = Track(new GameObject("Form operation test", typeof(RectTransform)));
-            var manager = new UIManager();
-            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
-            typeof(UIManager).GetField("_configRegistry", fields).SetValue(manager, new UIConfigRegistry());
-            typeof(UIManager).GetField("_maskService", fields).SetValue(manager, new UIMaskService());
-            var groups = (Dictionary<UIGroupLayer, UIGroup>)typeof(UIManager).GetField("_groups", fields).GetValue(manager);
-            groups.Add(UIGroupLayer.Normal, new UIGroup(UIGroupLayer.Normal, "Test", root.transform, 0));
+            var manager = CreateFormManager();
             manager.RegisterCodeFormConfig<FormOperationTestProbe>();
             try
             {
@@ -36,6 +30,8 @@ namespace FRFrame.Tests.UIExtensions
                 options.PlayAnimation = false;
                 options.UserData = (System.Action<UIForm>)manager.Hide;
                 string id = nameof(FormOperationTestProbe);
+                Assert.That(manager.ConfigRegistry.TryGet(id, out var config), Is.True);
+                config.disableGameObjectWhenHidden = true;
                 Assert.That(await manager.OpenAsync(id,options), Is.Null, "A synchronous Hide in OnOpen owns the result.");
                 var form = manager.Get<FormOperationTestProbe>();
                 Assert.That(form.State, Is.EqualTo(UIFormState.Hidden));
@@ -55,14 +51,152 @@ namespace FRFrame.Tests.UIExtensions
                 Assert.That(form.Received, Is.EqualTo(1));
                 Assert.That(form.State, Is.EqualTo(UIFormState.Opened));
 
+                form.Hidden = () => manager.Show(form);
+                manager.Hide(form);
+                form.Hidden = null;
+                Assert.That(form.State, Is.EqualTo(UIFormState.Opened));
+                Assert.That(form.gameObject.activeInHierarchy, Is.True, "OnHide's synchronous Show owns activation.");
+                form.Signal.Invoke();
+                Assert.That(form.Received, Is.EqualTo(2));
+
                 form.CloseGate = null;
                 await manager.CloseAsync(form);
                 form.Signal.Invoke();
                 Assert.That(form.Closed, Is.EqualTo(1));
-                Assert.That(form.Received, Is.EqualTo(1));
+                Assert.That(form.Received, Is.EqualTo(2));
                 Assert.That(form.State, Is.EqualTo(UIFormState.Hidden));
+
+                Assert.That(await manager.OpenAsync(id,options), Is.SameAs(form));
+                Assert.That(form.Opened, Is.EqualTo(2));
+                Assert.That(form.Shown, Is.EqualTo(2), "A completed Close requires a new OnOpen, not an extra OnShow.");
+                form.Signal.Invoke();
+                Assert.That(form.Received, Is.EqualTo(3));
+                await manager.CloseAsync(form);
+                form.Signal.Invoke();
+                Assert.That(form.Closed, Is.EqualTo(2));
+                Assert.That(form.Received, Is.EqualTo(3));
             }
             finally { manager.Destroy(); }
+        }
+
+        [UnityTest]
+        public IEnumerator PreloadSharesPendingWarmupAndLosesOwnershipToExplicitFormOperations() => VerifyPreloadOwnership().ToCoroutine();
+
+        private async UniTask VerifyPreloadOwnership()
+        {
+            var manager = CreateFormManager();
+            var options = UIOpenOptions.Default;
+            options.PlayAnimation = false;
+            CancellationToken handlerToken = default;
+            UniTaskCompletionSource gate = null;
+
+            UniTask Warm(string id, CancellationToken token = default)
+            {
+                manager.RegisterConfig(new UIFormConfig
+                {
+                    formId = id, logicType = typeof(FormOperationTestProbe).FullName,
+                    allowMultiInstance = false,
+                    closeMode = UIFormCloseMode.Destroy, disableGameObjectWhenHidden = true
+                });
+                gate = new UniTaskCompletionSource();
+                return manager.PreloadAsync(id, UIPreloadMode.InstanceWarmup, token);
+            }
+
+            FormOperationTestProbe GetProbe(string id) => (FormOperationTestProbe)manager.Get(id);
+
+            FormOperationTestProbe.PreloadHandler = token =>
+            {
+                handlerToken = token;
+                return gate.Task;
+            };
+            try
+            {
+                var warm = Warm("warm-shared");
+                var same = manager.PreloadAsync("warm-shared", UIPreloadMode.InstanceWarmup);
+                Assert.That(same.Status, Is.EqualTo(UniTaskStatus.Pending));
+                Assert.That(manager.GetAll("warm-shared"), Has.Count.EqualTo(1));
+                var preloaded = GetProbe("warm-shared");
+                Assert.That(preloaded.State, Is.EqualTo(UIFormState.Initialized));
+                gate.TrySetResult();
+                await warm;
+                await same;
+                Assert.That(preloaded.State, Is.EqualTo(UIFormState.Preloaded));
+                Assert.That(preloaded.gameObject.activeSelf, Is.False);
+                Assert.That(manager.IsPreloaded("warm-shared"), Is.True);
+                Assert.That(await manager.OpenAsync("warm-shared",options), Is.SameAs(preloaded));
+                Assert.That(preloaded.Opened, Is.EqualTo(1));
+
+                warm = Warm("warm-open");
+                var opened = GetProbe("warm-open");
+                Assert.That(await manager.OpenAsync("warm-open", options), Is.SameAs(opened));
+                Assert.That(handlerToken.IsCancellationRequested, Is.True);
+                await warm;
+                gate.TrySetResult();
+                Assert.That(opened.State, Is.EqualTo(UIFormState.Opened));
+                Assert.That(opened.gameObject.activeSelf, Is.True);
+                Assert.That(manager.IsPreloaded("warm-open"), Is.False);
+
+                warm = Warm("warm-close");
+                var closed = GetProbe("warm-close");
+                await manager.CloseAsync(closed.SerialId);
+                await warm;
+                gate.TrySetResult();
+                Assert.That(closed.State, Is.EqualTo(UIFormState.Disposed));
+                Assert.That(closed.Closed, Is.Zero);
+                Assert.That(closed.Disposed, Is.EqualTo(1));
+                Assert.That(manager.Get("warm-close"), Is.Null);
+
+                warm = Warm("warm-reenter");
+                var reentered = GetProbe("warm-reenter");
+                using (handlerToken.Register(() => manager.Show(reentered)))
+                    await manager.CloseAsync(reentered);
+                await warm;
+                gate.TrySetResult();
+                Assert.That(reentered.State, Is.EqualTo(UIFormState.Opened));
+                Assert.That(reentered.CloseAnimations, Is.Zero);
+
+                using var cancel = new CancellationTokenSource();
+                warm = Warm("warm-cancel", cancel.Token);
+                var canceled = GetProbe("warm-cancel");
+                var waiter = manager.PreloadAsync("warm-cancel", UIPreloadMode.InstanceWarmup);
+                cancel.Cancel();
+                await warm;
+                await waiter;
+                gate.TrySetResult();
+                Assert.That(canceled.State, Is.EqualTo(UIFormState.Disposed));
+                Assert.That(canceled.Disposed, Is.EqualTo(1));
+                Assert.That(manager.Get("warm-cancel"), Is.Null);
+                Assert.That(manager.IsPreloaded("warm-cancel"), Is.False);
+
+                warm = Warm("warm-destroy");
+                var destroyed = GetProbe("warm-destroy");
+                manager.Destroy();
+                await warm;
+                gate.TrySetResult();
+                Assert.That(handlerToken.IsCancellationRequested, Is.True);
+                Assert.That(destroyed.State, Is.EqualTo(UIFormState.Disposed));
+                Assert.That(destroyed.Disposed, Is.EqualTo(1));
+                Assert.That(manager.IsAnyLoading(), Is.False);
+                Assert.That(manager.Get("warm-destroy"), Is.Null);
+            }
+            finally
+            {
+                FormOperationTestProbe.PreloadHandler = null;
+                manager.Destroy();
+                gate?.TrySetResult();
+            }
+        }
+
+        private UIManager CreateFormManager()
+        {
+            var root = Track(new GameObject("Form operation test", typeof(RectTransform)));
+            var manager = new UIManager();
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(UIManager).GetField("_configRegistry", fields).SetValue(manager, new UIConfigRegistry());
+            typeof(UIManager).GetField("_maskService", fields).SetValue(manager, new UIMaskService());
+            var groups = (Dictionary<UIGroupLayer, UIGroup>)typeof(UIManager).GetField("_groups", fields).GetValue(manager);
+            groups.Add(UIGroupLayer.Normal, new UIGroup(UIGroupLayer.Normal, "Test", root.transform, 0));
+            return manager;
         }
 
         [UnityTest]
@@ -308,11 +442,16 @@ namespace FRFrame.Tests.UIExtensions
         }
     }
 
-    public sealed class FormOperationTestProbe : UIForm
+    public sealed class FormOperationTestProbe : UIForm, IUIPreloadHandler
     {
         internal readonly UnityEvent Signal = new UnityEvent();
+        internal static System.Func<CancellationToken, UniTask> PreloadHandler;
+        internal System.Action Hidden;
         internal UniTaskCompletionSource CloseGate;
-        internal int Opened, Shown, Closed, Received;
+        internal int Opened, Shown, Closed, Received, CloseAnimations, Disposed;
+
+        public UniTask OnPreloadAsync(CancellationToken cancellationToken) =>
+            PreloadHandler?.Invoke(cancellationToken) ?? UniTask.CompletedTask;
 
         protected override void OnOpen(object userData)
         {
@@ -322,8 +461,13 @@ namespace FRFrame.Tests.UIExtensions
         }
 
         protected override void OnShow(object userData) => Shown++;
+        protected override void OnHide() => Hidden?.Invoke();
         protected override void OnClose(object userData) => Closed++;
-        protected override UniTask PlayCloseAnimationAsync(CancellationToken cancellationToken) =>
-            CloseGate?.Task ?? UniTask.CompletedTask;
+        protected override void OnDispose() => Disposed++;
+        protected override UniTask PlayCloseAnimationAsync(CancellationToken cancellationToken)
+        {
+            CloseAnimations++;
+            return CloseGate?.Task ?? UniTask.CompletedTask;
+        }
     }
 }
