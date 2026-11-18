@@ -34,7 +34,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         private GameplayGraphCompiler(GameplaySkillDocumentAsset document, GameplayAuthoringGraph graph, GameplayAuthoringBuildContext context)
         {
             _document = document; _graph = graph; _context = context;
-            _conditionalInputs=GameplayGraphContextPolicy.ConditionalInputs(graph);
+            if(document!=null)_conditionalInputs=GameplayGraphContextPolicy.ConditionalInputs(graph);
             _nodes = graph.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
             _definitions = graph.LocalDefinitions.ToDictionary(n => n.Id, StringComparer.Ordinal);
             _timelines = graph.Timelines.ToDictionary(n => n.Id, StringComparer.Ordinal);
@@ -147,7 +147,30 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 visiting.Remove(id); done.Add(id);
             };
             foreach (string id in nodes.Keys) visit(id);
-            if(!v.HasErrors)GameplayGraphContextPolicy.Validate(graph,v,path);
+            if (!v.HasErrors)
+            {
+                foreach (var reachable in GameplayGraphContextPolicy.Reachable(graph))
+                {
+                    nodes.TryGetValue(reachable, out var node);
+                    definitions.TryGetValue(reachable, out var definition);
+                    object value = (node?.Payload as GameplayActionNodePayload)?.Action ?? (object)definition?.Payload;
+                    string reason = GameplayActionArrayPolicy.ScopeReason(value, graph.Scope);
+                    if (reason != null) v.Error(path + "/" + reachable, reason);
+                    var bindings = node?.Payload.Definitions ?? definition?.Definitions;
+                    if (bindings == null) continue;
+                    foreach (var binding in bindings)
+                    {
+                        reason = GameplayActionArrayPolicy.ScopeReason(binding.External, graph.Scope);
+                        if (reason != null) v.Error(path + "/" + reachable + "." + binding.PropertyPath, reason);
+                    }
+                }
+                try
+                {
+                    GameplayGraphContextPolicy.Validate(graph, v, path);
+                    ValidateActionOrder(graph);
+                }
+                catch (InvalidOperationException error) { v.Error(path, error.Message); }
+            }
             foreach(var local in graph.LocalDefinitions)foreach(var slot in GameplayGraphEffectCallbacks.Slots(local.Payload))
                 if(!graph.Connections.Any(e=>e.FromNodeId==local.Id&&e.OutputPortKey==slot.Key)&&!local.Definitions.Any(b=>b.PropertyPath==slot.Path))
                     v.Warning(path+"/"+local.Id+"."+slot.Path,"生命周期回调待重连：保留参数，不参与运行；无活动溢出执行器时拒绝溢出。");
@@ -178,12 +201,41 @@ namespace FRFrame.Gameplay.Authoring.Graph
         public static void ValidateActionOrder(GameplayAuthoringGraph graph)
         {
             var compiler = new GameplayGraphCompiler(null, graph, new GameplayAuthoringBuildContext());
+            var reachable = GameplayGraphContextPolicy.Reachable(graph);
+            var checkedNodes = new HashSet<(string id, bool guarded)>();
+            foreach (string rule in graph.AdditionalRuleNodeIds.Prepend(graph.PrimaryRuleNodeId))
+                CheckOutput(rule, "Actions", false);
+            foreach (var definition in graph.LocalDefinitions.Where(d => reachable.Contains(d.Id)))
+                foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload))
+                    CheckOutput(definition.Id, GameplayGraphEffectCallbacks.ActionKey(port), false);
             foreach (var timeline in graph.Timelines)
             {
-                var reachable=GameplayGraphContextPolicy.Reachable(graph);
+                if (!reachable.Contains(timeline.Id)) continue;
                 bool owned=graph.Nodes.Any(n=>reachable.Contains(n.Id)&&n.Payload.Definitions.Any(b=>b.LocalId==timeline.Id)&&(n.Payload as GameplayActionNodePayload)?.Action is GameplayOwnedSequenceActionAuthoring);
+                foreach (var entry in timeline.Events)
+                    Check(new[] { entry.EntryNodeId }, owned && entry.TimeSeconds > 0, entry.Id);
                 if (owned) foreach (var entry in timeline.Events.Where(e => e.TimeSeconds > 0))
                     compiler.ValidateGuardedArray(new[] { entry.EntryNodeId }, new HashSet<string>());
+            }
+
+            void CheckOutput(string id, string port, bool guarded) =>
+                Check(compiler.Edges(id, port).Select(e => e.ToNodeId), guarded, id + "." + port);
+            void Check(IEnumerable<string> entries, bool guarded, string source)
+            {
+                var ids = new List<string>();
+                void Append(string id)
+                {
+                    ids.Add(id);
+                    foreach (var edge in compiler.Edges(id, "Then")) Append(edge.ToNodeId);
+                }
+                foreach (string id in entries) Append(id);
+                var actions = ids.Select(id => ((GameplayActionNodePayload)compiler._nodes[id].Payload).Action).ToArray();
+                string reason = GameplayActionArrayPolicy.PlacementReason(actions, guarded);
+                if (reason != null) throw new InvalidOperationException(source + " · " + reason);
+                for (int i = 0; i < ids.Count; i++)
+                    if (checkedNodes.Add((ids[i], guarded)))
+                        foreach (var port in GameplayGraphFields.ActionArrays(actions[i]))
+                            CheckOutput(ids[i], port.Path, guarded);
             }
         }
 

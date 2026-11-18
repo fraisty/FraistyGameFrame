@@ -411,6 +411,7 @@ Gameplay/
       GameplayAttributeAbilityCostAuthoring.cs
     Graph/
       GameplayAuthoringBuildContext.Graph.cs
+      GameplayAuthoringContracts.cs
       GameplayAuthoringGraph.cs
       GameplayContinuationDefinitionData.cs
       GameplayEffectDefinitionData.cs
@@ -60055,6 +60056,102 @@ namespace FRFrame.Gameplay.Authoring
 }
 ````
 
+## File: Gameplay/Authoring/Graph/GameplayAuthoringContracts.cs
+````csharp
+using System;
+using System.Collections.Generic;
+
+namespace FRFrame.Gameplay.Authoring.Graph
+{
+    /// <summary>A Player-visible scope requirement. A shared asset may declare its own scope.</summary>
+    public interface IGameplayScopedAuthoring
+    {
+        string RequiredScope { get; }
+    }
+
+    /// <summary>May disable a real action-array output or the existing Then output.</summary>
+    public interface IGameplayGraphPortConstraint
+    {
+        string UnavailableOutput(string port);
+    }
+
+    /// <summary>Declares input requirements and the actual context delivered by each output.</summary>
+    public interface IGameplayGraphContextContract
+    {
+        GameplayGraphContextPolicy.Requirement RequiredInputs { get; }
+        GameplayGraphContextPolicy.Inputs OutputInputs(string port, GameplayGraphContextPolicy.Inputs input);
+    }
+
+    /// <summary>Validates one occurrence in the actual ordered execution array.</summary>
+    public interface IGameplayActionPlacementConstraint
+    {
+        string PlacementReason(IReadOnlyList<GameplaySkillActionAuthoring> actions, int index, bool guarded);
+    }
+
+    public static class GameplayActionArrayPolicy
+    {
+        public static string ScopeReason(object authoring, string scope)
+        {
+            if (!(authoring is IGameplayScopedAuthoring value)) return null;
+            try
+            {
+                string required = value.RequiredScope;
+                return !string.IsNullOrEmpty(required) && !string.Equals(required, scope, StringComparison.Ordinal)
+                    ? $"此配置需要 {required} Scope。" : null;
+            }
+            catch (Exception error) { return $"{authoring.GetType().Name} Scope 合同失败 · {error.Message}"; }
+        }
+
+        public static string PlacementReason(IReadOnlyList<GameplaySkillActionAuthoring> actions, bool guarded)
+        {
+            for (int i = 0; i < actions.Count; i++)
+                if (actions[i] is IGameplayActionPlacementConstraint constraint)
+                {
+                    try
+                    {
+                        string reason = constraint.PlacementReason(actions, i, guarded);
+                        if (reason != null) return $"动作 {i + 1} ({actions[i].GetType().Name}) · {reason}";
+                    }
+                    catch (Exception error) { return $"动作 {i + 1} 的顺序合同失败 · {error.Message}"; }
+                }
+            return null;
+        }
+
+        /// <summary>Shared raw array validation used by Player authoring and editor placement checks.</summary>
+        internal static void ValidateArray(GameplaySkillActionAuthoring[] actions, string scope,
+            GameplayAuthoringValidationContext validation, string path)
+        {
+            if (actions == null) return;
+            string placement = PlacementReason(actions, false);
+            if (placement != null) validation.Error(path, placement);
+            for (int i = 0; i < actions.Length; i++)
+            {
+                var action = actions[i];
+                string source = path + "[" + i + "]";
+                string reason = ScopeReason(action, scope);
+                if (reason != null) validation.Error(source, reason);
+                ValidateCallbacks(action, scope, validation, source);
+            }
+        }
+
+        internal static void ValidateCallbacks(object payload, string scope, GameplayAuthoringValidationContext validation, string path)
+        {
+            foreach (var slot in GameplayGraphFields.ActionArrays(payload))
+            {
+                var actions = (GameplaySkillActionAuthoring[])slot.Value;
+                string location = path + "." + slot.Path;
+                if (actions?.Length > 0 && slot.Owner is IGameplayGraphPortConstraint)
+                {
+                    string reason = GameplayGraphPortPolicy.Unavailable(slot.Owner, slot.Field.Name);
+                    if (reason != null) validation.Error(location, reason);
+                }
+                ValidateArray(actions, scope, validation, location);
+            }
+        }
+    }
+}
+````
+
 ## File: Gameplay/Authoring/Graph/GameplayAuthoringGraph.cs
 ````csharp
 using System;
@@ -60453,7 +60550,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         private GameplayGraphCompiler(GameplaySkillDocumentAsset document, GameplayAuthoringGraph graph, GameplayAuthoringBuildContext context)
         {
             _document = document; _graph = graph; _context = context;
-            _conditionalInputs=GameplayGraphContextPolicy.ConditionalInputs(graph);
+            if(document!=null)_conditionalInputs=GameplayGraphContextPolicy.ConditionalInputs(graph);
             _nodes = graph.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
             _definitions = graph.LocalDefinitions.ToDictionary(n => n.Id, StringComparer.Ordinal);
             _timelines = graph.Timelines.ToDictionary(n => n.Id, StringComparer.Ordinal);
@@ -60566,7 +60663,30 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 visiting.Remove(id); done.Add(id);
             };
             foreach (string id in nodes.Keys) visit(id);
-            if(!v.HasErrors)GameplayGraphContextPolicy.Validate(graph,v,path);
+            if (!v.HasErrors)
+            {
+                foreach (var reachable in GameplayGraphContextPolicy.Reachable(graph))
+                {
+                    nodes.TryGetValue(reachable, out var node);
+                    definitions.TryGetValue(reachable, out var definition);
+                    object value = (node?.Payload as GameplayActionNodePayload)?.Action ?? (object)definition?.Payload;
+                    string reason = GameplayActionArrayPolicy.ScopeReason(value, graph.Scope);
+                    if (reason != null) v.Error(path + "/" + reachable, reason);
+                    var bindings = node?.Payload.Definitions ?? definition?.Definitions;
+                    if (bindings == null) continue;
+                    foreach (var binding in bindings)
+                    {
+                        reason = GameplayActionArrayPolicy.ScopeReason(binding.External, graph.Scope);
+                        if (reason != null) v.Error(path + "/" + reachable + "." + binding.PropertyPath, reason);
+                    }
+                }
+                try
+                {
+                    GameplayGraphContextPolicy.Validate(graph, v, path);
+                    ValidateActionOrder(graph);
+                }
+                catch (InvalidOperationException error) { v.Error(path, error.Message); }
+            }
             foreach(var local in graph.LocalDefinitions)foreach(var slot in GameplayGraphEffectCallbacks.Slots(local.Payload))
                 if(!graph.Connections.Any(e=>e.FromNodeId==local.Id&&e.OutputPortKey==slot.Key)&&!local.Definitions.Any(b=>b.PropertyPath==slot.Path))
                     v.Warning(path+"/"+local.Id+"."+slot.Path,"生命周期回调待重连：保留参数，不参与运行；无活动溢出执行器时拒绝溢出。");
@@ -60597,12 +60717,41 @@ namespace FRFrame.Gameplay.Authoring.Graph
         public static void ValidateActionOrder(GameplayAuthoringGraph graph)
         {
             var compiler = new GameplayGraphCompiler(null, graph, new GameplayAuthoringBuildContext());
+            var reachable = GameplayGraphContextPolicy.Reachable(graph);
+            var checkedNodes = new HashSet<(string id, bool guarded)>();
+            foreach (string rule in graph.AdditionalRuleNodeIds.Prepend(graph.PrimaryRuleNodeId))
+                CheckOutput(rule, "Actions", false);
+            foreach (var definition in graph.LocalDefinitions.Where(d => reachable.Contains(d.Id)))
+                foreach (var port in GameplayGraphFields.ActionArrays(definition.Payload))
+                    CheckOutput(definition.Id, GameplayGraphEffectCallbacks.ActionKey(port), false);
             foreach (var timeline in graph.Timelines)
             {
-                var reachable=GameplayGraphContextPolicy.Reachable(graph);
+                if (!reachable.Contains(timeline.Id)) continue;
                 bool owned=graph.Nodes.Any(n=>reachable.Contains(n.Id)&&n.Payload.Definitions.Any(b=>b.LocalId==timeline.Id)&&(n.Payload as GameplayActionNodePayload)?.Action is GameplayOwnedSequenceActionAuthoring);
+                foreach (var entry in timeline.Events)
+                    Check(new[] { entry.EntryNodeId }, owned && entry.TimeSeconds > 0, entry.Id);
                 if (owned) foreach (var entry in timeline.Events.Where(e => e.TimeSeconds > 0))
                     compiler.ValidateGuardedArray(new[] { entry.EntryNodeId }, new HashSet<string>());
+            }
+
+            void CheckOutput(string id, string port, bool guarded) =>
+                Check(compiler.Edges(id, port).Select(e => e.ToNodeId), guarded, id + "." + port);
+            void Check(IEnumerable<string> entries, bool guarded, string source)
+            {
+                var ids = new List<string>();
+                void Append(string id)
+                {
+                    ids.Add(id);
+                    foreach (var edge in compiler.Edges(id, "Then")) Append(edge.ToNodeId);
+                }
+                foreach (string id in entries) Append(id);
+                var actions = ids.Select(id => ((GameplayActionNodePayload)compiler._nodes[id].Payload).Action).ToArray();
+                string reason = GameplayActionArrayPolicy.PlacementReason(actions, guarded);
+                if (reason != null) throw new InvalidOperationException(source + " · " + reason);
+                for (int i = 0; i < ids.Count; i++)
+                    if (checkedNodes.Add((ids[i], guarded)))
+                        foreach (var port in GameplayGraphFields.ActionArrays(actions[i]))
+                            CheckOutput(ids[i], port.Path, guarded);
             }
         }
 
@@ -60953,6 +61102,11 @@ namespace FRFrame.Gameplay.Authoring.Graph
             }
             if(payload is GameplayMoveTargetsActionAuthoring&&(port=="OnArrive"||port=="OnCancelled"))return input.With(port=="OnArrive",true,"移动中断不保证 Actor");
             if(payload is GameplaySummonDefinitionData)return input.With(port=="OnSpawn",true,"召唤结束不保证 Actor");
+            if (payload is IGameplayGraphContextContract external)
+            {
+                try { return external.OutputInputs(port, input); }
+                catch (Exception error) { throw new InvalidOperationException($"{payload.GetType().Name}.{port} 上下文合同失败 · {error.Message}", error); }
+            }
             return input;
         }
         private static object Payload(GameplayAuthoringGraph graph,string id)
@@ -60968,7 +61122,13 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if(value is GameplayAreaDefinitionData area){
                 if(area.Origin==GameplaySearchOrigin.PrimaryTarget)result|=Requirement.PrimaryActor;
                 if(area.Origin==GameplaySearchOrigin.ContextPoint)result|=Requirement.Point;
-            }return result;
+            }
+            if (value is IGameplayGraphContextContract external)
+            {
+                try { result |= external.RequiredInputs; }
+                catch (Exception error) { throw new InvalidOperationException($"{value.GetType().Name} 输入合同失败 · {error.Message}", error); }
+            }
+            return result;
         }
         private static Requirement RequiredNode(GameplayAuthoringGraph graph,GameplayAuthoringNode node)
         {
@@ -60976,6 +61136,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
             foreach(var binding in node.Payload.Definitions){
                 object value=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId)?.Payload;
                 if(value==null&&binding.External is GameplayAreaDefinitionAsset)value=binding.External.CaptureGraphValues();
+                if(value==null&&binding.External is IGameplayGraphContextContract)value=binding.External;
                 result|=Required(value);
             }return result;
         }
@@ -61216,6 +61377,35 @@ namespace FRFrame.Gameplay.Authoring.Graph
             return slots;
         }
 
+        /// <summary>Reports the resource paths requested by the existing payload validator without loading or building dependencies.</summary>
+        public static IReadOnlyCollection<string> RequiredResources(object payload)
+        {
+            var paths = new HashSet<string>(StringComparer.Ordinal);
+            const string root = "source";
+            var validation = new GameplayAuthoringValidationContext
+            {
+                GraphAssetValidation = (asset, path) =>
+                {
+                    if (path.StartsWith(root + ".", StringComparison.Ordinal))
+                        paths.Add(NormalizePath(path.Substring(root.Length + 1)));
+                    return true;
+                }
+            };
+            switch (payload)
+            {
+                case GameplaySkillActionAuthoring action:
+                    action.Validate(validation, root);
+                    action.ValidateReferences(validation, root);
+                    break;
+                case GameplayLocalDefinitionPayload local: local.Validate(validation, root); break;
+                case GameplayDefinitionAsset asset: asset.Validate(validation, root); break;
+            }
+            foreach (var issue in validation.Issues)
+                if (issue.Severity == GameplayAuthoringIssueSeverity.Error && issue.Path.StartsWith(root + ".", StringComparison.Ordinal))
+                    paths.Add(NormalizePath(issue.Path.Substring(root.Length + 1)));
+            return paths;
+        }
+
         public static List<Slot> ActionArrays(object root)
         {
             var slots = new List<Slot>();
@@ -61247,7 +61437,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
 
         private static void Walk(object value, string path, HashSet<object> seen, Func<object, FieldInfo, string, bool> visit)
         {
-            if (value == null || value is string || value is UnityEngine.Object) return;
+            if (value == null || value is string || path.Length != 0 && value is UnityEngine.Object) return;
             var type = value.GetType();
             if (type.IsPrimitive || type.IsEnum) return;
             if (!type.IsValueType && !seen.Add(value)) return;
@@ -61353,12 +61543,23 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if (port == GameplayGraphEffectCallbacks.Period && effect.Period <= 0)
                     return "每次周期需要大于零的周期设置。";
             }
+            if (payload is IGameplayGraphPortConstraint constraint)
+            {
+                try { return constraint.UnavailableOutput(port); }
+                catch (Exception error) { return $"{payload.GetType().Name}.{port} 端口合同失败 · {error.Message}"; }
+            }
             return null;
         }
         public static string Unavailable(GameplayAuthoringGraph graph,string owner,string port)
         {
             var local=graph.LocalDefinitions.Find(d=>d.Id==owner);
-            return Unavailable(local?.Payload,port);
+            var action = graph.Nodes.Find(n => n.Id == owner)?.Payload as GameplayActionNodePayload;
+            object payload = (object)local?.Payload ?? action?.Action;
+            if (string.IsNullOrEmpty(port) || !port.Contains(".")) return Unavailable(payload, port);
+            var slot = GameplayGraphFields.ActionArrays(payload).Find(s => s.Path == port);
+            return slot != null && !ReferenceEquals(slot.Owner, payload)
+                ? Unavailable(slot.Owner, slot.Field.Name) ?? Unavailable(payload, port)
+                : Unavailable(payload, port);
         }
     }
 }
@@ -61629,11 +61830,21 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference]public GameplaySkillActionAuthoring[] OnEnd=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference]public GameplayFloatValueAuthoring ArmingDelay=new GameplayConstantFloatValueAuthoring{Value=0};
         public int TriggerLimit;
-        public GameplayAreaDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>new GameplayAreaDefinition(
+        public GameplayAreaDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>BuildArea(context));
+        /// <summary>Resolves only the rule geometry, without building callbacks, effects or presentation.</summary>
+        public GameplaySearchGeometry PreviewGeometry(GameplayStandardActor owner, GameplayContext context) =>
+            BuildArea(null).InitialGeometry(owner, context);
+        private GameplayAreaDefinition BuildArea(GameplayAuthoringBuildContext context)=>new GameplayAreaDefinition(
             Shape==GameplayAreaAuthoringShape.Cells?GameplaySearchShape.GridCells:Shape==GameplayAreaAuthoringShape.Box?GameplaySearchShape.Box:Shape==GameplayAreaAuthoringShape.Sector?GameplaySearchShape.Sector:GameplaySearchShape.Circle,
-            Plane,Origin,Radius.Build(),Angle.Build(),Length.Build(),Width.Build(),Height.Build(),Duration.Build(),TickInterval.Build(),TickOnEnter,FollowOwner,Faction,Tags?.Build(),LayerMask,
-            Enumerable.Range(0, Aura.Length).Select(i => context.ResolveDefinition(Aura[i], this, "Aura.Array.data[" + i + "]", () => Aura[i].Build(context))).ToArray(),GameplaySpatialAuthoringUtility.Build(OnEnter,context),GameplaySpatialAuthoringUtility.Build(OnTick,context),
-            GameplaySpatialAuthoringUtility.Build(OnExit,context),GameplaySpatialAuthoringUtility.Build(OnEnd,context),Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,CreateView(context),GameplaySpatialAuthoringUtility.Build(OnStay,context),ArmingDelay.Build(),TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),EndOnOwnerDeath,CancelOnAbilityEnd));
+            Plane,Origin,Radius.Build(),Angle.Build(),Length.Build(),Width.Build(),Height.Build(),
+            context==null?new GameplayConstantFloatValue(1):Duration.Build(),context==null?new GameplayConstantFloatValue(1):TickInterval.Build(),TickOnEnter,FollowOwner,Faction,
+            context==null?null:Tags?.Build(),LayerMask,
+            context==null?null:Enumerable.Range(0, Aura.Length).Select(i => context.ResolveDefinition(Aura[i], this, "Aura.Array.data[" + i + "]", () => Aura[i].Build(context))).ToArray(),
+            context==null?null:GameplaySpatialAuthoringUtility.Build(OnEnter,context),context==null?null:GameplaySpatialAuthoringUtility.Build(OnTick,context),
+            context==null?null:GameplaySpatialAuthoringUtility.Build(OnExit,context),context==null?null:GameplaySpatialAuthoringUtility.Build(OnEnd,context),
+            Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,context==null?null:CreateView(context),
+            context==null?null:GameplaySpatialAuthoringUtility.Build(OnStay,context),context==null?null:ArmingDelay.Build(),
+            context==null?0:TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),EndOnOwnerDeath,CancelOnAbilityEnd);
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {
@@ -62362,7 +62573,7 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeField] private GameplayHitWindowData values = new GameplayHitWindowData();
         /// <summary>Space required by this shared definition when choosing a workbench host.</summary>
         public GameplaySpatialPlane Plane => values.Plane;
-        public GameplayHitWindowDefinition Build(GameplayAuthoringBuildContext context) => values.Build(context);
+        public GameplayHitWindowDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => values.Build(context));
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => (GameplayHitWindowData)GameplayGraphFields.Clone(values);
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         protected override void ValidateContent(GameplayAuthoringValidationContext v, string path) => values.Validate(v, path);
@@ -62569,15 +62780,19 @@ namespace FRFrame.Gameplay.Authoring
             foreach (var list in new[] { OnBegin, EachTarget, Completed, NoTargets })
                 if (list != null) for (int i = 0; i < list.Length; i++) list[i]?.ValidateReferences(v, p + $".Callbacks[{i}]");
         }
-        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)
+        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context) => BuildSearch(context);
+        /// <summary>Uses the runtime request constructor without resolving graph callbacks.</summary>
+        public bool TryPreviewRequest(GameplayContext input, GameplayStandardActor actor, out GameplaySpatialSearchRequest request) =>
+            BuildSearch(null).TryCreateRequest(input, actor, out request);
+        private GameplaySearchTargetAction BuildSearch(GameplayAuthoringBuildContext context)
         {
             var cells = new List<GameplayPoint>(); if (Shape == GameplaySearchShape.GridCells && Cells != null) foreach (var cell in Cells) cells.Add(new GameplayPoint(cell.x, cell.y, cell.z));
             return new GameplaySearchTargetAction(Shape, Plane, Origin, Dimension(Radius,UsesRadius), Dimension(Angle,Shape == GameplaySearchShape.Sector), Dimension(Length,UsesLength && !LengthFromTarget), Dimension(Width,UsesWidth), Height.Build(),
                 Faction, Tags?.Build(), LayerMask, MaxTargets, Order, IncludeSelf,
-                Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
+                context==null?null:Build(EachTarget, context), context==null?null:Build(Completed, context), context==null?null:Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds, UseActorCenters);
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, context==null?null:Build(OnBegin, context), HopIntervalSeconds, UseActorCenters);
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;
@@ -62988,6 +63203,7 @@ namespace FRFrame.Gameplay.Authoring
     {
         internal Func<GameplayDefinitionAsset, string, bool> GraphAssetValidation;
         internal string DamageStageScope;
+        internal string OwnerScope;
         private readonly List<GameplayAuthoringValidationIssue> _issues = new List<GameplayAuthoringValidationIssue>();
         private readonly HashSet<GameplayDefinitionAsset> _active = new HashSet<GameplayDefinitionAsset>();
         private readonly HashSet<(GameplayDefinitionAsset, string)> _validated = new HashSet<(GameplayDefinitionAsset, string)>();
@@ -63009,6 +63225,8 @@ namespace FRFrame.Gameplay.Authoring
         {
             if (GraphAssetValidation != null && GraphAssetValidation(asset, path)) return;
             if (asset == null) { Error(path, "Missing asset reference."); return; }
+            string scopeError = Graph.GameplayActionArrayPolicy.ScopeReason(asset, OwnerScope);
+            if (scopeError != null) { Error(path, scopeError); return; }
             if (_active.Contains(asset)) { Error(path, "Circular asset reference."); return; }
             if (!_validated.Add((asset, path))) return;
             _active.Add(asset);
@@ -63061,7 +63279,20 @@ namespace FRFrame.Gameplay.Authoring
             if (validation == null) throw new ArgumentNullException(nameof(validation));
             if (string.IsNullOrWhiteSpace(definitionId)) validation.Error(path + ".DefinitionId", "DefinitionId is required.");
             if (schemaVersion != CurrentSchemaVersion) validation.Error(path + ".SchemaVersion", $"Unsupported schema {schemaVersion}; expected {CurrentSchemaVersion}.");
-            ValidateContent(validation, path);
+            string previous = validation.OwnerScope;
+            string scope = null;
+            if (this is Graph.IGameplayScopedAuthoring scoped)
+            {
+                try { scope = scoped.RequiredScope; }
+                catch (Exception error) { validation.Error(path, "Scope 合同失败 · " + error.Message); return; }
+            }
+            validation.OwnerScope = scope;
+            try
+            {
+                ValidateContent(validation, path);
+                Graph.GameplayActionArrayPolicy.ValidateCallbacks(this, scope, validation, path);
+            }
+            finally { validation.OwnerScope = previous; }
         }
         protected abstract void ValidateContent(GameplayAuthoringValidationContext validation, string path);
 
@@ -64808,9 +65039,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 if(removeAt>=0){values.RemoveAt(removeAt);if(removeAt<at)at--;}
                 at=Math.Min(at,values.Count);
+                bool guarded=GuardedArray(source,path);
+                var proposed=values.Cast<GameplaySkillActionAuthoring>().ToList();
+                if(value is GameplaySkillActionAuthoring action)proposed.Insert(at,action);
+                string placement=FRFrame.Gameplay.Authoring.Graph.GameplayActionArrayPolicy.PlacementReason(proposed,guarded);
+                if(placement!=null)return placement;
                 bool after=values.Take(at).Any(a=>a is GameplayEndAbilityActionAuthoring);
                 bool cuts=value is GameplayEndAbilityActionAuthoring&&at<values.Count;
-                if(!after&&!cuts||!GuardedArray(source,path))return null;
+                if(!after&&!cuts||!guarded)return null;
                 return after?AfterEnd:EndBeforeSuccessors;
             }
         }
@@ -64869,12 +65105,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
 namespace FRFrame.Gameplay.Editor.SkillAuthoring
 {
+    public enum GameplayDependencyState { Linked, Inline, Optional, Unset, Missing, Invalid }
     /// <summary>Explicit game-side dependency declaration. Framework definitions use serialized traversal instead.</summary>
     public interface IGameplayAuthoringDependencyProvider
     {
@@ -64890,7 +65128,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public string PropertyPath { get; }
         public string Label { get; }
         public Type ExpectedType { get; }
-        public bool Missing => Target == null;
+        public bool Missing => State is GameplayDependencyState.Missing or GameplayDependencyState.Invalid;
+        public GameplayDependencyState State { get; internal set; }
+        public string Issue { get; internal set; }
+        internal string GraphOwner, SlotPath, LocalDefinitionId;
+        internal GameplaySourceHandle Handle;
+        internal string SourceSnapshot;
         public Action Open { get; }
         public Action Ping { get; }
         /// <summary>Optional provider repair. Must record Undo, touch only this reference and never SaveAll.</summary>
@@ -64900,6 +65143,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {
             Source = source; Target = target; PropertyPath = path; Label = label; ExpectedType = expectedType;
             Open = open; Ping = ping; Fix = fix;
+            State = target ? GameplayDependencyState.Linked : GameplayDependencyState.Missing;
         }
     }
 
@@ -64909,6 +65153,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public Object Asset { get; }
         public IReadOnlyList<GameplayAuthoringDependencyEdge> Edges => _edges;
         public IReadOnlyList<string> InlineAuthoringPaths => _inlinePaths;
+        public int UnusedDefinitions { get; internal set; }
         internal readonly List<GameplayAuthoringDependencyEdge> _edges = new List<GameplayAuthoringDependencyEdge>();
         internal readonly List<string> _inlinePaths = new List<string>();
         internal GameplayAuthoringDependencyNode(Object asset) { Asset = asset; }
@@ -64918,6 +65163,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public sealed class GameplayAuthoringDependencyGraph
     {
         private readonly Dictionary<Object, GameplayAuthoringDependencyNode> _nodes = new Dictionary<Object, GameplayAuthoringDependencyNode>();
+        private readonly HashSet<Object> _visiting = new HashSet<Object>();
         public IReadOnlyCollection<GameplayAuthoringDependencyNode> Nodes => _nodes.Values;
         public GameplayAuthoringDependencyNode Root { get; private set; }
         public GameplayAuthoringDependencyNode Find(Object asset) => asset != null && _nodes.TryGetValue(asset, out var node) ? node : null;
@@ -64934,27 +65180,122 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if (_nodes.TryGetValue(asset, out var existing)) return existing;
             var node = new GameplayAuthoringDependencyNode(asset);
             _nodes.Add(asset, node);
-            if (asset is GameplayDefinitionAsset)
+            _visiting.Add(asset);
+            if (asset is GameplaySkillDocumentAsset document && document.AuthoringSchemaVersion == 2)
+                ReadGraph(node, document);
+            else if (asset is GameplayDefinitionAsset definition)
             {
+                var required = GameplayGraphFields.RequiredResources(definition);
                 using (var serialized = new SerializedObject(asset))
                 foreach (var property in GameplayAuthoringProperties.Walk(serialized))
                 {
                     if (property.propertyType == SerializedPropertyType.ManagedReference && property.managedReferenceValue != null)
                         node._inlinePaths.Add(property.propertyPath + " · " + property.managedReferenceValue.GetType().Name);
                     if (property.propertyType != SerializedPropertyType.ObjectReference || property.name == "m_Script") continue;
-                    if(asset is GameplaySkillDocumentAsset skill && skill.AuthoringSchemaVersion==2 && property.propertyPath.StartsWith("authoringGraph.LegacyResources",StringComparison.Ordinal))continue;
                     Type expected = GameplayAuthoringProperties.ReferenceType(property);
-                    Object target = property.objectReferenceValue;
-                    if (!(target is GameplayDefinitionAsset) &&
-                        (expected == null || !typeof(GameplayDefinitionAsset).IsAssignableFrom(expected))) continue;
-                    node._edges.Add(new GameplayAuthoringDependencyEdge(asset, target, property.propertyPath,
-                        property.propertyPath, expected ?? target?.GetType()));
+                    bool needed = required.Any(path => path == property.propertyPath ||
+                        property.propertyPath.StartsWith(path + ".Array.data[", StringComparison.Ordinal));
+                    AddProperty(node, property, expected, needed);
                 }
             }
             else foreach (var provider in GameplayAuthoringProviders.Dependencies)
                 if (provider.Supports(asset)) node._edges.AddRange(provider.Dependencies(asset));
-            foreach (var edge in node._edges) if (edge.Target != null) Visit(edge.Target);
+            string snapshot = null;
+            foreach (var edge in node._edges)
+            {
+                if (_visiting.Contains(edge.Target))
+                {
+                    edge.State = GameplayDependencyState.Invalid;
+                    edge.Issue = "循环引用。";
+                }
+                else if (edge.Target) Visit(edge.Target);
+                if (!edge.Missing) continue;
+                edge.Handle = GameplaySourceHandle.Capture(asset, edge.PropertyPath);
+                edge.SourceSnapshot = snapshot ??= EditorJsonUtility.ToJson(asset);
+            }
+            _visiting.Remove(asset);
             return node;
+        }
+
+        private static void ReadGraph(GameplayAuthoringDependencyNode target, GameplaySkillDocumentAsset document)
+        {
+            var graph = document.AuthoringGraph;
+            var active = GameplayGraphContextPolicy.Reachable(graph);
+            using var serialized = new SerializedObject(document);
+            var ordinary = GameplayAuthoringProperties.Walk(serialized).Where(p =>
+                p.propertyType == SerializedPropertyType.ObjectReference).ToArray();
+            for (int i = 0; i < graph.Nodes.Count; i++)
+            {
+                var node = graph.Nodes[i];
+                if (!active.Contains(node.Id)) { target.UnusedDefinitions++; continue; }
+                string prefix = $"authoringGraph.Nodes.Array.data[{i}].Payload";
+                if (node.Payload is GameplayActionNodePayload action) ReadOwner(node.Id, action.Action, node.Payload.Definitions, prefix + ".Action");
+                else if (node.Payload is GameplayAbilityNodePayload ability) ReadOwner(node.Id, ability.Settings, node.Payload.Definitions, prefix + ".Settings");
+            }
+            for (int i = 0; i < graph.LocalDefinitions.Count; i++)
+            {
+                var local = graph.LocalDefinitions[i];
+                if (!active.Contains(local.Id)) { target.UnusedDefinitions++; continue; }
+                ReadOwner(local.Id, local.Payload, local.Definitions, $"authoringGraph.LocalDefinitions.Array.data[{i}].Payload");
+            }
+
+            void ReadOwner(string id, object payload, List<GameplayDefinitionBinding> bindings, string prefix)
+            {
+                var slots = GameplayGraphFields.ResourceSlots(payload);
+                var required = GameplayGraphFields.RequiredResources(payload);
+                var resourcePaths = slots.Select(slot => prefix + "." + slot.Path).ToHashSet();
+                foreach (var slot in slots)
+                {
+                    var binding = bindings.Find(b => b.PropertyPath == slot.Path);
+                    GraphSlot(id, prefix + "." + slot.Path, slot.Path, slot.ValueType, binding,
+                        required.Any(path => slot.Path == path || slot.Path.StartsWith(path + ".Array.data[", StringComparison.Ordinal)),
+                        GameplayGraphEffectCallbacks.Slots(payload).Any(s => s.Path == slot.Path && graph.Connections.Any(e => e.FromNodeId == id && e.OutputPortKey == s.Key)));
+                }
+                foreach (var binding in bindings.Where(b => !slots.Any(slot => slot.Path == b.PropertyPath)))
+                {
+                    Type expected = binding.PropertyPath == "Settings" ? typeof(GameplayAbilityDefinitionAsset) : null;
+                    GraphSlot(id, prefix, binding.PropertyPath, expected, binding, true, false);
+                }
+                foreach (var p in ordinary.Where(p => p.propertyPath.StartsWith(prefix + ".", StringComparison.Ordinal) && !resourcePaths.Contains(p.propertyPath)))
+                    AddProperty(target, p, GameplayAuthoringProperties.ReferenceType(p), required.Contains(p.propertyPath.Substring(prefix.Length + 1)));
+            }
+
+            void GraphSlot(string id, string path, string slot, Type expected, GameplayDefinitionBinding binding, bool required, bool callback)
+            {
+                var edge = new GameplayAuthoringDependencyEdge(document, binding?.External, path, slot, expected)
+                {
+                    GraphOwner = id, SlotPath = slot, LocalDefinitionId = binding?.LocalId
+                };
+                if (expected == null) { edge.State = GameplayDependencyState.Invalid; edge.Issue = "原声明字段已不存在。"; }
+                else if (!string.IsNullOrEmpty(binding?.LocalId))
+                {
+                    var local = graph.LocalDefinitions.Find(d => d.Id == binding.LocalId);
+                    bool timeline = expected == typeof(GameplaySequenceDefinitionAsset) && graph.Timelines.Any(t => t.Id == binding.LocalId);
+                    bool valid = timeline || local?.Payload != null && GameplaySkillFieldSchema.Values(expected).Any(t => t.IsInstanceOfType(local.Payload));
+                    edge.State = valid ? GameplayDependencyState.Inline : GameplayDependencyState.Invalid;
+                    edge.Issue = valid ? null : "内嵌定义缺失或类型不匹配。";
+                }
+                else if (callback) edge.State = GameplayDependencyState.Inline;
+                else if (edge.Target)
+                {
+                    edge.Issue = !expected.IsInstanceOfType(edge.Target) ? "引用类型不匹配。" : GameplayActionArrayPolicy.ScopeReason(edge.Target, graph.Scope);
+                    edge.State = edge.Issue == null ? GameplayDependencyState.Linked : GameplayDependencyState.Invalid;
+                }
+                else if (required || binding != null) { edge.State = GameplayDependencyState.Missing; edge.Issue = "需要实际的内嵌定义或共享引用。"; }
+                else edge.State = GameplayDependencyState.Optional;
+                target._edges.Add(edge);
+            }
+        }
+
+        private static void AddProperty(GameplayAuthoringDependencyNode owner, SerializedProperty property, Type expected, bool required)
+        {
+            var target = property.objectReferenceValue;
+            var edge = new GameplayAuthoringDependencyEdge(owner.Asset, target, property.propertyPath, property.propertyPath, expected);
+            if (!target && !required && property.objectReferenceInstanceIDValue == 0)
+                edge.State = expected != null && typeof(GameplayDefinitionAsset).IsAssignableFrom(expected)
+                    ? GameplayDependencyState.Optional : GameplayDependencyState.Unset;
+            if (edge.Missing) edge.Issue = "声明的资源未绑定或已丢失。";
+            owner._edges.Add(edge);
         }
     }
 
@@ -64988,7 +65329,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if (name == "Object") return typeof(Object);
                 if (name == "GameObject") return typeof(GameObject);
                 if (name == "Sprite") return typeof(Sprite);
-                return TypeCache.GetTypesDerivedFrom<ScriptableObject>().FirstOrDefault(t => t.Name == name);
+                if (name == "AnimationClip") return typeof(AnimationClip);
+                if (name == "AudioClip") return typeof(AudioClip);
+                if (name == "Material") return typeof(Material);
+                return TypeCache.GetTypesDerivedFrom<ScriptableObject>().FirstOrDefault(t => t.Name == name) ?? property.objectReferenceValue?.GetType();
             }
             return property.objectReferenceValue?.GetType();
         }
@@ -64999,21 +65343,64 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     {
         public static void Assign(GameplayAuthoringDependencyEdge edge, Object target)
         {
-            if (edge.Source == null) throw new ArgumentException("Missing source.");
-            if (target != null && edge.ExpectedType != null && !edge.ExpectedType.IsInstanceOfType(target))
-                throw new ArgumentException("Incompatible reference type.");
-            using (var serialized = new SerializedObject(edge.Source))
+            string path = RequireCurrent(edge);
+            if (!target || !EditorUtility.IsPersistent(target) || !edge.ExpectedType.IsInstanceOfType(target))
+                throw new ArgumentException("请选择类型匹配的项目资源。");
+            var document = edge.Source as GameplaySkillDocumentAsset;
+            string scope = document ? document.AuthoringGraph.Scope : (edge.Source as IGameplayScopedAuthoring)?.RequiredScope;
+            string restriction = GameplayActionArrayPolicy.ScopeReason(target, scope);
+            if (restriction != null) throw new InvalidOperationException(restriction);
+            if (target is GameplayDefinitionAsset definition && GameplayAuthoringDependencyGraph.BuildDefinition(definition).Find(edge.Source) != null)
+                throw new InvalidOperationException("此绑定会形成共享资源循环。");
+            if (edge.GraphOwner != null)
             {
-                var property = serialized.FindProperty(edge.PropertyPath);
-                if (property == null || property.propertyType != SerializedPropertyType.ObjectReference)
-                    throw new ArgumentException("Reference location no longer exists.");
-                Type currentType = GameplayAuthoringProperties.ReferenceType(property);
-                if (target != null && currentType != null && !currentType.IsInstanceOfType(target))
-                    throw new ArgumentException("Reference type changed; refresh dependencies first.");
-                property.objectReferenceValue = target;
-                serialized.ApplyModifiedProperties();
+                GameplayInspectorOperations.BindResource(document, edge.GraphOwner, edge.SlotPath, null, null, (GameplayDefinitionAsset)target);
+                return;
             }
+            using var serialized = new SerializedObject(edge.Source);
+            serialized.FindProperty(path).objectReferenceValue = target;
+            serialized.ApplyModifiedProperties();
+            GameplayAuthoringSourceChanges.Notify(edge.Source, path);
         }
+
+        public static void AssignInline(GameplayAuthoringDependencyEdge edge, Type type)
+        {
+            RequireCurrent(edge);
+            if (edge.GraphOwner == null || !GameplaySkillFieldSchema.Values(edge.ExpectedType).Contains(type))
+                throw new ArgumentException("该字段无法创建所选内嵌类型。");
+            GameplayInspectorOperations.BindResource((GameplaySkillDocumentAsset)edge.Source, edge.GraphOwner, edge.SlotPath, type, null, null);
+        }
+
+        private static string RequireCurrent(GameplayAuthoringDependencyEdge edge)
+        {
+            var source = edge.Source;
+            if (!source || EditorApplication.isPlayingOrWillChangePlaymode ||
+                source is GameplayDefinitionAsset { MigrationHistoryOnly: true } ||
+                source is GameplaySkillDocumentAsset d && GameplaySkillAuthoringCommands.IsReadOnly(d) ||
+                EditorUtility.IsPersistent(source) && !AssetDatabase.IsOpenForEdit(source))
+                throw new InvalidOperationException("原来源不可编辑。请退出 Play 或打开可写来源。");
+            if (!edge.Missing || edge.ExpectedType == null || edge.Handle?.Owner != source ||
+                !edge.Handle.TryResolve(out string path) || EditorJsonUtility.ToJson(source) != edge.SourceSnapshot)
+                throw new InvalidOperationException("原引用位置或配置已改变。请刷新依赖后重新选择。");
+            if (edge.GraphOwner != null)
+            {
+                var graph = ((GameplaySkillDocumentAsset)source).AuthoringGraph;
+                var node = graph.Nodes.Find(n => n.Id == edge.GraphOwner);
+                object payload = node?.Payload is GameplayActionNodePayload a ? a.Action :
+                    node?.Payload is GameplayAbilityNodePayload b ? b.Settings : graph.LocalDefinitions.Find(d => d.Id == edge.GraphOwner)?.Payload;
+                if (node?.Payload is GameplayAbilityNodePayload && edge.SlotPath == "Settings" ||
+                    GameplayGraphFields.ResourceSlots(payload).Any(s => s.Path == edge.SlotPath && s.ValueType == edge.ExpectedType)) return path;
+            }
+            else
+            {
+                using var serialized = new SerializedObject(source);
+                var property = serialized.FindProperty(path);
+                if (property?.propertyType == SerializedPropertyType.ObjectReference &&
+                    GameplayAuthoringProperties.ReferenceType(property) == edge.ExpectedType) return path;
+            }
+            throw new InvalidOperationException("原字段类型或用途已改变。请重新定位。");
+        }
+
         public static ScriptableObject CreateAndAssign(GameplayAuthoringDependencyEdge edge, string destination)
         {
             Type type = edge.ExpectedType;
@@ -65021,14 +65408,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 throw new ArgumentException("This edge requires a provider repair or an existing resource.");
             if (string.IsNullOrEmpty(destination) || !destination.StartsWith("Assets/", StringComparison.Ordinal) ||
                 destination.Contains("../") || destination.Contains("\\") ||
-                !destination.EndsWith(".asset", StringComparison.OrdinalIgnoreCase) || System.IO.File.Exists(destination))
+                !destination.EndsWith(".asset", StringComparison.OrdinalIgnoreCase) ||
+                System.IO.File.Exists(destination) || System.IO.File.Exists(destination+".meta") ||
+                System.IO.Directory.Exists(destination) || !AssetDatabase.IsValidFolder(System.IO.Path.GetDirectoryName(destination).Replace('\\','/')))
                 throw new ArgumentException("Choose a new .asset destination inside Assets.");
-            // Validate the source before creating anything.
-            using (var serialized = new SerializedObject(edge.Source))
-                if (serialized.FindProperty(edge.PropertyPath)?.propertyType != SerializedPropertyType.ObjectReference)
-                    throw new ArgumentException("Reference location no longer exists.");
+            RequireCurrent(edge);
+            Undo.IncrementCurrentGroup();
             int group = Undo.GetCurrentGroup();
-            Undo.SetCurrentGroupName("Create & Assign dependency");
+            Undo.SetCurrentGroupName("新建并绑定共享定义");
             var asset = ScriptableObject.CreateInstance(type);
             if (asset is GameplayDefinitionAsset)
             {
@@ -65038,11 +65425,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     serialized.ApplyModifiedPropertiesWithoutUndo();
                 }
             }
-            AssetDatabase.CreateAsset(asset, destination);
-            Undo.RegisterCreatedObjectUndo(asset, "Create dependency");
-            Assign(edge, asset);
-            Undo.CollapseUndoOperations(group);
-            return asset;
+            try
+            {
+                AssetDatabase.CreateAsset(asset, destination);
+                Assign(edge, asset);
+                Undo.CollapseUndoOperations(group);
+                return asset;
+            }
+            catch
+            {
+                Undo.RevertAllDownToGroup(group);
+                if (AssetDatabase.GetAssetPath(asset) == destination) AssetDatabase.DeleteAsset(destination);
+                else if (asset) Object.DestroyImmediate(asset);
+                throw;
+            }
         }
     }
 
@@ -65253,6 +65649,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
@@ -65469,6 +65866,16 @@ namespace FRFrame.Gameplay.Editor
             if(Labels.TryGetValue(property.name,out var label))return (label,null);
             if(property.name.StartsWith("data[",StringComparison.Ordinal)&&int.TryParse(property.name.Substring(5,property.name.Length-6),out int index))
                 return ("配置 "+(index+1),null);
+            int dot=property.propertyPath.LastIndexOf('.');
+            Type owner=dot<0?property.serializedObject.targetObject.GetType():null;
+            if(dot>0)
+            {
+                var parent=property.serializedObject.FindProperty(property.propertyPath.Substring(0,dot));
+                if(parent?.propertyType==SerializedPropertyType.ManagedReference)owner=parent.managedReferenceValue?.GetType();
+            }
+            var field=owner==null?null:GameplayGraphFields.SerializedFields(owner).FirstOrDefault(f=>f.Name==property.name);
+            if(field!=null&&Attribute.GetCustomAttribute(field,typeof(InspectorNameAttribute)) is InspectorNameAttribute declared)
+                return (declared.displayName,null);
             return (property.displayName,"扩展字段；内部路径可在高级来源中查看。");
         }
         public static GUIContent Label(SerializedProperty property)
@@ -65612,11 +66019,34 @@ namespace FRFrame.Gameplay.Editor
     }
     public abstract class GameplayDefinitionInspector : UnityEditor.Editor
     {
+        private int _rangeRevision=-1, _rangeIndex, _rangeReadIndex=-1;
+        private bool _showRange;
+        private IReadOnlyList<GameplayRangePreviewContext> _ranges;
+        private GameplayRangePreviewShape _range;
+        private string _rangeError;
+        private GameplayAuthoringDependencyGraph _orderSources;
+        protected void OnEnable()
+        {
+            Undo.undoRedoPerformed+=InvalidateSourceViews;
+            EditorApplication.projectChanged+=InvalidateSourceViews;
+            GameplayAuthoringSourceChanges.Changed+=SourceViewsChanged;
+        }
+        protected void OnDisable()
+        {
+            Undo.undoRedoPerformed-=InvalidateSourceViews;
+            EditorApplication.projectChanged-=InvalidateSourceViews;
+            GameplayAuthoringSourceChanges.Changed-=SourceViewsChanged;
+        }
+        private void InvalidateSourceViews(){_orderSources=null;_ranges=null;}
+        private void SourceViewsChanged(IReadOnlyList<GameplayAuthoringSourceChanges.Change> changes)
+        {
+            if(changes.Any(c=>c.Source==target||_orderSources?.Find(c.Source)!=null))InvalidateSourceViews();
+        }
         public override void OnInspectorGUI()
         {
             if(target is GameplayDefinitionAsset history && history.MigrationHistoryOnly){GameplayAuthoringInspector.DrawMigrationHistory(serializedObject);return;}
             if(target is GameplayDefinitionAsset orderRoot){
-                var sources=GameplayAuthoringDependencyGraph.BuildDefinition(orderRoot).Nodes.Select(n=>(UnityEngine.Object)n.Asset);
+                var sources=(_orderSources??=GameplayAuthoringDependencyGraph.BuildDefinition(orderRoot)).Nodes.Select(n=>n.Asset);
                 foreach(var issue in GameplayActionOrderValidation.Scan(sources)){
                     EditorGUILayout.HelpBox(issue.Message,issue.Severity==GameplayAuthoringIssueSeverity.Error?MessageType.Error:MessageType.Warning);
                     if(GUILayout.Button("定位结束后动作 · "+issue.Source.name+" / "+issue.Path)){
@@ -65625,6 +66055,7 @@ namespace FRFrame.Gameplay.Editor
                 }
             }
             GameplayAuthoringInspector.Draw(serializedObject);
+            DrawRange();
             AssetDatabase.TryGetGUIDAndLocalFileIdentifier(target,out string guid,out long id);
             EditorGUILayout.LabelField("正式来源 · "+AssetDatabase.GetAssetPath(target)+" / 子对象 #"+id,EditorStyles.wordWrappedMiniLabel);
             if(target is GameplayDefinitionAsset&&GUILayout.Button("在同一技能工作台定位")){
@@ -65635,6 +66066,32 @@ namespace FRFrame.Gameplay.Editor
                 var validation = new GameplayAuthoringValidationContext(); validation.Asset(definition, definition.name);
                 if (!validation.HasErrors) Debug.Log("配置校验通过", target);
                 foreach (var issue in validation.Issues) Debug.LogWarning(issue.ToString(), target);
+            }
+        }
+
+        private void DrawRange()
+        {
+            int revision=EditorUtility.GetDirtyCount(target);
+            if(_ranges==null||_rangeRevision!=revision)
+            {
+                _ranges=GameplayRangePreview.Sources(target);
+                _rangeRevision=revision;
+                _rangeReadIndex=-1;
+            }
+            if(_ranges.Count==0||!(_showRange=EditorGUILayout.Foldout(_showRange,"范围预览",true)))return;
+            if(_ranges.Count>1)_rangeIndex=EditorGUILayout.Popup("来源",Mathf.Clamp(_rangeIndex,0,_ranges.Count-1),
+                _ranges.Select(r=>r.PropertyPath??target.name).ToArray());
+            else _rangeIndex=0;
+            if(_rangeReadIndex!=_rangeIndex)
+            {
+                _rangeReadIndex=_rangeIndex;
+                GameplayRangePreview.TryRead(_ranges[_rangeIndex],out _range,out _rangeError);
+            }
+            if(_rangeError!=null)EditorGUILayout.HelpBox(_rangeError,MessageType.Warning);
+            else if(_range.Label!=null)
+            {
+                GUILayout.Label(_range.Label,EditorStyles.wordWrappedMiniLabel);
+                GameplayRangePreview.Draw(GUILayoutUtility.GetRect(100,160,GUILayout.ExpandWidth(true)),_range);
             }
         }
     }
@@ -65832,6 +66289,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEditor.Compilation;
@@ -65852,6 +66310,7 @@ namespace FRFrame.Gameplay.Editor
         public static string Scope(Object asset)
         {
             if (asset is GameplaySkillDocumentAsset skill && skill.AuthoringSchemaVersion == 2) return skill.AuthoringGraph?.Scope;
+            if (asset is IGameplayScopedAuthoring owner) return owner.RequiredScope;
             if(asset!=null){
                 string path=AssetDatabase.GetAssetPath(asset);
                 if(!string.IsNullOrEmpty(path)){
@@ -65882,6 +66341,8 @@ namespace FRFrame.Gameplay.Editor
             return Types(baseType).Where(t => {
                 var d = GameplaySkillNodeDescriptors.Get(t);
                 bool scopeMatch = string.IsNullOrEmpty(scope) || d.AuthoringScope == "FRFrame" || d.AuthoringScope == "Common" || d.AuthoringScope == scope || otherGames;
+                if (scopeMatch && typeof(IGameplayScopedAuthoring).IsAssignableFrom(t))
+                    scopeMatch = GameplayActionArrayPolicy.ScopeReason(Activator.CreateInstance(t), scope) == null;
                 return scopeMatch && (!d.IsSample || samples) && (string.IsNullOrEmpty(search) ||
                     (d.DisplayName + " " + d.CategoryPath + " " + d.Summary + " " + d.Keywords + " " + t.FullName).IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0);
             }).ToArray();
@@ -65920,14 +66381,18 @@ namespace FRFrame.Gameplay.Editor
             EditorGUILayout.HelpBox(GameplayAuthoringInspector.Help, MessageType.Info);
             if(!string.IsNullOrEmpty(_contextNote))EditorGUILayout.HelpBox(_contextNote,MessageType.Info);
             _search = EditorGUILayout.TextField("搜索", _search);
-            GUILayout.BeginHorizontal(); if(!_officialOnly)_other = EditorGUILayout.ToggleLeft("显示其它游戏", _other);
-            _samples = EditorGUILayout.ToggleLeft("显示示例 / 验证节点", _samples); GUILayout.EndHorizontal();
+            if(!_officialOnly)
+            {
+                GUILayout.BeginHorizontal();
+                _other = EditorGUILayout.ToggleLeft("显示其它游戏", _other);
+                _samples = EditorGUILayout.ToggleLeft("显示示例 / 验证节点", _samples);
+                GUILayout.EndHorizontal();
+            }
             if (GUILayout.Button("清空配置")) Pick(null);
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             foreach (var group in GameplayAuthoringTypeCatalog.Query(_baseType, _scope, _search, _other, _samples)
-                .Where(t=>!_officialOnly||((GameplaySkillNodeDescriptors.Get(t).AuthoringScope=="FRFrame"||GameplaySkillNodeDescriptors.Get(t).AuthoringScope=="Common")&&
-                    t!=typeof(GameplaySkillApplyEffectActionAuthoring)&&t!=typeof(GameplaySkillPlaySequenceActionAuthoring)))
-                .GroupBy(t => GameplaySkillNodeDescriptors.Get(t).CategoryPath))
+                .Where(t=>!_officialOnly||(t!=typeof(GameplaySkillApplyEffectActionAuthoring)&&t!=typeof(GameplaySkillPlaySequenceActionAuthoring)))
+                .GroupBy(GameplaySkillNodeDescriptors.Category))
             {
                 GUILayout.Label(group.Key, EditorStyles.boldLabel);
                 foreach (var type in group)
@@ -68305,6 +68770,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             float angle = 0, float length = 0, float width = 0, float offsetAngle = 0, GameplaySearchGeometry geometry = null)
         { Kind = kind; Label = label; Radius = radius; Angle = angle; Length = length; Width = width; OffsetAngle = offsetAngle; Geometry = geometry; }
     }
+    /// <summary>Author-only test inputs in world coordinates. They never modify a source asset.</summary>
+    public sealed class GameplayRangeSimulation
+    {
+        public Vector3 Owner, Facing = Vector3.right, Target = new Vector3(2.2f, .6f, 1.4f), Point = new Vector3(1.4f, -.65f, .9f);
+        public bool HasTarget = true, HasPoint = true;
+        public string Caller = "";
+    }
     /// <summary>Stable source identity. Providers receive a fresh serialized source on every read, including unsaved Undo changes.</summary>
     public readonly struct GameplayRangePreviewContext
     {
@@ -68313,8 +68785,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public readonly int AbilityLevel;
         public readonly GameplayActorProfileAsset Profile;
         public readonly GameplayHitPose? HitPose;
-        public GameplayRangePreviewContext(Object asset, string propertyPath, int abilityLevel = 1, GameplayActorProfileAsset profile = null, GameplayHitPose? hitPose = null)
-        { Asset = asset; PropertyPath = propertyPath; AbilityLevel = abilityLevel; Profile = profile; HitPose = hitPose; }
+        public readonly GameplayRangeSimulation Simulation;
+        public readonly GameplaySkillDocumentAsset Document;
+        public GameplayRangePreviewContext(Object asset, string propertyPath, int abilityLevel = 1, GameplayActorProfileAsset profile = null,
+            GameplayHitPose? hitPose = null, GameplayRangeSimulation simulation = null, GameplaySkillDocumentAsset document = null)
+        { Asset = asset; PropertyPath = propertyPath; AbilityLevel = abilityLevel; Profile = profile; HitPose = hitPose; Simulation = simulation; Document = document; }
     }
     public interface IGameplayRangePreviewProvider
     {
@@ -68356,10 +68831,13 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 var property = context.PropertyPath == null ? null : serialized.FindProperty(context.PropertyPath);
                 if (context.PropertyPath != null && property == null) return false;
                 foreach (var provider in GameplayAuthoringProviders.Ranges)
-                    if (provider.Supports(context, property)) {
-                        try { shape = provider.Read(context, property); return true; }
-                        catch (Exception ex) { error = ex.Message; return false; }
+                    try
+                    {
+                        if (!provider.Supports(context, property)) continue;
+                        shape = provider.Read(context, property);
+                        return true;
                     }
+                    catch (Exception ex) { error = context.PropertyPath + " · " + ex.Message; return false; }
             }
             return false;
         }
@@ -68367,7 +68845,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         public static void Draw(Rect rect, GameplayRangePreviewShape shape)
         {
             if (Event.current.type != EventType.Repaint) return;
-            if(shape.Geometry!=null){DrawCanonicalGeometry(rect,shape.Geometry);return;}
+            if(shape.Geometry!=null){CanonicalViews.GetValue(shape.Geometry, g => new GameplayRangeViewport()).Draw(rect, new[]{(shape.Geometry, new Color(.12f,.65f,.8f,.72f))}, shape.Geometry.Plane==GameplaySpatialPlane.XZ, null, null);return;}
             EditorGUI.DrawRect(rect, new Color(.1f, .12f, .14f));
             Vector2 origin = new Vector2(rect.x + rect.width * .35f, rect.center.y);
             float extent = Mathf.Max(.01f, shape.Kind == GameplayRangePreviewShapeKind.Line ? Mathf.Max(shape.Length, shape.Width) : shape.Radius);
@@ -68400,22 +68878,105 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             }
             finally { Handles.color = old; Handles.EndGUI(); }
         }
-        private static void DrawCanonicalGeometry(Rect rect, GameplaySearchGeometry geometry)
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GameplaySearchGeometry,GameplayRangeViewport> CanonicalViews
+            = new System.Runtime.CompilerServices.ConditionalWeakTable<GameplaySearchGeometry,GameplayRangeViewport>();
+    }
+
+    /// <summary>One world-coordinate viewport and a cached, approximate raster of the exact Contains rule.</summary>
+    internal sealed class GameplayRangeViewport
+    {
+        private const int Columns=52, Rows=32;
+        private (GameplaySearchGeometry geometry, Color color)[] _items;
+        private readonly List<(Rect rect, Color color)> _runs=new List<(Rect,Color)>();
+        private bool _xz;
+        private float _aspect, _slice, _halfWidth, _halfHeight;
+        private Vector2 _center;
+
+        public void Draw(Rect rect, (GameplaySearchGeometry geometry,Color color)[] items, bool xz, float? slice, GameplayRangeSimulation simulation)
         {
-            EditorGUI.DrawRect(rect,new Color(.1f,.12f,.14f));
-            if(geometry.Shape==GameplaySearchShape.Single){GUI.Label(rect,"Single：查询指定目标身份，不定义面积。");return;}
-            float extent=Mathf.Max(1,geometry.BoundsRadius)*1.05f;
-            const int columns=64,rows=40;
-            float cellWidth=rect.width/columns,cellHeight=rect.height/rows;
-            for(int y=0;y<rows;y++)for(int x=0;x<columns;x++){
-                float px=((x+.5f)/columns*2-1)*extent,py=(1-(y+.5f)/rows*2)*extent;
-                var point=geometry.Plane==GameplaySpatialPlane.XZ?new GameplayPoint(geometry.Origin.X+px,geometry.Origin.Y,geometry.Origin.Z+py):
-                    new GameplayPoint(geometry.Origin.X+px,geometry.Origin.Y+py,geometry.Origin.Z);
-                if(geometry.Contains(geometry.SingleTarget,point))EditorGUI.DrawRect(new Rect(rect.x+x*cellWidth,rect.y+y*cellHeight,cellWidth+.1f,cellHeight+.1f),new Color(.12f,.65f,.8f,.75f));
+            if(Event.current.type!=EventType.Repaint||items.Length==0||rect.width<=0||rect.height<=0)return;
+            var sample=items[0].geometry.Origin;
+            float depth=slice??(xz?sample.Y:sample.Z);
+            float aspect=rect.width/rect.height;
+            if(_items==null||!_items.SequenceEqual(items)||_xz!=xz||_slice!=depth||!Mathf.Approximately(_aspect,aspect))
+                Rebuild(items,xz,depth,aspect);
+            EditorGUI.DrawRect(rect,new Color(.09f,.12f,.15f));
+            foreach(var run in _runs)
+                EditorGUI.DrawRect(new Rect(rect.x+run.rect.x*rect.width,rect.y+run.rect.y*rect.height,
+                    run.rect.width*rect.width+.1f,run.rect.height*rect.height+.1f),run.color);
+            foreach(var item in items)
+            {
+                var g=item.geometry;
+                Mark(g.Origin,item.color,"");
+                if(g.Shape!=GameplaySearchShape.Circle&&g.Shape!=GameplaySearchShape.GridCells&&g.Shape!=GameplaySearchShape.Single)
+                {
+                    var d=g.Direction;
+                    float length=Mathf.Min(1,g.BoundsRadius*.35f);
+                    Mark(new GameplayPoint(g.Origin.X+d.X*length,g.Origin.Y+d.Y*length,g.Origin.Z+d.Z*length),item.color,"→");
+                }
             }
-            GUI.Label(new Rect(rect.x+4,rect.y+4,rect.width-8,20),geometry.Plane==GameplaySpatialPlane.ThreeDimensional?"3D / XY 中心切片（非整个立体）":geometry.Plane+" / 同一 Contains 规则");
-            EditorGUI.DrawRect(new Rect(rect.center.x-1,rect.center.y-5,2,10),Color.white);
-            EditorGUI.DrawRect(new Rect(rect.center.x-5,rect.center.y-1,10,2),Color.white);
+            if(simulation!=null)
+            {
+                var owner=simulation.Owner;
+                Mark(new GameplayPoint(owner.x,owner.y,owner.z),Color.white,"自身");
+                Mark(new GameplayPoint(owner.x+simulation.Facing.x,owner.y+simulation.Facing.y,owner.z+simulation.Facing.z),Color.white,"→");
+                if(simulation.HasTarget) Mark(new GameplayPoint(simulation.Target.x,simulation.Target.y,simulation.Target.z),Color.yellow,"目标");
+                if(simulation.HasPoint) Mark(new GameplayPoint(simulation.Point.x,simulation.Point.y,simulation.Point.z),Color.cyan,"地点");
+            }
+            string note=items.All(i=>i.geometry.Shape==GameplaySearchShape.Single)?"Single · 目标身份查询，无面积":
+                $"{(xz?"XZ":"XY")} 切片 · {(xz?"Y":"Z")} = {depth:0.##} · 横向 {_halfWidth*2:0.##} 单位";
+            GUI.Label(new Rect(rect.x+4,rect.y+4,rect.width-8,19),note,EditorStyles.whiteMiniLabel);
+
+            void Mark(GameplayPoint point,Color color,string label)
+            {
+                Vector2 p=Project(point);
+                p=new Vector2(rect.center.x+(p.x-_center.x)/_halfWidth*rect.width*.5f,
+                    rect.center.y-(p.y-_center.y)/_halfHeight*rect.height*.5f);
+                if(!rect.Contains(p))return;
+                EditorGUI.DrawRect(new Rect(p.x-2,p.y-2,5,5),color);
+                if(label.Length>0) GUI.Label(new Rect(Mathf.Min(p.x+4,rect.xMax-32),p.y-11,30,17),label,EditorStyles.whiteMiniLabel);
+            }
+        }
+
+        private Vector2 Project(GameplayPoint point)=>new Vector2(point.X,_xz?point.Z:point.Y);
+
+        private void Rebuild((GameplaySearchGeometry geometry,Color color)[] items,bool xz,float depth,float aspect)
+        {
+            _items=items;_xz=xz;_slice=depth;_aspect=aspect;
+            _runs.Clear();
+            var minimum=new Vector2(float.PositiveInfinity,float.PositiveInfinity);
+            var maximum=new Vector2(float.NegativeInfinity,float.NegativeInfinity);
+            foreach(var item in items)
+            {
+                var geometry=item.geometry;
+                float extent=Mathf.Max(.5f,geometry.BoundsRadius);
+                Vector2 center=Project(geometry.Origin);
+                minimum=Vector2.Min(minimum,center-Vector2.one*extent);
+                maximum=Vector2.Max(maximum,center+Vector2.one*extent);
+            }
+            _center=(minimum+maximum)*.5f;
+            Vector2 size=(maximum-minimum)*.55f;
+            _halfHeight=Mathf.Max(size.y,size.x/aspect);
+            _halfWidth=_halfHeight*aspect;
+            foreach(var item in items)
+            {
+                if(item.geometry.Shape==GameplaySearchShape.Single)continue;
+                for(int y=0;y<Rows;y++)
+                {
+                    float second=_center.y+(1-2*(y+.5f)/Rows)*_halfHeight;
+                    int start=-1;
+                    for(int x=0;x<=Columns;x++)
+                    {
+                        float first=_center.x+(2*(x+.5f)/Columns-1)*_halfWidth;
+                        var point=xz?new GameplayPoint(first,depth,second):new GameplayPoint(first,second,depth);
+                        bool inside=x<Columns&&item.geometry.Contains(item.geometry.SingleTarget,point);
+                        if(inside&&start<0)start=x;
+                        if(inside||start<0)continue;
+                        _runs.Add((new Rect((float)start/Columns,(float)y/Rows,(float)(x-start)/Columns,1f/Rows),item.color));
+                        start=-1;
+                    }
+                }
+            }
         }
     }
 }
@@ -68520,9 +69081,11 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
 ````csharp
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using FRFrame.Gameplay.Authoring;
 using FRFrame.Gameplay.Standard;
 using UnityEditor;
+using UnityEngine;
 
 namespace FRFrame.Gameplay.Editor.SkillAuthoring
 {
@@ -68531,15 +69094,29 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     public sealed class GameplayStandardRangePreview : IGameplayRangePreviewProvider
     {
         public bool Supports(GameplayRangePreviewContext context, SerializedProperty property)=>
-            property?.propertyType==SerializedPropertyType.ManagedReference && (property.managedReferenceValue is GameplaySearchTargetActionAuthoring || property.managedReferenceValue is GameplayHitWindowData);
+            (property==null && context.Asset is GameplayAreaDefinitionAsset or GameplayHitWindowDefinitionAsset) ||
+            (property?.propertyType==SerializedPropertyType.ManagedReference &&
+                !(context.Asset is GameplayHitWindowDefinitionAsset && property.propertyPath=="values") &&
+                property.managedReferenceValue is GameplaySearchTargetActionAuthoring or GameplayHitWindowData or GameplayAreaDefinitionData);
         public GameplayRangePreviewShape Read(GameplayRangePreviewContext context, SerializedProperty property)
         {
-            if(property.managedReferenceValue is GameplayHitWindowData window)
+            object source=property?.managedReferenceValue ?? (context.Asset as GameplayDefinitionAsset)?.CaptureGraphValues();
+            var simulation=context.Simulation??new GameplayRangeSimulation();
+            var direction=new Extensions.GameplayDirection(simulation.Facing.x,simulation.Facing.y,simulation.Facing.z);
+            var owner=Point(simulation.Owner);
+            if(source is GameplayHitWindowData window)
             {
                 var definition=window.PreviewDefinition();
                 if(definition.Anchor.Kind!=GameplayHitAnchorKind.OwnerRoot&&!context.HitPose.HasValue)
                     throw new InvalidOperationException("当前姿态缺少所选挂点或骨骼。请选择匹配的动画模型并移动编排光标。");
-                var pose=context.HitPose??new GameplayHitPose(default,new Extensions.GameplayDirection(1,0));
+                var pose=context.HitPose??new GameplayHitPose(owner,direction);
+                if(context.HitPose.HasValue)
+                {
+                    var basis=Quaternion.FromToRotation(Vector3.right,simulation.Facing);
+                    var p=pose.Position;
+                    pose=new GameplayHitPose(Point(simulation.Owner+basis*new Vector3(p.X,p.Y,p.Z)),
+                        Rotate(pose.Forward,basis),Rotate(pose.Up,basis),pose.Revision);
+                }
                 if (!definition.AcceptsPose(pose))
                     throw new InvalidOperationException("所选锚点的前向无法投影到窗口平面。");
                 var hit=definition.Geometry(pose);
@@ -68547,10 +69124,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,
                     $"有效窗 {definition.Duration:0.###}s · {label} · {hit.Plane}", geometry:hit);
             }
-            var source=(GameplaySearchTargetActionAuthoring)property.managedReferenceValue;
             using(var world=new GameplayStandardWorld())
             {
-                var actor=world.CreateActor(default,1);
+                var actor=world.CreateActor(owner,1);
+                actor.Facing=direction;
                 if(context.Profile!=null)context.Profile.Build(new GameplayAuthoringBuildContext()).Initialize(actor);
                 else{
                     actor.Attributes.Register(new GameplayAttributeId("Attack"),100);
@@ -68560,18 +69137,46 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     actor.Attributes.Register(new GameplayAttributeId("Shield"),0);
                     actor.Attributes.Register(new GameplayAttributeId("Defense"),0);
                 }
-                var target=world.CreateActor(new GameplayPoint(3,0,3),2);
-                var entry=AssetDatabase.LoadMainAssetAtPath(AssetDatabase.GetAssetPath(context.Asset)) as GameplaySkillDocumentAsset;
-                var scalarDefaults=new List<KeyValuePair<GameplayTag,float>>();
-                if(entry?.Defaults!=null)foreach(var item in entry.Defaults)if(item!=null)scalarDefaults.Add(new KeyValuePair<GameplayTag,float>(item.Key.Build(),item.Value));
+                var target=simulation.HasTarget?world.CreateActor(Point(simulation.Target),2):null;
+                var entry=context.Document??context.Asset as GameplaySkillDocumentAsset;
+                var scalarDefaults=new Dictionary<GameplayTag,float>();
+                if(entry?.Defaults!=null)foreach(var item in entry.Defaults)if(item!=null)scalarDefaults.Add(item.Key.Build(),item.Value);
+                foreach(string line in simulation.Caller.Split('\n'))
+                {
+                    if(string.IsNullOrWhiteSpace(line))continue;
+                    int equals=line.IndexOf('=');
+                    if(equals<1||!float.TryParse(line.Substring(equals+1),NumberStyles.Float,CultureInfo.InvariantCulture,out float value)||!float.IsFinite(value))
+                        throw new FormatException("Caller 每行需要一个有效的 标签=数值。");
+                    scalarDefaults[new GameplayTag(line.Substring(0,equals).Trim())]=value;
+                }
                 var defaults=new GameplayContextValues(scalarDefaults);
-                var input=new GameplayContext(actor.Id,new GameplayTargetData(target.Id,target.Position),values:defaults,abilityLevel:Math.Max(1,context.AbilityLevel));
-                var action=(GameplaySearchTargetAction)source.Build(new GameplayAuthoringBuildContext());
-                if(!action.TryCreateRequest(input,actor,out var request))throw new InvalidOperationException("当前预览输入缺少合法搜索原点/方向，或两个端点重合。");
-                var geometry=request.Geometry;
-                return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,"正式范围 / "+geometry.Shape,geometry.Radius,
+                var input=new GameplayContext(actor.Id,new GameplayTargetData(target?.Id??default,simulation.HasPoint?Point(simulation.Point):(GameplayPoint?)null),
+                    values:defaults,abilityLevel:Math.Max(1,context.AbilityLevel));
+                GameplaySearchGeometry geometry;
+                string label;
+                if(source is GameplayAreaDefinitionData area)
+                {
+                    geometry=area.PreviewGeometry(actor,input);
+                    label=area.FollowOwner?"区域 · 初始范围 · 施放后跟随持有者":"区域 · 初始范围";
+                }
+                else
+                {
+                    var search=(GameplaySearchTargetActionAuthoring)source;
+                    if(!search.TryPreviewRequest(input,actor,out var request))
+                        throw new InvalidOperationException("当前输入缺少有效原点、目标或方向，或两个端点重合。");
+                    geometry=request.Geometry;
+                    label=search.RepeatFromResult?"搜索 · 首次查询 · 后续命中后重选":"搜索 · 查询范围";
+                }
+                return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,label,geometry.Radius,
                     geometry.Angle,geometry.Length,geometry.Width,geometry:geometry);
             }
+        }
+        private static GameplayPoint Point(Vector3 value)=>new GameplayPoint(value.x,value.y,value.z);
+        private static Extensions.GameplayDirection Rotate(Extensions.GameplayDirection value,Quaternion rotation)
+        {
+            if(!value.IsValid)return default;
+            var direction=rotation*new Vector3(value.X,value.Y,value.Z);
+            return new Extensions.GameplayDirection(direction.x,direction.y,direction.z);
         }
     }
 }
@@ -68907,7 +69512,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var local=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==owner);bool effect=local!=null&&GameplayGraphEffectCallbacks.IsPort(local.Payload,key);
             var port = card.InstantiatePort(Orientation.Horizontal, Direction.Output, Port.Capacity.Multi, effect?typeof(GameplayEffectDefinitionAsset):typeof(GameplaySkillActionAuthoring));
             port.RemoveManipulator(port.edgeConnector);port.AddManipulator(new EdgeConnector<Edge>(new CreationConnector(this)));
-            port.portName = GameplaySkillFieldSchema.PortName(key); port.userData = new Socket { Owner = owner, Port = key, Scheduled = scheduled };
+            port.portName = GameplaySkillFieldSchema.PortName(key,_document.AuthoringGraph,owner); port.userData = new Socket { Owner = owner, Port = key, Scheduled = scheduled };
             port.AddManipulator(new ContextualMenuManipulator(evt=>{
                 if(local?.Payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(key))
                 {
@@ -68931,7 +69536,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 evt.StopPropagation();
             }));
-            port.portColor=GameplayNodeVisuals.Color(GameplaySkillNodeDisplay.Kind(_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey)));port.tooltip=GameplaySkillFieldSchema.PortName(key)+" · "+(scheduled?"按此时间事件调用；时点和次序在编排中编辑。":effect?"只消费接收卡的效果定义，不执行接收卡的后续行为。":"连接同一执行链的后续行为；多条连接按保存的顺序调用。");port.style.marginRight = 0; card.outputContainer.Add(port); _outputs[Key(owner, key)] = port; return port;
+            port.portColor=GameplayNodeVisuals.Color(GameplaySkillNodeDisplay.Kind(_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey)));port.tooltip=port.portName+" · "+(scheduled?"按此时间事件调用；时点和次序在编排中编辑。":effect?"只消费接收卡的效果定义，不执行接收卡的后续行为。":"连接同一执行链的后续行为；多条连接按保存的顺序调用。");port.style.marginRight = 0; card.outputContainer.Add(port); _outputs[Key(owner, key)] = port; return port;
         }
         private static string Key(string id, string port) => id + ":" + port;
         private void AddWire(Port output, Port input, string id, bool scheduled)
@@ -70978,7 +71583,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 string[] fields=relative.Split('.');string leaf=fields.Last();
                 if(StructuralFields.Contains(leaf)||fields.Contains("Definitions")||fields.Contains("CastEvent")||fields.Contains("Trigger")&&fields.Contains("EventTag")||leaf=="Conditions")change.Structural=true;
                 if(fields.Any(ContextFields.Contains))change.Context=true;
-                if(fields.Any(f=>f=="Position"||f=="Size"))change.Layout=true;
+                bool layout=fields.Any(f=>f=="Position"||f=="Size");
+                change.Layout|=layout;
+                if(!change.Context&&!layout&&path.StartsWith("authoringGraph.",StringComparison.Ordinal))
+                {
+                    var action=(graph.Nodes.Find(n=>n.Id==owner)?.Payload as GameplayActionNodePayload)?.Action;
+                    object payload=(object)action??graph.LocalDefinitions.Find(d=>d.Id==owner)?.Payload;
+                    if(payload is IGameplayGraphPortConstraint or IGameplayGraphContextContract or IGameplayActionPlacementConstraint or IGameplayScopedAuthoring)
+                        change.Context=true;
+                }
                 bool Resolve(string collection,int count,Func<int,string> identity){
                     string prefix="authoringGraph."+collection+".Array.data[";
                     if(!path.StartsWith(prefix,StringComparison.Ordinal))return false;
@@ -71129,7 +71742,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var validation = new GameplayAuthoringValidationContext();
             GameplayGraphCompiler.ValidateStructure(graph, validation, label, false);
             if (validation.HasErrors) throw new InvalidOperationException(string.Join("\n", validation.Issues));
-            GameplayGraphCompiler.ValidateActionOrder(graph);
             GameplayReferenceCatalogAsset catalog=null;string[] nextTags=null;
             if(generatedTags!=null){
                 catalog=GameplayReferenceCatalogProvider.Find(GameplayReferenceCatalogProvider.Scope(document),out string error);
@@ -71277,7 +71889,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         /// <summary>One creation transaction can consume a dragged real execution/schedule port.
         /// No authoring data or Undo is published until the complete connection validates.</summary>
         public sealed class CreationLink {public string Owner,Port,Input="Execute";public bool Scheduled;}
-        private static void ConnectCreated(GameplayAuthoringGraph graph,CreationLink link,string id)
+        internal static void ConnectCreated(GameplayAuthoringGraph graph,CreationLink link,string id)
         {
             if(link==null)return;
             if(link.Scheduled){graph.Timelines.SelectMany(t=>t.Events).Single(e=>e.Id==link.Owner).EntryNodeId=id;return;}
@@ -73136,7 +73748,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(changedPaths!=null)foreach(string path in changedPaths.Where(p=>p.StartsWith("authoringGraph.",StringComparison.Ordinal)))SetPending(staged,path.Substring(15),serialized.FindProperty(path));
                 var validation=new GameplayAuthoringValidationContext();GameplayGraphCompiler.ValidateStructure(staged,validation,"字段",false);
                 if(validation.HasErrors)throw new InvalidOperationException(string.Join("\n",validation.Issues));
-                GameplayGraphCompiler.ValidateActionOrder(staged);
                 }
                 Errors.Remove(document.GetInstanceID());bool changed=serialized.ApplyModifiedProperties();if(changed)GameplaySkillAuthoringCommands.NotifyFields(document,invalidation);return changed;
             }catch(Exception error){Errors[document.GetInstanceID()]=error.Message;serialized.Update();return false;}
@@ -73175,7 +73786,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var action = (node.Payload as GameplayActionNodePayload)?.Action;
             return action == null ? "缺失行为" : GameplaySkillNodeDescriptors.Get(action.GetType()).DisplayName;
         }
-        public static string PortName(string path)
+        public static string PortName(string path, GameplayAuthoringGraph graph = null, string owner = null)
         {
             if(path==GameplayGraphEffectCallbacks.Applied)return "首次成功应用";
             if(path==GameplayGraphEffectCallbacks.StackChanged)return "层数变化";
@@ -73196,7 +73807,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 key == "OnWindowFinished" ? "有效窗自然结束" : key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
                 key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" : key == "OnAbsorbed" ? "吸收 · 护盾仍存续" :
                 key == "OnRemoved" ? "移除 · 原目标" :
-                ObjectNames.NicifyVariableName(path);
+                DescribePort(path, graph, owner);
+        }
+
+        private static string DescribePort(string path, GameplayAuthoringGraph graph, string owner)
+        {
+            object payload = (graph?.Nodes.Find(n => n.Id == owner)?.Payload as GameplayActionNodePayload)?.Action ??
+                (object)graph?.LocalDefinitions.Find(d => d.Id == owner)?.Payload;
+            var field = GameplayGraphFields.ActionArrays(payload).Find(s => s.Path == path)?.Field;
+            return (field == null ? null : Attribute.GetCustomAttribute(field, typeof(InspectorNameAttribute)) as InspectorNameAttribute)?.displayName
+                ?? ObjectNames.NicifyVariableName(path);
         }
 
         public static void Draw(GameplaySkillDocumentAsset document, string nodeId, string definitionId = null, bool cardFields = false)
@@ -73734,10 +74354,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 string unavailable = GameplayGraphPortPolicy.Unavailable(graph, ownerId, port);
                 if (steps.Length == 0)
                 {
-                    GUILayout.Label(new GUIContent(PortName(port) + " · 未连接", unavailable ?? "可从画布行尾连接行为。"), EditorStyles.miniLabel);
+                    GUILayout.Label(new GUIContent(PortName(port,graph,ownerId) + " · 未连接", unavailable ?? "可从画布行尾连接行为。"), EditorStyles.miniLabel);
                     return;
                 }
-                GUILayout.Label(new GUIContent(PortName(port) + " · " + steps.Length + " 步", unavailable), EditorStyles.miniBoldLabel);
+                GUILayout.Label(new GUIContent(PortName(port,graph,ownerId) + " · " + steps.Length + " 步", unavailable), EditorStyles.miniBoldLabel);
                 foreach (var step in steps)
                     using (new EditorGUILayout.HorizontalScope())
                     {
@@ -74117,11 +74737,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(typeof(GameplayEffectExecutionAuthoring).IsAssignableFrom(type))return "效果/瞬时";
             if(type==typeof(GameplayRotateToPointActionAuthoring))return "任务 / 高级显式控制（可选）";
             var descriptor=Get(type);
+            if (descriptor.AuthoringScope != "FRFrame" && descriptor.AuthoringScope != "Common" && descriptor.AuthoringScope != "Other")
+            {
+                return ExternalCategory(descriptor.CategoryPath) ?? descriptor.AuthoringScope + "/扩展行为";
+            }
             if(descriptor.IsAnimation)return "时间与表现/独立动画控制";
             if(descriptor.VisualKind==GameplayNodeVisualKind.Presentation)return "时间与表现/特效音效与飘字";
             if(typeof(GameplaySkillActionAuthoring).IsAssignableFrom(type))return descriptor.AuthoringScope=="FRFrame"?"控制/其它标准行为":descriptor.AuthoringScope+"/扩展行为";
             if(typeof(GameplaySkillTriggerAuthoring).IsAssignableFrom(type))return "条件与触发/触发事件";
             return "效果 / 高级配置";
+        }
+        private static string ExternalCategory(string path)
+        {
+            var segments = (path ?? "").Split('/').Select(segment => segment.Trim()).ToArray();
+            return segments.Length >= 2 && segments.All(segment => segment.Length != 0) ? string.Join("/", segments) : null;
         }
         private static readonly Type[] ProviderTypes = TypeCache.GetTypesDerivedFrom<IGameplaySkillNodeEditorDescriptorProvider>()
             .Where(t => !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) != null)
@@ -74141,7 +74770,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 catch (Exception ex) { UnityEngine.Debug.LogWarning("Skill node descriptor " + providerType.FullName + ": " + ex.Message); }
             }
-            return Fallback(type);
+            var fallback=Fallback(type);
+            if(property==null)TypeDescriptions[type]=fallback;
+            return fallback;
         }
 
         public static IReadOnlyList<string> DuplicateClaims(Type type)
@@ -74154,12 +74785,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         claims.Add(providerType.FullName);
                 }
                 catch (Exception ex) { claims.Add(providerType.FullName + " failed: " + ex.Message); }
-            return claims.Count > 1 ? new[] { type.FullName + ": descriptor providers: " + string.Join(", ", claims) } :
-                Array.Empty<string>();
+            var issues = new List<string>();
+            if (claims.Count > 1 || claims.Any(claim => claim.Contains(" failed: ")))
+                issues.Add(type.FullName + ": descriptor providers: " + string.Join(", ", claims));
+            var descriptor = Get(type);
+            if (descriptor.AuthoringScope != "FRFrame" && descriptor.AuthoringScope != "Common" &&
+                descriptor.AuthoringScope != "Other" && ExternalCategory(descriptor.CategoryPath) == null)
+                issues.Add($"{descriptor.DisplayName} 未声明有效的业务分类，显示在 {descriptor.AuthoringScope}/扩展行为。");
+            return issues;
         }
 
         /// <summary>Check every concrete projected role, including plugin Trigger, Condition and Target nodes.</summary>
-        public static IReadOnlyList<string> DuplicateClaims(GameplaySkillDefinitionAsset skill)
+        public static IReadOnlyList<string> DuplicateClaims(GameplayDefinitionAsset skill)
         {
             if (skill == null) return Array.Empty<string>();
             using var so = new SerializedObject(skill);
@@ -74167,9 +74804,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 .Where(type => type != null).Distinct().SelectMany(DuplicateClaims).ToArray();
         }
 
-        private static GameplaySkillNodeEditorDescriptor Fallback(Type type) =>
-            new GameplaySkillNodeEditorDescriptor(ObjectNames.NicifyVariableName(type.Name.Replace("Authoring", "")),
-                "其它 / 技术类型 / " + type.Assembly.GetName().Name, "缺少编辑器说明；请为此类型提供 descriptor。", "Other", type.FullName, true);
+        private static GameplaySkillNodeEditorDescriptor Fallback(Type type)
+        {
+            string scope = null;
+            if (typeof(FRFrame.Gameplay.Authoring.Graph.IGameplayScopedAuthoring).IsAssignableFrom(type) && type.GetConstructor(Type.EmptyTypes) != null)
+            {
+                try { scope = ((FRFrame.Gameplay.Authoring.Graph.IGameplayScopedAuthoring)Activator.CreateInstance(type)).RequiredScope; }
+                catch (Exception error) { UnityEngine.Debug.LogWarning(type.FullName + " · " + error.Message); }
+            }
+            return new GameplaySkillNodeEditorDescriptor(ObjectNames.NicifyVariableName(type.Name.Replace("Authoring", "")),
+                null, "缺少编辑器说明；请为此类型提供 descriptor。", scope ?? "Other", type.FullName, string.IsNullOrEmpty(scope));
+        }
     }
 
     /// <summary>First-party descriptions stay in FRFrame; game nodes are supplied by their Editor assembly.</summary>
@@ -75020,7 +75665,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private void UndoChanged() {
 
-            _diagnosticsStale=true;DisposePreview();string shape=Shape();
+            _diagnosticsStale=true;_dependencyGraph=null;DisposePreview();string shape=Shape();
             if(shape!=_shape){Canvas?.Load(_document);_shape=shape;}else Canvas?.SynchronizeLayout();
             Canvas?.SelectNodeWithoutCamera(_selected);RememberSourceVersion();_details?.MarkDirtyRepaint();Repaint();
 
@@ -75125,7 +75770,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if(_policySelection==null&&_definition==null&&Canvas.SelectedEventId==null)Canvas.DrawMainAnimationSettings(_selected);
                     DrawTimelineFields(Canvas.SerializedSource,_document,_selected,Canvas.SelectedEventId,Canvas);
                 }
-                else if(_detailTab==1){DrawRangePreview();DrawPreview();}
+                else if(_detailTab==1)
+                {
+                    using var previewColumn=new EditorGUILayout.VerticalScope(GUILayout.Width(Mathf.Max(100,_inspector.resolvedStyle.width-24)));
+                    DrawRangePreview();
+                    DrawPreview();
+                }
                 else if(_detailTab==2){DrawInstallation();if(GUILayout.Button("打开 Runtime Debugger"))EditorWindow.GetWindow<FRFrame.Gameplay.Editor.RuntimeDebugger.GameplayRuntimeDebuggerWindow>().Show();}else DrawDiagnostics();
                 GUILayout.Space(10);
                 if (_selected != null && GUILayout.Button("在图中定位")) Canvas.FocusNode(_selected);
@@ -75208,6 +75858,23 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 ((GameplayActionNodePayload)candidate.Payload).Action=action;candidate.Payload.Definitions.Clear();candidateValue.Payload=value;
                 if(value!=null)candidate.Payload.Definitions.Add(new GameplayDefinitionBinding{PropertyPath=path,LocalId=candidateValue.Id});
                 var reason=check(link.Owner,link.Port,candidate.Id,link.Input,link.Scheduled);
+                if(reason==null&&!link.Scheduled&&(action is IGameplayActionPlacementConstraint ||
+                    candidates.Nodes.Any(n=>(n.Payload as GameplayActionNodePayload)?.Action is IGameplayActionPlacementConstraint)))
+                {
+                    var before=candidates.Connections.ToArray();
+                    try
+                    {
+                        GameplaySkillAuthoringCommands.ConnectCreated(candidates,link,candidate.Id);
+                        GameplayGraphCompiler.ValidateActionOrder(candidates);
+                    }
+                    catch(InvalidOperationException error) { return error.Message; }
+                    finally
+                    {
+                        candidates.Connections.Clear();
+                        candidates.Connections.AddRange(before);
+                        candidate.CallbackOwnerDefinitionId=null;
+                    }
+                }
                 return reason==null?null:reason+" 请改从搜索逐目标/弹体命中连接，或明确使用自身目标。";
             }
             if(timeline!=null){
@@ -75320,6 +75987,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
     {
         private readonly List<GameplayAuthoringValidationIssue> _diagnostics=new List<GameplayAuthoringValidationIssue>();
         private bool _diagnosticsStale=true;
+        private GameplayAuthoringDependencyGraph _dependencyGraph;
+        private GameplaySkillDocumentAsset _dependencyDocument;
+        private int _dependencyRevision;
+        private bool _showDependencies, _includeDependencies, _dependencyProblems;
         private Vector3? _returnPan;private Vector3 _returnScale;private string _returnNode;
         public IReadOnlyList<GameplayAuthoringValidationIssue> Diagnostics=>_diagnostics;
         public void ValidateDocument()
@@ -75337,6 +76008,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,node.Id,"调用者输入契约：此规则保留 TriggerEvent.Context；宿主须提供下游所需 Actor / Point。地点回调之后仍按实际来源检查，不能假定自身。"));
             if(!_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error))
                 _diagnostics.AddRange(GameplaySkillContextVariables.For(_document).Diagnostics());
+            foreach(string issue in GameplaySkillNodeDescriptors.DuplicateClaims(_document))
+                _diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning,"创作分类",issue));
             _feedback=_diagnostics.Any(i=>i.Severity==GameplayAuthoringIssueSeverity.Error)?"编译未通过；点击校验条目定位同源字段。":"正式运行图编译通过；未接入流程的节点提示另列。";
             _detailTab=3;_details?.MarkDirtyRepaint();Repaint();
         }
@@ -75344,6 +76017,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         {if(!_diagnostics.Any(i=>i.Path==node&&i.Message==message))_diagnostics.Add(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Error,node,message));}
         private void DrawDiagnostics()
         {
+            if (_showDependencies = EditorGUILayout.Foldout(_showDependencies, "资产依赖与修复", true))
+                DrawDependencies();
             EditorGUILayout.HelpBox(_diagnosticsStale?"配置已修改，以下诊断已过期；重新校验可更新。":"诊断对应当前正式数据；未接入流程的节点不参与执行。",_diagnosticsStale?MessageType.Warning:MessageType.Info);
             if(GUILayout.Button("重新校验正式技能"))ValidateDocument();
             using(new EditorGUI.DisabledScope(!_returnPan.HasValue))if(GUILayout.Button("返回定位前的视角")){Canvas.UpdateViewTransform(_returnPan.Value,_returnScale);_selected=_returnNode;Canvas.SelectNodeWithoutCamera(_selected);_returnPan=null;}
@@ -75352,6 +76027,138 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 foreach(var issue in group){if(GUILayout.Button(new GUIContent(issue.Message,issue.Path),new GUIStyle(EditorStyles.miniButton){wordWrap=true,alignment=TextAnchor.MiddleLeft}))NavigateDiagnostic(issue);GUILayout.Label(issue.Path,EditorStyles.wordWrappedMiniLabel);}
             }
         }
+
+        private GameplayAuthoringDependencyGraph Dependencies()
+        {
+            int revision = EditorUtility.GetDirtyCount(_document);
+            if (_dependencyGraph == null || _dependencyDocument != _document || _dependencyRevision != revision)
+            {
+                _dependencyDocument = _document;
+                _dependencyRevision = revision;
+                _dependencyGraph = GameplayAuthoringDependencyGraph.BuildDefinition(_document);
+            }
+            return _dependencyGraph;
+        }
+
+        private void DrawDependencies()
+        {
+            var current = _document;
+            _includeDependencies = GUILayout.Toolbar(_includeDependencies ? 1 : 0, new[] { "本体", "包含实际引用" }) == 1;
+            _dependencyProblems = EditorGUILayout.ToggleLeft("仅缺失 / 错误", _dependencyProblems);
+            if (GUILayout.Button("刷新依赖")) _dependencyGraph = null;
+            var model = Dependencies();
+            IEnumerable<GameplayAuthoringDependencyNode> nodes = _includeDependencies ? model.Nodes : new[] { model.Root };
+            foreach (var source in nodes)
+            {
+                var edges = source.Edges.Where(e => !_dependencyProblems || e.Missing).ToArray();
+                if (edges.Length == 0 && source != model.Root) continue;
+                GUILayout.Label(source.Asset.name, EditorStyles.boldLabel);
+                if (!_dependencyProblems && source.UnusedDefinitions > 0)
+                    GUILayout.Label($"未参与运行的节点与定义 {source.UnusedDefinitions}", EditorStyles.wordWrappedMiniLabel);
+                foreach (var edge in edges)
+                {
+                    string status = edge.State switch
+                    {
+                        GameplayDependencyState.Inline => "内嵌",
+                        GameplayDependencyState.Optional => "可选空",
+                        GameplayDependencyState.Unset => "空 · 依配置判断",
+                        GameplayDependencyState.Missing => "缺失",
+                        GameplayDependencyState.Invalid => "错误",
+                        _ => "共享 / 引用"
+                    };
+                    string owner = edge.GraphOwner == null ? null : current.AuthoringGraph.Nodes.Find(n=>n.Id==edge.GraphOwner) is GameplayAuthoringNode node
+                        ? GameplaySkillFieldSchema.NodeName(node) : current.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==edge.GraphOwner)?.Name;
+                    string field = edge.GraphOwner == null ? edge.Label.Split('.').Last() : edge.Label;
+                    if (GUILayout.Button(new GUIContent($"{status} · {(owner==null?"":owner+" / ")}{field}", edge.PropertyPath), FindRangeButtonStyle()))
+                    {
+                        if (edge.Open != null) edge.Open();
+                        else if (!string.IsNullOrEmpty(edge.GraphOwner) && edge.Source == _document)
+                            NavigateDiagnostic(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning, edge.GraphOwner + "." + edge.SlotPath, ""));
+                        else
+                        {
+                            GameplayInspectorOperations.EditResource(edge.Source);
+                            if (edge.Source is GameplayDefinitionAsset)
+                                GameplayAuthoringInspector.RequestFieldFocus(edge.Source, edge.PropertyPath);
+                        }
+                    }
+                    if (edge.Target && GUILayout.Button("定位 " + edge.Target.name, EditorStyles.miniButton))
+                    {
+                        if (edge.Ping != null) edge.Ping();
+                        else GameplayInspectorOperations.LocateResource(edge.Target);
+                    }
+                    if (!edge.Missing) continue;
+                    EditorGUILayout.LabelField(edge.Issue + (edge.ExpectedType==null?"":" · "+edge.ExpectedType.Name), EditorStyles.wordWrappedMiniLabel);
+                    if (edge.ExpectedType != null && typeof(GameplayDefinitionAsset).IsAssignableFrom(edge.ExpectedType))
+                    {
+                        using var disabled = new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode ||
+                            edge.Source is GameplayDefinitionAsset { MigrationHistoryOnly: true } ||
+                            !AssetDatabase.IsOpenForEdit(edge.Source) ||
+                            edge.Source is GameplaySkillDocumentAsset doc && GameplaySkillAuthoringCommands.IsReadOnly(doc));
+                        if (GUILayout.Button("绑定已有…", EditorStyles.miniButton))
+                        {
+                            GameplaySkillCreationMenu.Show(Canvas, "选择共享资源 · " + edge.Label, menu =>
+                            {
+                                var choices = AssetDatabase.FindAssets("t:" + edge.ExpectedType.Name, new[] { "Assets" })
+                                    .Select(AssetDatabase.GUIDToAssetPath).Distinct().SelectMany(AssetDatabase.LoadAllAssetsAtPath)
+                                    .OfType<GameplayDefinitionAsset>().Where(a => !a.MigrationHistoryOnly && edge.ExpectedType.IsInstanceOfType(a))
+                                    .OrderBy(a => a.name, StringComparer.Ordinal).ToArray();
+                                string scope = edge.Source is GameplaySkillDocumentAsset skill ? skill.AuthoringGraph.Scope :
+                                    (edge.Source as IGameplayScopedAuthoring)?.RequiredScope;
+                                foreach (var asset in choices)
+                                {
+                                    string path = AssetDatabase.GetAssetPath(asset);
+                                    string message = GameplayActionArrayPolicy.ScopeReason(asset, scope);
+                                    var item = new GUIContent(asset.name, message ?? path);
+                                    if (message != null) menu.AddDisabledItem(item);
+                                    else menu.AddItem(item, false, () =>
+                                    {
+                                        if (_document != current || ConfirmSharedRepair(edge))
+                                            CompleteDependencyRepair(current, () => GameplayAuthoringDependencyRepair.Assign(edge, asset));
+                                    });
+                                }
+                                if (choices.Length == 0) menu.AddDisabledItem(new GUIContent("没有匹配的共享定义"));
+                            });
+                        }
+                        if (edge.GraphOwner != null && GUILayout.Button(new GUIContent("新建内嵌…","使用该类型的默认字段。必填项可在定位后的内嵌定义中配置。"), EditorStyles.miniButton))
+                        {
+                            var menu = new GenericMenu();
+                            foreach (var type in GameplaySkillFieldSchema.Values(edge.ExpectedType))
+                                menu.AddItem(new GUIContent(GameplaySkillFieldSchema.Name(type)), false,
+                                    () => CompleteDependencyRepair(current, () => GameplayAuthoringDependencyRepair.AssignInline(edge, type)));
+                            if (menu.GetItemCount() == 0) menu.AddDisabledItem(new GUIContent("没有可用内嵌类型"));
+                            menu.ShowAsContext();
+                        }
+                        if (!edge.ExpectedType.IsAbstract && typeof(ScriptableObject).IsAssignableFrom(edge.ExpectedType) &&
+                            GUILayout.Button("新建共享定义…", EditorStyles.miniButton) && ConfirmSharedRepair(edge) &&
+                            EditorUtility.DisplayDialog("新建并绑定", "按类型默认值创建草稿，请填写必填项后再试装。撤销绑定会保留可复用的共享定义文件。", "选择位置", "取消"))
+                        {
+                            string path = EditorUtility.SaveFilePanelInProject("新建共享定义", edge.ExpectedType.Name, "asset", "选择一个空闲位置。");
+                            if (path.Length > 0) CompleteDependencyRepair(current, () => GameplayAuthoringDependencyRepair.CreateAndAssign(edge, path));
+                        }
+                    }
+                }
+            }
+        }
+
+        private bool ConfirmSharedRepair(GameplayAuthoringDependencyEdge edge) => edge.Source == _document ||
+            EditorUtility.DisplayDialog("编辑共享来源", $"修改 {edge.Source.name} 会影响所有引用该定义的技能。", "编辑共享来源", "取消");
+
+        private void CompleteDependencyRepair(GameplaySkillDocumentAsset current, Action edit)
+        {
+            Attempt(() =>
+            {
+                if (_document != current) throw new InvalidOperationException("当前技能已切换。请从当前依赖列表重新选择。");
+                edit();
+                _diagnosticsStale = true;
+                _feedback = "已更新引用，可重新校验正式技能。";
+            });
+            _dependencyGraph = null;
+            _details?.MarkDirtyRepaint();
+        }
+
+        private static GUIStyle _sourceButtonStyle;
+        private static GUIStyle FindRangeButtonStyle() => _sourceButtonStyle ??= new GUIStyle(EditorStyles.miniButton)
+            { wordWrap = true, alignment = TextAnchor.MiddleLeft };
         public void NavigateDiagnostic(GameplayAuthoringValidationIssue issue)
         {
             if(!_document||_document.AuthoringGraph==null||_document.AuthoringGraph.Nodes.Count==0)return;var graph=_document.AuthoringGraph;string path=issue.Path+" "+issue.Message;
@@ -75660,6 +76467,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(GUILayout.Button("重试此预览"))diagnostic.Retry();return;
             }
             if(!inline){
+                if(!_previewPlaying)_previewClockOwner=root;
                 int fps=30;GUILayout.BeginHorizontal();
                 if(GUILayout.Button(_previewPlaying&&_previewClockOwner==root?"暂停":"播放",GUILayout.Width(46))){_previewClockOwner=root;_previewPlaying=!_previewPlaying;_previewLast=EditorApplication.timeSinceStartup;}
                 if(GUILayout.Button("停止",GUILayout.Width(44))){_previewPlaying=false;state.Seconds=0;}
@@ -75682,7 +76490,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
-using FRFrame.Gameplay.Editor.SkillAuthoring;
+using FRFrame.Gameplay.Authoring.Graph;
+using FRFrame.Gameplay.Standard;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -75699,9 +76508,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private bool _browserForced,_previewPlaying;
         private double _previewLast,_hostRepaintLast;
         private string _rangeKey;
-        private FRFrame.Gameplay.Editor.SkillAuthoring.GameplayRangePreviewShape _rangeShape;
-        private string _rangeError;
-        private bool _rangeValid;
         private void PreviewTick()
         {
             double hostNow=EditorApplication.timeSinceStartup;
@@ -75711,37 +76517,294 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             float duration=PreviewClockDuration(_previewClockOwner);if(state.Seconds>duration){state.Seconds=duration;_previewPlaying=false;}
             state.Session.Seek(state.Seconds);Canvas.SetPreviewCursor(_previewClockOwner,state.Seconds);_details?.MarkDirtyRepaint();Canvas?.MarkDirtyRepaint();
         }
-        private void DrawRangePreview(){
-            var graph=_document.AuthoringGraph;int index=graph.Nodes.FindIndex(n=>n.Id==_selected);
-            int hitIndex=graph.LocalDefinitions.FindIndex(d=>d.Id==_definition&&d.Payload is GameplayHitWindowData);
-            if(hitIndex<0&&index>=0&&graph.Nodes[index].Payload is FRFrame.Gameplay.Authoring.Graph.GameplayActionNodePayload hitAction&&hitAction.Action is GameplayOpenHitWindowActionAuthoring)
-                hitIndex=graph.LocalDefinitions.FindIndex(d=>d.Payload is GameplayHitWindowData&&hitAction.Definitions.Any(b=>b.LocalId==d.Id));
-            if(hitIndex>=0)
+        private sealed class RangeSource
+        {
+            public GameplaySourceHandle Handle;
+            public string Owner, Use, Occurrence, Label;
+            public Color Color;
+            public string Key => Handle.Key + "@" + Occurrence;
+            public GameplayRangePreviewShape Shape;
+            public string Error, Revision, Cursor;
+            public bool HitWindow;
+        }
+
+        private static readonly Color[] RangeColors = {
+            new Color(.2f,.74f,.94f,.65f), new Color(1f,.62f,.25f,.63f),
+            new Color(.63f,.89f,.37f,.64f), new Color(.84f,.51f,.89f,.62f)
+        };
+        private readonly GameplayRangeSimulation _rangeSimulation = new GameplayRangeSimulation();
+        private readonly GameplayRangeViewport _rangeViewport = new GameplayRangeViewport();
+        private readonly HashSet<string> _hiddenRangeSources = new HashSet<string>();
+        private readonly List<RangeSource> _rangeSources = new List<RangeSource>();
+        private GameplaySkillDocumentAsset _rangeDocument;
+        private GameplayAuthoringDependencyGraph _rangeDependencyGraph;
+        private GameplayActorProfileAsset _rangeProfile;
+        private bool _rangeIncludeReferences, _rangeWholeSkill, _rangeShowInputs, _rangeManualSlice;
+        private string _rangePin, _rangeSolo;
+        private int _rangePlane;
+        private float _rangeSlice;
+
+        private void DrawRangePreview()
+        {
+            var dependencies = Dependencies();
+            if (_rangeDocument != _document)
             {
-                var data=(GameplayHitWindowData)graph.LocalDefinitions[hitIndex].Payload;
-                Standard.GameplayHitPose? sampled=null;
-                if(data.AnchorKind!=Standard.GameplayHitAnchorKind.OwnerRoot&&_previewClockOwner!=null&&
-                    _previews.TryGetValue(_previewClockOwner,out var state)&&state.Session is IGameplayHitPosePreview sample&&
-                    (data.AnchorKind==Standard.GameplayHitAnchorKind.TransformPath?!string.IsNullOrWhiteSpace(data.AnchorPath):!string.IsNullOrWhiteSpace(data.AnchorBone))&&
-                    sample.TryReadHitPose(new Standard.GameplayHitAnchor(data.AnchorKind,data.AnchorPath,data.AnchorBone),out var pose))
-                    sampled=pose;
-                var hitContext=new GameplayRangePreviewContext(_document,"authoringGraph.LocalDefinitions.Array.data["+hitIndex+"].Payload",hitPose:sampled);
-                if(GameplayRangePreview.TryRead(hitContext,out var hit,out var error))
+                _rangeDocument = _document;
+                _rangeProfile = GameplaySkillEditorState.PreviewProfile(_document);
+                _rangePin = _rangeSolo = null;
+                _rangeWholeSkill = false;
+                _rangePlane = 0;
+                _rangeManualSlice = false;
+                _hiddenRangeSources.Clear();
+            }
+
+            bool references = GUILayout.Toolbar(_rangeIncludeReferences ? 1 : 0, new[] { "本体", "包含实际引用" }) == 1;
+            if (_rangeDependencyGraph != dependencies || references != _rangeIncludeReferences)
+            {
+                _rangeIncludeReferences = references;
+                _rangeDependencyGraph = dependencies;
+                RefreshRangeSources(dependencies);
+            }
+
+            var related = _rangeSources.Where(s => s.Owner == (_definition ?? _selected) || s.Use == _selected ||
+                s.Use == _definition && _definition != null).ToArray();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Toggle(_rangeWholeSkill, "钉住技能", EditorStyles.miniButtonLeft) != _rangeWholeSkill)
                 {
-                    GUILayout.Label(hit.Label,EditorStyles.boldLabel);
-                    GameplayRangePreview.Draw(GUILayoutUtility.GetRect(100,180,GUILayout.ExpandWidth(true)),hit);
+                    _rangeWholeSkill = !_rangeWholeSkill;
+                    _rangePin = _rangeSolo = null;
                 }
-                else if(error!=null)EditorGUILayout.HelpBox(error,MessageType.Warning);
+                using (new EditorGUI.DisabledScope(_rangePin == null && related.Length == 0))
+                if (GUILayout.Button(_rangePin == null ? "钉住当前来源" : "取消来源钉住", EditorStyles.miniButtonRight))
+                {
+                    _rangePin = _rangePin == null ? (related.FirstOrDefault(s=>s.Key==_rangeSolo)??related[0]).Key : null;
+                    _rangeSolo = null;
+                    _rangeWholeSkill = false;
+                }
+            }
+
+            var listed = _rangeWholeSkill ? _rangeSources.ToArray() : _rangePin != null ?
+                _rangeSources.Where(s => s.Key == _rangePin).ToArray() : related;
+            if (_rangeSolo != null && !listed.Any(s => s.Key == _rangeSolo)) _rangeSolo = null;
+            if (listed.Length == 0)
+            {
+                GUILayout.Label("选中搜索、命中窗或区域，也可钉住技能查看全图范围。", EditorStyles.wordWrappedMiniLabel);
                 return;
             }
-            if(index<0||!((graph.Nodes[index].Payload as FRFrame.Gameplay.Authoring.Graph.GameplayActionNodePayload)?.Action is GameplaySearchTargetActionAuthoring))return;
-            _rangeLevel=Mathf.Clamp(EditorGUILayout.IntField("范围预览等级",_rangeLevel),1,_document.EffectiveMaxLevel);
-            var context=new FRFrame.Gameplay.Editor.SkillAuthoring.GameplayRangePreviewContext(_document,"authoringGraph.Nodes.Array.data["+index+"].Payload.Action",_rangeLevel);
-            string key=_document.GetInstanceID()+":"+_selected+":"+_rangeLevel;
-            if(_rangeKey!=key){_rangeKey=key;_rangeValid=FRFrame.Gameplay.Editor.SkillAuthoring.GameplayRangePreview.TryRead(context,out _rangeShape,out _rangeError);}
-            if(_rangeValid){GUILayout.Label(_rangeShape.Label,EditorStyles.boldLabel);FRFrame.Gameplay.Editor.SkillAuthoring.GameplayRangePreview.Draw(GUILayoutUtility.GetRect(100,210,GUILayout.ExpandWidth(true)),_rangeShape);}
-            else if(_rangeError!=null)EditorGUILayout.HelpBox(_rangeError,MessageType.Warning);
+
+            _rangeLevel = Mathf.Clamp(EditorGUILayout.IntField("预览等级", _rangeLevel), 1, _document.EffectiveMaxLevel);
+            if (_rangeShowInputs = EditorGUILayout.Foldout(_rangeShowInputs, "模拟输入 · 世界坐标", true))
+            {
+                _rangeProfile = (GameplayActorProfileAsset)EditorGUILayout.ObjectField("属性 Profile", _rangeProfile, typeof(GameplayActorProfileAsset), false);
+                _rangeSimulation.Owner = EditorGUILayout.Vector3Field("自身位置", _rangeSimulation.Owner);
+                _rangeSimulation.Facing = EditorGUILayout.Vector3Field("自身朝向向量", _rangeSimulation.Facing);
+                _rangeSimulation.HasTarget = EditorGUILayout.ToggleLeft("输入目标角色", _rangeSimulation.HasTarget);
+                if (_rangeSimulation.HasTarget) _rangeSimulation.Target = EditorGUILayout.Vector3Field("目标位置", _rangeSimulation.Target);
+                _rangeSimulation.HasPoint = EditorGUILayout.ToggleLeft("输入捕获地点", _rangeSimulation.HasPoint);
+                if (_rangeSimulation.HasPoint) _rangeSimulation.Point = EditorGUILayout.Vector3Field("地点位置", _rangeSimulation.Point);
+                GUILayout.Label("额外 Caller / Context 数值，每行一个 标签=数值");
+                _rangeSimulation.Caller = EditorGUILayout.TextArea(_rangeSimulation.Caller, GUILayout.MinHeight(26));
+            }
+
+            string cursor = _previewClockOwner != null && _previews.TryGetValue(_previewClockOwner, out var clock) ?
+                _previewClockOwner + ":" + clock.Seconds.ToString("R") + ":" + clock.Session?.GetHashCode() : "";
+            var input = _rangeSimulation;
+            if (!Finite(input.Owner) || !Finite(input.Facing) || input.HasTarget && !Finite(input.Target) || input.HasPoint && !Finite(input.Point))
+            {
+                EditorGUILayout.HelpBox("世界位置和朝向需要有限数值。", MessageType.Warning);
+                return;
+            }
+            string key = $"{_rangeLevel}|{_rangeProfile?.GetInstanceID()}|{(_rangeProfile ? EditorUtility.GetDirtyCount(_rangeProfile) : 0)}|{input.Owner:R}|{input.Facing:R}|{input.HasTarget}|{input.Target:R}|{input.HasPoint}|{input.Point:R}|{input.Caller}";
+            bool dirty = _rangeKey != key;
+            var visible = new List<(GameplaySearchGeometry geometry, Color color)>();
+            float sourceButtonWidth = Mathf.Max(65, _inspector.resolvedStyle.width - 101);
+            foreach (var source in listed)
+            {
+                bool shown = !_hiddenRangeSources.Contains(source.Key);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    bool next = GUILayout.Toggle(shown, GUIContent.none, GUILayout.Width(18));
+                    if (next != shown)
+                    {
+                        if (next) _hiddenRangeSources.Remove(source.Key);
+                        else _hiddenRangeSources.Add(source.Key);
+                        shown = next;
+                    }
+                    var original = GUI.contentColor;
+                    GUI.contentColor = new Color(source.Color.r, source.Color.g, source.Color.b, 1);
+                    if (GUILayout.Button(new GUIContent(source.Label, source.Label), FindRangeButtonStyle(), GUILayout.Width(sourceButtonWidth)))
+                        LocateRange(source);
+                    GUI.contentColor = original;
+                    if (GUILayout.Button(_rangeSolo == source.Key ? "全部" : "单看", EditorStyles.miniButton, GUILayout.Width(45)))
+                        _rangeSolo = _rangeSolo == source.Key ? null : source.Key;
+                }
+                if (!shown || _rangeSolo != null && _rangeSolo != source.Key) continue;
+                if (!source.Handle.Owner) continue;
+                if (dirty || source.Revision != key || source.Cursor != cursor && source.HitWindow)
+                    ReadRange(source, key, cursor);
+                if (source.Error != null) EditorGUILayout.HelpBox(source.Error, MessageType.Warning);
+                else if (source.Shape.Geometry is GameplaySearchGeometry geometry)
+                {
+                    visible.Add((geometry, source.Color));
+                    string data = geometry.Shape switch {
+                        GameplaySearchShape.Circle => $"R {geometry.Radius:0.##}",
+                        GameplaySearchShape.Sector => $"R {geometry.Radius:0.##} · {geometry.Angle:0.##}°",
+                        GameplaySearchShape.Box or GameplaySearchShape.Line or GameplaySearchShape.Ray => $"{geometry.Length:0.##} × {geometry.Width:0.##}",
+                        GameplaySearchShape.Capsule => $"L {geometry.Length:0.##} · R {geometry.Radius:0.##}",
+                        GameplaySearchShape.GridCells => $"{geometry.Cells.Count} 格",
+                        _ => "目标身份"
+                    };
+                    GUILayout.Label($"{source.Shape.Label} · {geometry.Plane} · {data} · H {geometry.Height:0.##}" +
+                        $"\n原点 ({geometry.Origin.X:0.##}, {geometry.Origin.Y:0.##}, {geometry.Origin.Z:0.##})",
+                        EditorStyles.wordWrappedMiniLabel);
+                }
+                else if (source.Shape.Label != null)
+                {
+                    GUILayout.Label(source.Shape.Label, EditorStyles.wordWrappedMiniLabel);
+                    GameplayRangePreview.Draw(GUILayoutUtility.GetRect(100,150,GUILayout.ExpandWidth(true)), source.Shape);
+                }
+            }
+            _rangeKey = key;
+            if (visible.Count == 0) return;
+            _rangePlane = GUILayout.Toolbar(_rangePlane, new[] { "规则平面", "观察 XY", "观察 XZ" });
+            bool xz = _rangePlane == 2 || _rangePlane == 0 && visible[0].geometry.Plane == GameplaySpatialPlane.XZ;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                _rangeManualSlice = EditorGUILayout.ToggleLeft("自定切片", _rangeManualSlice);
+                if (_rangeManualSlice) _rangeSlice = EditorGUILayout.FloatField(_rangeSlice);
+                if (GUILayout.Button("重置视图", EditorStyles.miniButton, GUILayout.Width(70)))
+                {
+                    _rangeManualSlice = false;
+                    _rangePlane = 0;
+                    _rangeSolo = null;
+                }
+            }
+            _rangeViewport.Draw(GUILayoutUtility.GetRect(100,185,GUILayout.ExpandWidth(true)),visible.ToArray(),xz,
+                _rangeManualSlice && float.IsFinite(_rangeSlice) ? _rangeSlice : (float?)null, input);
+            GUILayout.Label("同一规则几何的中心切片。示意标记采用逻辑位置，实际碰撞还受宿主、筛选与碰撞体影响。", EditorStyles.wordWrappedMiniLabel);
+
+            static bool Finite(Vector3 v)=>float.IsFinite(v.x)&&float.IsFinite(v.y)&&float.IsFinite(v.z);
         }
+
+        private void RefreshRangeSources(GameplayAuthoringDependencyGraph dependencies)
+        {
+            _rangeKey = null;
+            _rangeSources.Clear();
+            var graph = _document.AuthoringGraph;
+            var reachable = GameplayGraphContextPolicy.Reachable(graph);
+            var edges = dependencies.Root.Edges;
+            foreach (var context in GameplayRangePreview.Sources(_document))
+            {
+                string path = context.PropertyPath;
+                if (path == null) continue;
+                bool local = path.StartsWith("authoringGraph.LocalDefinitions.Array.data[", StringComparison.Ordinal);
+                if (!local && !path.StartsWith("authoringGraph.Nodes.Array.data[", StringComparison.Ordinal)) continue;
+                int start = path.IndexOf('[')+1;
+                int index = int.Parse(path.Substring(start,path.IndexOf(']')-start));
+                string owner = local ? graph.LocalDefinitions[index].Id : graph.Nodes[index].Id;
+                if (!reachable.Contains(owner)) continue;
+                string label = local ? graph.LocalDefinitions[index].Name : GameplaySkillFieldSchema.NodeName(graph.Nodes[index]);
+                var handle = GameplaySourceHandle.Capture(_document, path);
+                var users = edges.Where(e => e.LocalDefinitionId == owner).ToArray();
+                if (users.Length == 0) AddUses(handle, owner, owner, "", label);
+                else foreach (var user in users) AddUses(handle, owner, user.GraphOwner, user.SlotPath, label + " · " + Usage(user.GraphOwner));
+            }
+            if (_rangeIncludeReferences)
+            {
+                foreach (var node in dependencies.Nodes.Where(n => n != dependencies.Root && n.Asset is GameplayDefinitionAsset))
+                {
+                    foreach (var context in GameplayRangePreview.Sources(node.Asset))
+                    {
+                        var handle = GameplaySourceHandle.Capture(node.Asset, context.PropertyPath);
+                        foreach (var source in dependencies.Nodes)
+                        foreach (var edge in source.Edges.Where(e => e.Target == node.Asset && e.State == GameplayDependencyState.Linked))
+                        {
+                            if (source == dependencies.Root)
+                                AddUses(handle, null, edge.GraphOwner, edge.SlotPath, node.Asset.name + " · " + Usage(edge.GraphOwner) + " / " + edge.Label);
+                            else Add(handle, null, null, GameplaySourceHandle.Capture(source.Asset).AssetKey + edge.PropertyPath,
+                                node.Asset.name + " · " + source.Asset.name + " / " + edge.Label);
+                        }
+                    }
+                }
+            }
+            if (_rangePin != null && !_rangeSources.Any(s => s.Key == _rangePin)) _rangePin = null;
+            if (_rangeSolo != null && !_rangeSources.Any(s => s.Key == _rangeSolo)) _rangeSolo = null;
+
+            string Usage(string owner)
+            {
+                var node = graph.Nodes.Find(n => n.Id == owner);
+                return node != null ? GameplaySkillFieldSchema.NodeName(node) :
+                    graph.LocalDefinitions.Find(d => d.Id == owner)?.Name ?? "配置引用";
+            }
+            void AddUses(GameplaySourceHandle handle, string owner, string use, string slot, string label)
+            {
+                var events = graph.Timelines.Where(t => reachable.Contains(t.Id)).SelectMany(t => t.Events
+                    .Where(e => e.EntryNodeId == use).Select(e => (timeline:t, entry:e))).ToArray();
+                var connections = graph.Connections.Where(e => e.ToNodeId == use && reachable.Contains(e.FromNodeId)).ToArray();
+                if (events.Length == 0 && connections.Length <= 1)
+                    Add(handle, owner, use, use + "." + slot, label);
+                else
+                {
+                    foreach (var e in events)
+                        Add(handle, owner, use, e.entry.Id + "." + slot, $"{e.entry.TimeSeconds:0.###} s · {label}");
+                    foreach (var edge in connections)
+                        Add(handle, owner, use, edge.Id + "." + slot, label + " · " + Usage(edge.FromNodeId) +
+                            " / " + GameplaySkillFieldSchema.PortName(edge.OutputPortKey));
+                }
+            }
+            void Add(GameplaySourceHandle handle, string owner, string use, string occurrence, string label)
+            {
+                _rangeSources.Add(new RangeSource { Handle=handle, Owner=owner, Use=use, Label=label,
+                    Occurrence=occurrence, Color=RangeColors[_rangeSources.Count%RangeColors.Length] });
+            }
+        }
+
+        private void LocateRange(RangeSource source)
+        {
+            if (source.Handle.Owner != _document)
+            {
+                GameplayInspectorOperations.EditResource(source.Handle.Owner);
+                return;
+            }
+            string id=source.Occurrence.Split('.')[0];
+            bool isTimeline=_document.AuthoringGraph.Timelines.Any(t=>t.Events.Any(e=>e.Id==id));
+            NavigateDiagnostic(new GameplayAuthoringValidationIssue(GameplayAuthoringIssueSeverity.Warning, isTimeline?id:source.Owner, ""));
+        }
+
+        private void ReadRange(RangeSource source, string key, string cursor)
+        {
+            source.Revision = key;
+            source.Cursor = cursor;
+            source.Error = null;
+            source.Shape = default;
+            if (!source.Handle.TryResolve(out string path))
+            {
+                source.Error = "范围来源已移动或删除。";
+                return;
+            }
+            var asset = source.Handle.Owner;
+            GameplayHitWindowData window = null;
+            using (var serialized = new SerializedObject(asset))
+            {
+                var property = path.Length == 0 ? null : serialized.FindProperty(path);
+                if (property?.propertyType == SerializedPropertyType.ManagedReference) window = property.managedReferenceValue as GameplayHitWindowData;
+                else if (asset is GameplayHitWindowDefinitionAsset shared) window = (GameplayHitWindowData)shared.CaptureGraphValues();
+            }
+            source.HitWindow = window != null;
+            GameplayHitPose? sampled = null;
+            if (window != null && _previewClockOwner != null &&
+                _previews.TryGetValue(_previewClockOwner,out var animation) && animation.Session is IGameplayHitPosePreview reader &&
+                (window.AnchorKind == GameplayHitAnchorKind.OwnerRoot ||
+                    (window.AnchorKind == GameplayHitAnchorKind.TransformPath ? !string.IsNullOrWhiteSpace(window.AnchorPath) : !string.IsNullOrWhiteSpace(window.AnchorBone))) &&
+                reader.TryReadHitPose(new GameplayHitAnchor(window.AnchorKind,window.AnchorPath,window.AnchorBone),out var pose))
+                sampled = pose;
+            var context = new GameplayRangePreviewContext(asset, path.Length == 0 ? null : path,
+                _rangeLevel, _rangeProfile, sampled, _rangeSimulation, _document);
+            if (!GameplayRangePreview.TryRead(context,out source.Shape,out source.Error) && source.Error == null)
+                source.Error = "该来源没有可用的范围读取器。";
+        }
+
         // V1's native captured-pointer splitter: resizing a pane changes view geometry only.
         private static VisualElement PaneHandle(Action<float> move,Action save)
         {
@@ -75789,6 +76852,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(!_document)return;
             bool documentChanged=changes.Any(c=>c.Source==_document)&&EditorUtility.GetDirtyCount(_document)!=_knownDocumentDirtyCount;
             bool sharedChanged=changes.Any(c=>Canvas?.UsesExternal(c.Source)==true);
+            if(changes.Any(c=>c.Source==_rangeProfile||_dependencyGraph?.Find(c.Source)!=null)){_dependencyGraph=null;_details?.MarkDirtyRepaint();}
             // Native Apply also emits a deferred object notification. Its already-handled
             // dirty revision must not trigger a second full refresh. Unknown revisions and
             // all shared-source changes retain conservative topology/context fallback.
@@ -75830,7 +76894,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private static string ProjectKey=>"FRFrame.SkillAuthoring."+Application.dataPath;
         private static string RecentKey=>ProjectKey+".RecentDocuments";
 
-        private void RecentSourcesChanged(){_recentStale=true;_welcome?.MarkDirtyRepaint();}
+        private void RecentSourcesChanged(){_recentStale=true;_dependencyGraph=null;_welcome?.MarkDirtyRepaint();_details?.MarkDirtyRepaint();}
         private void LoadRecent()
         {
             if(_recent==null){
@@ -86788,6 +87852,29 @@ namespace FRFrame.Gameplay.Standard
             Cells=new List<GameplayPoint>(cells??Array.Empty<GameplayPoint>()).AsReadOnly();CellSize=cellSize;View=view;
             if(!float.IsFinite(cellSize)||cellSize<=0)throw new ArgumentOutOfRangeException(nameof(cellSize));
         }
+
+        /// <summary>Resolves the same initial Area geometry used before runtime registration.</summary>
+        public GameplaySearchGeometry InitialGeometry(GameplayStandardActor owner, GameplayContext context)
+        {
+            float radius=Shape==GameplaySearchShape.Circle||Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(Radius,owner,context,"Area radius"):1;
+            float angle=Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(Angle,owner,context,"Area angle"):120;
+            float length=Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(Length,owner,context,"Area length"):1;
+            float width=Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(Width,owner,context,"Area width"):1;
+            float height=GameplaySpatialMath.Positive(Height,owner,context,"Area height");
+            GameplayPoint position=owner.Position;
+            if(Origin==GameplaySearchOrigin.ContextPoint)
+            {
+                if(!context.TargetData.HasPoint)throw new InvalidOperationException("Area requires a captured point.");
+                position=context.TargetData.Point;
+            }
+            else if(Origin==GameplaySearchOrigin.PrimaryTarget)
+            {
+                if(!owner.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target))throw new InvalidOperationException("Area target is missing.");
+                position=target.Position;
+            }
+            var origin=new GameplayPoint(position.X+OriginOffset.X,position.Y+OriginOffset.Y,position.Z+OriginOffset.Z);
+            return new GameplaySearchGeometry(Shape,Plane,origin,owner.Facing,radius,angle,length,width,height,cells:Cells,cellSize:CellSize);
+        }
     }
     /// <summary>Persistent region advanced by the world. One query supplies enter/exit/tick membership each step.
     /// Aura is cleaned up on exit or region end. Only ability-owned regions end with the cast;
@@ -86808,21 +87895,13 @@ namespace FRFrame.Gameplay.Standard
             :base(owner,context,grant,definition.View,definition.CancelOnAbilityEnd)
         {
             _definition=definition;
-            _radius=definition.Shape==GameplaySearchShape.Circle||definition.Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(definition.Radius,owner,context,"Area radius"):1;
-            _angle=definition.Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(definition.Angle,owner,context,"Area angle"):120;
-            _length=definition.Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(definition.Length,owner,context,"Area length"):1;
-            _width=definition.Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(definition.Width,owner,context,"Area width"):1;
-            _height=GameplaySpatialMath.Positive(definition.Height,owner,context,"Area height");_duration=GameplaySpatialMath.Positive(definition.Duration,owner,context,"Area duration");
+            var initial=definition.InitialGeometry(owner,context);
+            _radius=initial.Radius;_angle=initial.Angle;_length=initial.Length;_width=initial.Width;_height=initial.Height;
+            _duration=GameplaySpatialMath.Positive(definition.Duration,owner,context,"Area duration");
             _period=GameplaySpatialMath.Positive(definition.TickInterval,owner,context,"Area period");
             _arming=GameplaySpatialMath.Finite(definition.ArmingDelay,owner,context);
             if(_arming<0||_arming>=_duration)throw new ArithmeticException("Area arming delay must be nonnegative and shorter than its duration.");
-            if(definition.Origin==GameplaySearchOrigin.ContextPoint)
-            {if(!context.TargetData.HasPoint)throw new InvalidOperationException("Area requires a captured point.");Position=context.TargetData.Point;}
-            else if(definition.Origin==GameplaySearchOrigin.PrimaryTarget)
-            {if(!owner.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target))throw new InvalidOperationException("Area target is missing.");Position=target.Position;}
-            Position=new GameplayPoint(Position.X+definition.OriginOffset.X,Position.Y+definition.OriginOffset.Y,Position.Z+definition.OriginOffset.Z);
-            _initialPosition=Position;
-            Geometry(); // Validate before registration/visibility.
+            Position=_initialPosition=initial.Origin;
         }
         private GameplaySearchGeometry Geometry()
         {

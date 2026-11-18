@@ -94,15 +94,19 @@ namespace FRFrame.Gameplay.Authoring
             foreach (var list in new[] { OnBegin, EachTarget, Completed, NoTargets })
                 if (list != null) for (int i = 0; i < list.Length; i++) list[i]?.ValidateReferences(v, p + $".Callbacks[{i}]");
         }
-        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context)
+        public override IGameplaySkillAction Build(GameplayAuthoringBuildContext context) => BuildSearch(context);
+        /// <summary>Uses the runtime request constructor without resolving graph callbacks.</summary>
+        public bool TryPreviewRequest(GameplayContext input, GameplayStandardActor actor, out GameplaySpatialSearchRequest request) =>
+            BuildSearch(null).TryCreateRequest(input, actor, out request);
+        private GameplaySearchTargetAction BuildSearch(GameplayAuthoringBuildContext context)
         {
             var cells = new List<GameplayPoint>(); if (Shape == GameplaySearchShape.GridCells && Cells != null) foreach (var cell in Cells) cells.Add(new GameplayPoint(cell.x, cell.y, cell.z));
             return new GameplaySearchTargetAction(Shape, Plane, Origin, Dimension(Radius,UsesRadius), Dimension(Angle,Shape == GameplaySearchShape.Sector), Dimension(Length,UsesLength && !LengthFromTarget), Dimension(Width,UsesWidth), Height.Build(),
                 Faction, Tags?.Build(), LayerMask, MaxTargets, Order, IncludeSelf,
-                Build(EachTarget, context), Build(Completed, context), Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
+                context==null?null:Build(EachTarget, context), context==null?null:Build(Completed, context), context==null?null:Build(NoTargets, context), cells, Shape == GameplaySearchShape.GridCells ? CellSize : 1,
                 Directional ? Direction : GameplaySearchDirection.OwnerFacing, Directional ? DirectionAngle?.Build() : null,
                 UsesLength && LengthFromTarget,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),
-                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, Build(OnBegin, context), HopIntervalSeconds, UseActorCenters);
+                ExcludePrimaryTarget, RepeatFromResult, RepeatMultiplier, context==null?null:Build(OnBegin, context), HopIntervalSeconds, UseActorCenters);
         }
         // Inactive dimensions remain serialized drafts. Never build/evaluate their AST until a shape consumes them.
         private bool UsesRadius => Shape == GameplaySearchShape.Circle || Shape == GameplaySearchShape.Sector || Shape == GameplaySearchShape.Capsule;

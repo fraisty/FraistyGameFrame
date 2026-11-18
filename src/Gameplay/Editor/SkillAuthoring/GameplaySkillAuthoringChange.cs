@@ -38,7 +38,15 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 string[] fields=relative.Split('.');string leaf=fields.Last();
                 if(StructuralFields.Contains(leaf)||fields.Contains("Definitions")||fields.Contains("CastEvent")||fields.Contains("Trigger")&&fields.Contains("EventTag")||leaf=="Conditions")change.Structural=true;
                 if(fields.Any(ContextFields.Contains))change.Context=true;
-                if(fields.Any(f=>f=="Position"||f=="Size"))change.Layout=true;
+                bool layout=fields.Any(f=>f=="Position"||f=="Size");
+                change.Layout|=layout;
+                if(!change.Context&&!layout&&path.StartsWith("authoringGraph.",StringComparison.Ordinal))
+                {
+                    var action=(graph.Nodes.Find(n=>n.Id==owner)?.Payload as GameplayActionNodePayload)?.Action;
+                    object payload=(object)action??graph.LocalDefinitions.Find(d=>d.Id==owner)?.Payload;
+                    if(payload is IGameplayGraphPortConstraint or IGameplayGraphContextContract or IGameplayActionPlacementConstraint or IGameplayScopedAuthoring)
+                        change.Context=true;
+                }
                 bool Resolve(string collection,int count,Func<int,string> identity){
                     string prefix="authoringGraph."+collection+".Array.data[";
                     if(!path.StartsWith(prefix,StringComparison.Ordinal))return false;

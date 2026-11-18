@@ -43,11 +43,21 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeReference]public GameplaySkillActionAuthoring[] OnEnd=Array.Empty<GameplaySkillActionAuthoring>();
         [SerializeReference]public GameplayFloatValueAuthoring ArmingDelay=new GameplayConstantFloatValueAuthoring{Value=0};
         public int TriggerLimit;
-        public GameplayAreaDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>new GameplayAreaDefinition(
+        public GameplayAreaDefinition Build(GameplayAuthoringBuildContext context)=>context.Build(this,()=>BuildArea(context));
+        /// <summary>Resolves only the rule geometry, without building callbacks, effects or presentation.</summary>
+        public GameplaySearchGeometry PreviewGeometry(GameplayStandardActor owner, GameplayContext context) =>
+            BuildArea(null).InitialGeometry(owner, context);
+        private GameplayAreaDefinition BuildArea(GameplayAuthoringBuildContext context)=>new GameplayAreaDefinition(
             Shape==GameplayAreaAuthoringShape.Cells?GameplaySearchShape.GridCells:Shape==GameplayAreaAuthoringShape.Box?GameplaySearchShape.Box:Shape==GameplayAreaAuthoringShape.Sector?GameplaySearchShape.Sector:GameplaySearchShape.Circle,
-            Plane,Origin,Radius.Build(),Angle.Build(),Length.Build(),Width.Build(),Height.Build(),Duration.Build(),TickInterval.Build(),TickOnEnter,FollowOwner,Faction,Tags?.Build(),LayerMask,
-            Enumerable.Range(0, Aura.Length).Select(i => context.ResolveDefinition(Aura[i], this, "Aura.Array.data[" + i + "]", () => Aura[i].Build(context))).ToArray(),GameplaySpatialAuthoringUtility.Build(OnEnter,context),GameplaySpatialAuthoringUtility.Build(OnTick,context),
-            GameplaySpatialAuthoringUtility.Build(OnExit,context),GameplaySpatialAuthoringUtility.Build(OnEnd,context),Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,CreateView(context),GameplaySpatialAuthoringUtility.Build(OnStay,context),ArmingDelay.Build(),TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),EndOnOwnerDeath,CancelOnAbilityEnd));
+            Plane,Origin,Radius.Build(),Angle.Build(),Length.Build(),Width.Build(),Height.Build(),
+            context==null?new GameplayConstantFloatValue(1):Duration.Build(),context==null?new GameplayConstantFloatValue(1):TickInterval.Build(),TickOnEnter,FollowOwner,Faction,
+            context==null?null:Tags?.Build(),LayerMask,
+            context==null?null:Enumerable.Range(0, Aura.Length).Select(i => context.ResolveDefinition(Aura[i], this, "Aura.Array.data[" + i + "]", () => Aura[i].Build(context))).ToArray(),
+            context==null?null:GameplaySpatialAuthoringUtility.Build(OnEnter,context),context==null?null:GameplaySpatialAuthoringUtility.Build(OnTick,context),
+            context==null?null:GameplaySpatialAuthoringUtility.Build(OnExit,context),context==null?null:GameplaySpatialAuthoringUtility.Build(OnEnd,context),
+            Array.ConvertAll(Cells,c=>new GameplayPoint(c.x,c.y,c.z)),CellSize,context==null?null:CreateView(context),
+            context==null?null:GameplaySpatialAuthoringUtility.Build(OnStay,context),context==null?null:ArmingDelay.Build(),
+            context==null?0:TriggerLimit,new GameplayPoint(OriginOffset.x,OriginOffset.y,OriginOffset.z),EndOnOwnerDeath,CancelOnAbilityEnd);
         protected virtual IGameplaySpatialViewFactory CreateView(GameplayAuthoringBuildContext context)=>null;
         protected override void ValidateContent(GameplayAuthoringValidationContext v,string p)
         {

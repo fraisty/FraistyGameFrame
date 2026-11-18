@@ -29,12 +29,23 @@ namespace FRFrame.Gameplay.Authoring.Graph
                 if (port == GameplayGraphEffectCallbacks.Period && effect.Period <= 0)
                     return "每次周期需要大于零的周期设置。";
             }
+            if (payload is IGameplayGraphPortConstraint constraint)
+            {
+                try { return constraint.UnavailableOutput(port); }
+                catch (Exception error) { return $"{payload.GetType().Name}.{port} 端口合同失败 · {error.Message}"; }
+            }
             return null;
         }
         public static string Unavailable(GameplayAuthoringGraph graph,string owner,string port)
         {
             var local=graph.LocalDefinitions.Find(d=>d.Id==owner);
-            return Unavailable(local?.Payload,port);
+            var action = graph.Nodes.Find(n => n.Id == owner)?.Payload as GameplayActionNodePayload;
+            object payload = (object)local?.Payload ?? action?.Action;
+            if (string.IsNullOrEmpty(port) || !port.Contains(".")) return Unavailable(payload, port);
+            var slot = GameplayGraphFields.ActionArrays(payload).Find(s => s.Path == port);
+            return slot != null && !ReferenceEquals(slot.Owner, payload)
+                ? Unavailable(slot.Owner, slot.Field.Name) ?? Unavailable(payload, port)
+                : Unavailable(payload, port);
         }
     }
 }

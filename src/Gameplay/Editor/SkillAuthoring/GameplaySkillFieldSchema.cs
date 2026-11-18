@@ -168,7 +168,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(changedPaths!=null)foreach(string path in changedPaths.Where(p=>p.StartsWith("authoringGraph.",StringComparison.Ordinal)))SetPending(staged,path.Substring(15),serialized.FindProperty(path));
                 var validation=new GameplayAuthoringValidationContext();GameplayGraphCompiler.ValidateStructure(staged,validation,"字段",false);
                 if(validation.HasErrors)throw new InvalidOperationException(string.Join("\n",validation.Issues));
-                GameplayGraphCompiler.ValidateActionOrder(staged);
                 }
                 Errors.Remove(document.GetInstanceID());bool changed=serialized.ApplyModifiedProperties();if(changed)GameplaySkillAuthoringCommands.NotifyFields(document,invalidation);return changed;
             }catch(Exception error){Errors[document.GetInstanceID()]=error.Message;serialized.Update();return false;}
@@ -207,7 +206,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var action = (node.Payload as GameplayActionNodePayload)?.Action;
             return action == null ? "缺失行为" : GameplaySkillNodeDescriptors.Get(action.GetType()).DisplayName;
         }
-        public static string PortName(string path)
+        public static string PortName(string path, GameplayAuthoringGraph graph = null, string owner = null)
         {
             if(path==GameplayGraphEffectCallbacks.Applied)return "首次成功应用";
             if(path==GameplayGraphEffectCallbacks.StackChanged)return "层数变化";
@@ -228,7 +227,16 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 key == "OnWindowFinished" ? "有效窗自然结束" : key == "OnEnd" ? "结束" : key == "OnCancelled" ? "取消" :
                 key == "OnBroken" ? "耗尽 · 破盾者" : key == "OnExpired" ? "到期 · 原目标" : key == "OnAbsorbed" ? "吸收 · 护盾仍存续" :
                 key == "OnRemoved" ? "移除 · 原目标" :
-                ObjectNames.NicifyVariableName(path);
+                DescribePort(path, graph, owner);
+        }
+
+        private static string DescribePort(string path, GameplayAuthoringGraph graph, string owner)
+        {
+            object payload = (graph?.Nodes.Find(n => n.Id == owner)?.Payload as GameplayActionNodePayload)?.Action ??
+                (object)graph?.LocalDefinitions.Find(d => d.Id == owner)?.Payload;
+            var field = GameplayGraphFields.ActionArrays(payload).Find(s => s.Path == path)?.Field;
+            return (field == null ? null : Attribute.GetCustomAttribute(field, typeof(InspectorNameAttribute)) as InspectorNameAttribute)?.displayName
+                ?? ObjectNames.NicifyVariableName(path);
         }
 
         public static void Draw(GameplaySkillDocumentAsset document, string nodeId, string definitionId = null, bool cardFields = false)

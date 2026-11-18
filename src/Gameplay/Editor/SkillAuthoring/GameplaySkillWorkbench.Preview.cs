@@ -145,6 +145,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 if(GUILayout.Button("重试此预览"))diagnostic.Retry();return;
             }
             if(!inline){
+                if(!_previewPlaying)_previewClockOwner=root;
                 int fps=30;GUILayout.BeginHorizontal();
                 if(GUILayout.Button(_previewPlaying&&_previewClockOwner==root?"暂停":"播放",GUILayout.Width(46))){_previewClockOwner=root;_previewPlaying=!_previewPlaying;_previewLast=EditorApplication.timeSinceStartup;}
                 if(GUILayout.Button("停止",GUILayout.Width(44))){_previewPlaying=false;state.Seconds=0;}

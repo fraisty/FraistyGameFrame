@@ -23,6 +23,7 @@ namespace FRFrame.Gameplay.Authoring
     {
         internal Func<GameplayDefinitionAsset, string, bool> GraphAssetValidation;
         internal string DamageStageScope;
+        internal string OwnerScope;
         private readonly List<GameplayAuthoringValidationIssue> _issues = new List<GameplayAuthoringValidationIssue>();
         private readonly HashSet<GameplayDefinitionAsset> _active = new HashSet<GameplayDefinitionAsset>();
         private readonly HashSet<(GameplayDefinitionAsset, string)> _validated = new HashSet<(GameplayDefinitionAsset, string)>();
@@ -44,6 +45,8 @@ namespace FRFrame.Gameplay.Authoring
         {
             if (GraphAssetValidation != null && GraphAssetValidation(asset, path)) return;
             if (asset == null) { Error(path, "Missing asset reference."); return; }
+            string scopeError = Graph.GameplayActionArrayPolicy.ScopeReason(asset, OwnerScope);
+            if (scopeError != null) { Error(path, scopeError); return; }
             if (_active.Contains(asset)) { Error(path, "Circular asset reference."); return; }
             if (!_validated.Add((asset, path))) return;
             _active.Add(asset);
@@ -96,7 +99,20 @@ namespace FRFrame.Gameplay.Authoring
             if (validation == null) throw new ArgumentNullException(nameof(validation));
             if (string.IsNullOrWhiteSpace(definitionId)) validation.Error(path + ".DefinitionId", "DefinitionId is required.");
             if (schemaVersion != CurrentSchemaVersion) validation.Error(path + ".SchemaVersion", $"Unsupported schema {schemaVersion}; expected {CurrentSchemaVersion}.");
-            ValidateContent(validation, path);
+            string previous = validation.OwnerScope;
+            string scope = null;
+            if (this is Graph.IGameplayScopedAuthoring scoped)
+            {
+                try { scope = scoped.RequiredScope; }
+                catch (Exception error) { validation.Error(path, "Scope 合同失败 · " + error.Message); return; }
+            }
+            validation.OwnerScope = scope;
+            try
+            {
+                ValidateContent(validation, path);
+                Graph.GameplayActionArrayPolicy.ValidateCallbacks(this, scope, validation, path);
+            }
+            finally { validation.OwnerScope = previous; }
         }
         protected abstract void ValidateContent(GameplayAuthoringValidationContext validation, string path);
 

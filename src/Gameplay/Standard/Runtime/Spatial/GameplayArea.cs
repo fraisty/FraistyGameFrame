@@ -65,6 +65,29 @@ namespace FRFrame.Gameplay.Standard
             Cells=new List<GameplayPoint>(cells??Array.Empty<GameplayPoint>()).AsReadOnly();CellSize=cellSize;View=view;
             if(!float.IsFinite(cellSize)||cellSize<=0)throw new ArgumentOutOfRangeException(nameof(cellSize));
         }
+
+        /// <summary>Resolves the same initial Area geometry used before runtime registration.</summary>
+        public GameplaySearchGeometry InitialGeometry(GameplayStandardActor owner, GameplayContext context)
+        {
+            float radius=Shape==GameplaySearchShape.Circle||Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(Radius,owner,context,"Area radius"):1;
+            float angle=Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(Angle,owner,context,"Area angle"):120;
+            float length=Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(Length,owner,context,"Area length"):1;
+            float width=Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(Width,owner,context,"Area width"):1;
+            float height=GameplaySpatialMath.Positive(Height,owner,context,"Area height");
+            GameplayPoint position=owner.Position;
+            if(Origin==GameplaySearchOrigin.ContextPoint)
+            {
+                if(!context.TargetData.HasPoint)throw new InvalidOperationException("Area requires a captured point.");
+                position=context.TargetData.Point;
+            }
+            else if(Origin==GameplaySearchOrigin.PrimaryTarget)
+            {
+                if(!owner.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target))throw new InvalidOperationException("Area target is missing.");
+                position=target.Position;
+            }
+            var origin=new GameplayPoint(position.X+OriginOffset.X,position.Y+OriginOffset.Y,position.Z+OriginOffset.Z);
+            return new GameplaySearchGeometry(Shape,Plane,origin,owner.Facing,radius,angle,length,width,height,cells:Cells,cellSize:CellSize);
+        }
     }
     /// <summary>Persistent region advanced by the world. One query supplies enter/exit/tick membership each step.
     /// Aura is cleaned up on exit or region end. Only ability-owned regions end with the cast;
@@ -85,21 +108,13 @@ namespace FRFrame.Gameplay.Standard
             :base(owner,context,grant,definition.View,definition.CancelOnAbilityEnd)
         {
             _definition=definition;
-            _radius=definition.Shape==GameplaySearchShape.Circle||definition.Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(definition.Radius,owner,context,"Area radius"):1;
-            _angle=definition.Shape==GameplaySearchShape.Sector?GameplaySpatialMath.Positive(definition.Angle,owner,context,"Area angle"):120;
-            _length=definition.Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(definition.Length,owner,context,"Area length"):1;
-            _width=definition.Shape==GameplaySearchShape.Box?GameplaySpatialMath.Positive(definition.Width,owner,context,"Area width"):1;
-            _height=GameplaySpatialMath.Positive(definition.Height,owner,context,"Area height");_duration=GameplaySpatialMath.Positive(definition.Duration,owner,context,"Area duration");
+            var initial=definition.InitialGeometry(owner,context);
+            _radius=initial.Radius;_angle=initial.Angle;_length=initial.Length;_width=initial.Width;_height=initial.Height;
+            _duration=GameplaySpatialMath.Positive(definition.Duration,owner,context,"Area duration");
             _period=GameplaySpatialMath.Positive(definition.TickInterval,owner,context,"Area period");
             _arming=GameplaySpatialMath.Finite(definition.ArmingDelay,owner,context);
             if(_arming<0||_arming>=_duration)throw new ArithmeticException("Area arming delay must be nonnegative and shorter than its duration.");
-            if(definition.Origin==GameplaySearchOrigin.ContextPoint)
-            {if(!context.TargetData.HasPoint)throw new InvalidOperationException("Area requires a captured point.");Position=context.TargetData.Point;}
-            else if(definition.Origin==GameplaySearchOrigin.PrimaryTarget)
-            {if(!owner.World.TryGetActor(context.TargetData.PrimaryTargetId,out var target))throw new InvalidOperationException("Area target is missing.");Position=target.Position;}
-            Position=new GameplayPoint(Position.X+definition.OriginOffset.X,Position.Y+definition.OriginOffset.Y,Position.Z+definition.OriginOffset.Z);
-            _initialPosition=Position;
-            Geometry(); // Validate before registration/visibility.
+            Position=_initialPosition=initial.Origin;
         }
         private GameplaySearchGeometry Geometry()
         {

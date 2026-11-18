@@ -26,7 +26,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         private static string ProjectKey=>"FRFrame.SkillAuthoring."+Application.dataPath;
         private static string RecentKey=>ProjectKey+".RecentDocuments";
 
-        private void RecentSourcesChanged(){_recentStale=true;_welcome?.MarkDirtyRepaint();}
+        private void RecentSourcesChanged(){_recentStale=true;_dependencyGraph=null;_welcome?.MarkDirtyRepaint();_details?.MarkDirtyRepaint();}
         private void LoadRecent()
         {
             if(_recent==null){

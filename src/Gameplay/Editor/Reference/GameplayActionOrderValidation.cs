@@ -121,9 +121,14 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 if(removeAt>=0){values.RemoveAt(removeAt);if(removeAt<at)at--;}
                 at=Math.Min(at,values.Count);
+                bool guarded=GuardedArray(source,path);
+                var proposed=values.Cast<GameplaySkillActionAuthoring>().ToList();
+                if(value is GameplaySkillActionAuthoring action)proposed.Insert(at,action);
+                string placement=FRFrame.Gameplay.Authoring.Graph.GameplayActionArrayPolicy.PlacementReason(proposed,guarded);
+                if(placement!=null)return placement;
                 bool after=values.Take(at).Any(a=>a is GameplayEndAbilityActionAuthoring);
                 bool cuts=value is GameplayEndAbilityActionAuthoring&&at<values.Count;
-                if(!after&&!cuts||!GuardedArray(source,path))return null;
+                if(!after&&!cuts||!guarded)return null;
                 return after?AfterEnd:EndBeforeSuccessors;
             }
         }

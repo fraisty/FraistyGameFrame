@@ -61,6 +61,35 @@ namespace FRFrame.Gameplay.Authoring.Graph
             return slots;
         }
 
+        /// <summary>Reports the resource paths requested by the existing payload validator without loading or building dependencies.</summary>
+        public static IReadOnlyCollection<string> RequiredResources(object payload)
+        {
+            var paths = new HashSet<string>(StringComparer.Ordinal);
+            const string root = "source";
+            var validation = new GameplayAuthoringValidationContext
+            {
+                GraphAssetValidation = (asset, path) =>
+                {
+                    if (path.StartsWith(root + ".", StringComparison.Ordinal))
+                        paths.Add(NormalizePath(path.Substring(root.Length + 1)));
+                    return true;
+                }
+            };
+            switch (payload)
+            {
+                case GameplaySkillActionAuthoring action:
+                    action.Validate(validation, root);
+                    action.ValidateReferences(validation, root);
+                    break;
+                case GameplayLocalDefinitionPayload local: local.Validate(validation, root); break;
+                case GameplayDefinitionAsset asset: asset.Validate(validation, root); break;
+            }
+            foreach (var issue in validation.Issues)
+                if (issue.Severity == GameplayAuthoringIssueSeverity.Error && issue.Path.StartsWith(root + ".", StringComparison.Ordinal))
+                    paths.Add(NormalizePath(issue.Path.Substring(root.Length + 1)));
+            return paths;
+        }
+
         public static List<Slot> ActionArrays(object root)
         {
             var slots = new List<Slot>();
@@ -92,7 +121,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
 
         private static void Walk(object value, string path, HashSet<object> seen, Func<object, FieldInfo, string, bool> visit)
         {
-            if (value == null || value is string || value is UnityEngine.Object) return;
+            if (value == null || value is string || path.Length != 0 && value is UnityEngine.Object) return;
             var type = value.GetType();
             if (type.IsPrimitive || type.IsEnum) return;
             if (!type.IsValueType && !seen.Add(value)) return;

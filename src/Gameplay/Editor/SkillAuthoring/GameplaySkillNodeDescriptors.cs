@@ -65,11 +65,20 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             if(typeof(GameplayEffectExecutionAuthoring).IsAssignableFrom(type))return "效果/瞬时";
             if(type==typeof(GameplayRotateToPointActionAuthoring))return "任务 / 高级显式控制（可选）";
             var descriptor=Get(type);
+            if (descriptor.AuthoringScope != "FRFrame" && descriptor.AuthoringScope != "Common" && descriptor.AuthoringScope != "Other")
+            {
+                return ExternalCategory(descriptor.CategoryPath) ?? descriptor.AuthoringScope + "/扩展行为";
+            }
             if(descriptor.IsAnimation)return "时间与表现/独立动画控制";
             if(descriptor.VisualKind==GameplayNodeVisualKind.Presentation)return "时间与表现/特效音效与飘字";
             if(typeof(GameplaySkillActionAuthoring).IsAssignableFrom(type))return descriptor.AuthoringScope=="FRFrame"?"控制/其它标准行为":descriptor.AuthoringScope+"/扩展行为";
             if(typeof(GameplaySkillTriggerAuthoring).IsAssignableFrom(type))return "条件与触发/触发事件";
             return "效果 / 高级配置";
+        }
+        private static string ExternalCategory(string path)
+        {
+            var segments = (path ?? "").Split('/').Select(segment => segment.Trim()).ToArray();
+            return segments.Length >= 2 && segments.All(segment => segment.Length != 0) ? string.Join("/", segments) : null;
         }
         private static readonly Type[] ProviderTypes = TypeCache.GetTypesDerivedFrom<IGameplaySkillNodeEditorDescriptorProvider>()
             .Where(t => !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) != null)
@@ -89,7 +98,9 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 catch (Exception ex) { UnityEngine.Debug.LogWarning("Skill node descriptor " + providerType.FullName + ": " + ex.Message); }
             }
-            return Fallback(type);
+            var fallback=Fallback(type);
+            if(property==null)TypeDescriptions[type]=fallback;
+            return fallback;
         }
 
         public static IReadOnlyList<string> DuplicateClaims(Type type)
@@ -102,12 +113,18 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         claims.Add(providerType.FullName);
                 }
                 catch (Exception ex) { claims.Add(providerType.FullName + " failed: " + ex.Message); }
-            return claims.Count > 1 ? new[] { type.FullName + ": descriptor providers: " + string.Join(", ", claims) } :
-                Array.Empty<string>();
+            var issues = new List<string>();
+            if (claims.Count > 1 || claims.Any(claim => claim.Contains(" failed: ")))
+                issues.Add(type.FullName + ": descriptor providers: " + string.Join(", ", claims));
+            var descriptor = Get(type);
+            if (descriptor.AuthoringScope != "FRFrame" && descriptor.AuthoringScope != "Common" &&
+                descriptor.AuthoringScope != "Other" && ExternalCategory(descriptor.CategoryPath) == null)
+                issues.Add($"{descriptor.DisplayName} 未声明有效的业务分类，显示在 {descriptor.AuthoringScope}/扩展行为。");
+            return issues;
         }
 
         /// <summary>Check every concrete projected role, including plugin Trigger, Condition and Target nodes.</summary>
-        public static IReadOnlyList<string> DuplicateClaims(GameplaySkillDefinitionAsset skill)
+        public static IReadOnlyList<string> DuplicateClaims(GameplayDefinitionAsset skill)
         {
             if (skill == null) return Array.Empty<string>();
             using var so = new SerializedObject(skill);
@@ -115,9 +132,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 .Where(type => type != null).Distinct().SelectMany(DuplicateClaims).ToArray();
         }
 
-        private static GameplaySkillNodeEditorDescriptor Fallback(Type type) =>
-            new GameplaySkillNodeEditorDescriptor(ObjectNames.NicifyVariableName(type.Name.Replace("Authoring", "")),
-                "其它 / 技术类型 / " + type.Assembly.GetName().Name, "缺少编辑器说明；请为此类型提供 descriptor。", "Other", type.FullName, true);
+        private static GameplaySkillNodeEditorDescriptor Fallback(Type type)
+        {
+            string scope = null;
+            if (typeof(FRFrame.Gameplay.Authoring.Graph.IGameplayScopedAuthoring).IsAssignableFrom(type) && type.GetConstructor(Type.EmptyTypes) != null)
+            {
+                try { scope = ((FRFrame.Gameplay.Authoring.Graph.IGameplayScopedAuthoring)Activator.CreateInstance(type)).RequiredScope; }
+                catch (Exception error) { UnityEngine.Debug.LogWarning(type.FullName + " · " + error.Message); }
+            }
+            return new GameplaySkillNodeEditorDescriptor(ObjectNames.NicifyVariableName(type.Name.Replace("Authoring", "")),
+                null, "缺少编辑器说明；请为此类型提供 descriptor。", scope ?? "Other", type.FullName, string.IsNullOrEmpty(scope));
+        }
     }
 
     /// <summary>First-party descriptions stay in FRFrame; game nodes are supplied by their Editor assembly.</summary>

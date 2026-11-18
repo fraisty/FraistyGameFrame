@@ -76,7 +76,7 @@ namespace FRFrame.Gameplay.Authoring
         [SerializeField] private GameplayHitWindowData values = new GameplayHitWindowData();
         /// <summary>Space required by this shared definition when choosing a workbench host.</summary>
         public GameplaySpatialPlane Plane => values.Plane;
-        public GameplayHitWindowDefinition Build(GameplayAuthoringBuildContext context) => values.Build(context);
+        public GameplayHitWindowDefinition Build(GameplayAuthoringBuildContext context) => context.Build(this, () => values.Build(context));
         public override GameplayLocalDefinitionPayload CaptureGraphValues() => (GameplayHitWindowData)GameplayGraphFields.Clone(values);
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         protected override void ValidateContent(GameplayAuthoringValidationContext v, string path) => values.Validate(v, path);

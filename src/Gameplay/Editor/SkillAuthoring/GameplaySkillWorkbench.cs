@@ -183,7 +183,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         }
         private void UndoChanged() {
 
-            _diagnosticsStale=true;DisposePreview();string shape=Shape();
+            _diagnosticsStale=true;_dependencyGraph=null;DisposePreview();string shape=Shape();
             if(shape!=_shape){Canvas?.Load(_document);_shape=shape;}else Canvas?.SynchronizeLayout();
             Canvas?.SelectNodeWithoutCamera(_selected);RememberSourceVersion();_details?.MarkDirtyRepaint();Repaint();
 
@@ -288,7 +288,12 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                     if(_policySelection==null&&_definition==null&&Canvas.SelectedEventId==null)Canvas.DrawMainAnimationSettings(_selected);
                     DrawTimelineFields(Canvas.SerializedSource,_document,_selected,Canvas.SelectedEventId,Canvas);
                 }
-                else if(_detailTab==1){DrawRangePreview();DrawPreview();}
+                else if(_detailTab==1)
+                {
+                    using var previewColumn=new EditorGUILayout.VerticalScope(GUILayout.Width(Mathf.Max(100,_inspector.resolvedStyle.width-24)));
+                    DrawRangePreview();
+                    DrawPreview();
+                }
                 else if(_detailTab==2){DrawInstallation();if(GUILayout.Button("打开 Runtime Debugger"))EditorWindow.GetWindow<FRFrame.Gameplay.Editor.RuntimeDebugger.GameplayRuntimeDebuggerWindow>().Show();}else DrawDiagnostics();
                 GUILayout.Space(10);
                 if (_selected != null && GUILayout.Button("在图中定位")) Canvas.FocusNode(_selected);
@@ -371,6 +376,23 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 ((GameplayActionNodePayload)candidate.Payload).Action=action;candidate.Payload.Definitions.Clear();candidateValue.Payload=value;
                 if(value!=null)candidate.Payload.Definitions.Add(new GameplayDefinitionBinding{PropertyPath=path,LocalId=candidateValue.Id});
                 var reason=check(link.Owner,link.Port,candidate.Id,link.Input,link.Scheduled);
+                if(reason==null&&!link.Scheduled&&(action is IGameplayActionPlacementConstraint ||
+                    candidates.Nodes.Any(n=>(n.Payload as GameplayActionNodePayload)?.Action is IGameplayActionPlacementConstraint)))
+                {
+                    var before=candidates.Connections.ToArray();
+                    try
+                    {
+                        GameplaySkillAuthoringCommands.ConnectCreated(candidates,link,candidate.Id);
+                        GameplayGraphCompiler.ValidateActionOrder(candidates);
+                    }
+                    catch(InvalidOperationException error) { return error.Message; }
+                    finally
+                    {
+                        candidates.Connections.Clear();
+                        candidates.Connections.AddRange(before);
+                        candidate.CallbackOwnerDefinitionId=null;
+                    }
+                }
                 return reason==null?null:reason+" 请改从搜索逐目标/弹体命中连接，或明确使用自身目标。";
             }
             if(timeline!=null){

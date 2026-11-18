@@ -65,6 +65,11 @@ namespace FRFrame.Gameplay.Authoring.Graph
             }
             if(payload is GameplayMoveTargetsActionAuthoring&&(port=="OnArrive"||port=="OnCancelled"))return input.With(port=="OnArrive",true,"移动中断不保证 Actor");
             if(payload is GameplaySummonDefinitionData)return input.With(port=="OnSpawn",true,"召唤结束不保证 Actor");
+            if (payload is IGameplayGraphContextContract external)
+            {
+                try { return external.OutputInputs(port, input); }
+                catch (Exception error) { throw new InvalidOperationException($"{payload.GetType().Name}.{port} 上下文合同失败 · {error.Message}", error); }
+            }
             return input;
         }
         private static object Payload(GameplayAuthoringGraph graph,string id)
@@ -80,7 +85,13 @@ namespace FRFrame.Gameplay.Authoring.Graph
             if(value is GameplayAreaDefinitionData area){
                 if(area.Origin==GameplaySearchOrigin.PrimaryTarget)result|=Requirement.PrimaryActor;
                 if(area.Origin==GameplaySearchOrigin.ContextPoint)result|=Requirement.Point;
-            }return result;
+            }
+            if (value is IGameplayGraphContextContract external)
+            {
+                try { result |= external.RequiredInputs; }
+                catch (Exception error) { throw new InvalidOperationException($"{value.GetType().Name} 输入合同失败 · {error.Message}", error); }
+            }
+            return result;
         }
         private static Requirement RequiredNode(GameplayAuthoringGraph graph,GameplayAuthoringNode node)
         {
@@ -88,6 +99,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
             foreach(var binding in node.Payload.Definitions){
                 object value=graph.LocalDefinitions.Find(d=>d.Id==binding.LocalId)?.Payload;
                 if(value==null&&binding.External is GameplayAreaDefinitionAsset)value=binding.External.CaptureGraphValues();
+                if(value==null&&binding.External is IGameplayGraphContextContract)value=binding.External;
                 result|=Required(value);
             }return result;
         }

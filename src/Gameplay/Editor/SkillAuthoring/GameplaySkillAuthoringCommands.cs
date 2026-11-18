@@ -131,7 +131,6 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var validation = new GameplayAuthoringValidationContext();
             GameplayGraphCompiler.ValidateStructure(graph, validation, label, false);
             if (validation.HasErrors) throw new InvalidOperationException(string.Join("\n", validation.Issues));
-            GameplayGraphCompiler.ValidateActionOrder(graph);
             GameplayReferenceCatalogAsset catalog=null;string[] nextTags=null;
             if(generatedTags!=null){
                 catalog=GameplayReferenceCatalogProvider.Find(GameplayReferenceCatalogProvider.Scope(document),out string error);
@@ -279,7 +278,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
         /// <summary>One creation transaction can consume a dragged real execution/schedule port.
         /// No authoring data or Undo is published until the complete connection validates.</summary>
         public sealed class CreationLink {public string Owner,Port,Input="Execute";public bool Scheduled;}
-        private static void ConnectCreated(GameplayAuthoringGraph graph,CreationLink link,string id)
+        internal static void ConnectCreated(GameplayAuthoringGraph graph,CreationLink link,string id)
         {
             if(link==null)return;
             if(link.Scheduled){graph.Timelines.SelectMany(t=>t.Events).Single(e=>e.Id==link.Owner).EntryNodeId=id;return;}

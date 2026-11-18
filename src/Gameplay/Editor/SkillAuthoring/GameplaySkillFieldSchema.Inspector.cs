@@ -300,10 +300,10 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 string unavailable = GameplayGraphPortPolicy.Unavailable(graph, ownerId, port);
                 if (steps.Length == 0)
                 {
-                    GUILayout.Label(new GUIContent(PortName(port) + " · 未连接", unavailable ?? "可从画布行尾连接行为。"), EditorStyles.miniLabel);
+                    GUILayout.Label(new GUIContent(PortName(port,graph,ownerId) + " · 未连接", unavailable ?? "可从画布行尾连接行为。"), EditorStyles.miniLabel);
                     return;
                 }
-                GUILayout.Label(new GUIContent(PortName(port) + " · " + steps.Length + " 步", unavailable), EditorStyles.miniBoldLabel);
+                GUILayout.Label(new GUIContent(PortName(port,graph,ownerId) + " · " + steps.Length + " 步", unavailable), EditorStyles.miniBoldLabel);
                 foreach (var step in steps)
                     using (new EditorGUILayout.HorizontalScope())
                     {

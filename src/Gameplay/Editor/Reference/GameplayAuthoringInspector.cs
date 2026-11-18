@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEngine;
@@ -218,6 +219,16 @@ namespace FRFrame.Gameplay.Editor
             if(Labels.TryGetValue(property.name,out var label))return (label,null);
             if(property.name.StartsWith("data[",StringComparison.Ordinal)&&int.TryParse(property.name.Substring(5,property.name.Length-6),out int index))
                 return ("配置 "+(index+1),null);
+            int dot=property.propertyPath.LastIndexOf('.');
+            Type owner=dot<0?property.serializedObject.targetObject.GetType():null;
+            if(dot>0)
+            {
+                var parent=property.serializedObject.FindProperty(property.propertyPath.Substring(0,dot));
+                if(parent?.propertyType==SerializedPropertyType.ManagedReference)owner=parent.managedReferenceValue?.GetType();
+            }
+            var field=owner==null?null:GameplayGraphFields.SerializedFields(owner).FirstOrDefault(f=>f.Name==property.name);
+            if(field!=null&&Attribute.GetCustomAttribute(field,typeof(InspectorNameAttribute)) is InspectorNameAttribute declared)
+                return (declared.displayName,null);
             return (property.displayName,"扩展字段；内部路径可在高级来源中查看。");
         }
         public static GUIContent Label(SerializedProperty property)
@@ -361,11 +372,34 @@ namespace FRFrame.Gameplay.Editor
     }
     public abstract class GameplayDefinitionInspector : UnityEditor.Editor
     {
+        private int _rangeRevision=-1, _rangeIndex, _rangeReadIndex=-1;
+        private bool _showRange;
+        private IReadOnlyList<GameplayRangePreviewContext> _ranges;
+        private GameplayRangePreviewShape _range;
+        private string _rangeError;
+        private GameplayAuthoringDependencyGraph _orderSources;
+        protected void OnEnable()
+        {
+            Undo.undoRedoPerformed+=InvalidateSourceViews;
+            EditorApplication.projectChanged+=InvalidateSourceViews;
+            GameplayAuthoringSourceChanges.Changed+=SourceViewsChanged;
+        }
+        protected void OnDisable()
+        {
+            Undo.undoRedoPerformed-=InvalidateSourceViews;
+            EditorApplication.projectChanged-=InvalidateSourceViews;
+            GameplayAuthoringSourceChanges.Changed-=SourceViewsChanged;
+        }
+        private void InvalidateSourceViews(){_orderSources=null;_ranges=null;}
+        private void SourceViewsChanged(IReadOnlyList<GameplayAuthoringSourceChanges.Change> changes)
+        {
+            if(changes.Any(c=>c.Source==target||_orderSources?.Find(c.Source)!=null))InvalidateSourceViews();
+        }
         public override void OnInspectorGUI()
         {
             if(target is GameplayDefinitionAsset history && history.MigrationHistoryOnly){GameplayAuthoringInspector.DrawMigrationHistory(serializedObject);return;}
             if(target is GameplayDefinitionAsset orderRoot){
-                var sources=GameplayAuthoringDependencyGraph.BuildDefinition(orderRoot).Nodes.Select(n=>(UnityEngine.Object)n.Asset);
+                var sources=(_orderSources??=GameplayAuthoringDependencyGraph.BuildDefinition(orderRoot)).Nodes.Select(n=>n.Asset);
                 foreach(var issue in GameplayActionOrderValidation.Scan(sources)){
                     EditorGUILayout.HelpBox(issue.Message,issue.Severity==GameplayAuthoringIssueSeverity.Error?MessageType.Error:MessageType.Warning);
                     if(GUILayout.Button("定位结束后动作 · "+issue.Source.name+" / "+issue.Path)){
@@ -374,6 +408,7 @@ namespace FRFrame.Gameplay.Editor
                 }
             }
             GameplayAuthoringInspector.Draw(serializedObject);
+            DrawRange();
             AssetDatabase.TryGetGUIDAndLocalFileIdentifier(target,out string guid,out long id);
             EditorGUILayout.LabelField("正式来源 · "+AssetDatabase.GetAssetPath(target)+" / 子对象 #"+id,EditorStyles.wordWrappedMiniLabel);
             if(target is GameplayDefinitionAsset&&GUILayout.Button("在同一技能工作台定位")){
@@ -384,6 +419,32 @@ namespace FRFrame.Gameplay.Editor
                 var validation = new GameplayAuthoringValidationContext(); validation.Asset(definition, definition.name);
                 if (!validation.HasErrors) Debug.Log("配置校验通过", target);
                 foreach (var issue in validation.Issues) Debug.LogWarning(issue.ToString(), target);
+            }
+        }
+
+        private void DrawRange()
+        {
+            int revision=EditorUtility.GetDirtyCount(target);
+            if(_ranges==null||_rangeRevision!=revision)
+            {
+                _ranges=GameplayRangePreview.Sources(target);
+                _rangeRevision=revision;
+                _rangeReadIndex=-1;
+            }
+            if(_ranges.Count==0||!(_showRange=EditorGUILayout.Foldout(_showRange,"范围预览",true)))return;
+            if(_ranges.Count>1)_rangeIndex=EditorGUILayout.Popup("来源",Mathf.Clamp(_rangeIndex,0,_ranges.Count-1),
+                _ranges.Select(r=>r.PropertyPath??target.name).ToArray());
+            else _rangeIndex=0;
+            if(_rangeReadIndex!=_rangeIndex)
+            {
+                _rangeReadIndex=_rangeIndex;
+                GameplayRangePreview.TryRead(_ranges[_rangeIndex],out _range,out _rangeError);
+            }
+            if(_rangeError!=null)EditorGUILayout.HelpBox(_rangeError,MessageType.Warning);
+            else if(_range.Label!=null)
+            {
+                GUILayout.Label(_range.Label,EditorStyles.wordWrappedMiniLabel);
+                GameplayRangePreview.Draw(GUILayoutUtility.GetRect(100,160,GUILayout.ExpandWidth(true)),_range);
             }
         }
     }

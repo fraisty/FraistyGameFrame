@@ -326,7 +326,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             var local=_document.AuthoringGraph.LocalDefinitions.Find(d=>d.Id==owner);bool effect=local!=null&&GameplayGraphEffectCallbacks.IsPort(local.Payload,key);
             var port = card.InstantiatePort(Orientation.Horizontal, Direction.Output, Port.Capacity.Multi, effect?typeof(GameplayEffectDefinitionAsset):typeof(GameplaySkillActionAuthoring));
             port.RemoveManipulator(port.edgeConnector);port.AddManipulator(new EdgeConnector<Edge>(new CreationConnector(this)));
-            port.portName = GameplaySkillFieldSchema.PortName(key); port.userData = new Socket { Owner = owner, Port = key, Scheduled = scheduled };
+            port.portName = GameplaySkillFieldSchema.PortName(key,_document.AuthoringGraph,owner); port.userData = new Socket { Owner = owner, Port = key, Scheduled = scheduled };
             port.AddManipulator(new ContextualMenuManipulator(evt=>{
                 if(local?.Payload is GameplayEffectDefinitionData && GameplayGraphEffectCallbacks.IsActionPort(key))
                 {
@@ -350,7 +350,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 }
                 evt.StopPropagation();
             }));
-            port.portColor=GameplayNodeVisuals.Color(GameplaySkillNodeDisplay.Kind(_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey)));port.tooltip=GameplaySkillFieldSchema.PortName(key)+" · "+(scheduled?"按此时间事件调用；时点和次序在编排中编辑。":effect?"只消费接收卡的效果定义，不执行接收卡的后续行为。":"连接同一执行链的后续行为；多条连接按保存的顺序调用。");port.style.marginRight = 0; card.outputContainer.Add(port); _outputs[Key(owner, key)] = port; return port;
+            port.portColor=GameplayNodeVisuals.Color(GameplaySkillNodeDisplay.Kind(_document.AuthoringGraph.Nodes.Find(n=>n.Id==card.viewDataKey)));port.tooltip=port.portName+" · "+(scheduled?"按此时间事件调用；时点和次序在编排中编辑。":effect?"只消费接收卡的效果定义，不执行接收卡的后续行为。":"连接同一执行链的后续行为；多条连接按保存的顺序调用。");port.style.marginRight = 0; card.outputContainer.Add(port); _outputs[Key(owner, key)] = port; return port;
         }
         private static string Key(string id, string port) => id + ":" + port;
         private void AddWire(Port output, Port input, string id, bool scheduled)

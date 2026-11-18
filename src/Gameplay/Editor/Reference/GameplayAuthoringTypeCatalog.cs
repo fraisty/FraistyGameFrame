@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FRFrame.Gameplay.Authoring;
+using FRFrame.Gameplay.Authoring.Graph;
 using FRFrame.Gameplay.Editor.SkillAuthoring;
 using UnityEditor;
 using UnityEditor.Compilation;
@@ -22,6 +23,7 @@ namespace FRFrame.Gameplay.Editor
         public static string Scope(Object asset)
         {
             if (asset is GameplaySkillDocumentAsset skill && skill.AuthoringSchemaVersion == 2) return skill.AuthoringGraph?.Scope;
+            if (asset is IGameplayScopedAuthoring owner) return owner.RequiredScope;
             if(asset!=null){
                 string path=AssetDatabase.GetAssetPath(asset);
                 if(!string.IsNullOrEmpty(path)){
@@ -52,6 +54,8 @@ namespace FRFrame.Gameplay.Editor
             return Types(baseType).Where(t => {
                 var d = GameplaySkillNodeDescriptors.Get(t);
                 bool scopeMatch = string.IsNullOrEmpty(scope) || d.AuthoringScope == "FRFrame" || d.AuthoringScope == "Common" || d.AuthoringScope == scope || otherGames;
+                if (scopeMatch && typeof(IGameplayScopedAuthoring).IsAssignableFrom(t))
+                    scopeMatch = GameplayActionArrayPolicy.ScopeReason(Activator.CreateInstance(t), scope) == null;
                 return scopeMatch && (!d.IsSample || samples) && (string.IsNullOrEmpty(search) ||
                     (d.DisplayName + " " + d.CategoryPath + " " + d.Summary + " " + d.Keywords + " " + t.FullName).IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0);
             }).ToArray();
@@ -90,14 +94,18 @@ namespace FRFrame.Gameplay.Editor
             EditorGUILayout.HelpBox(GameplayAuthoringInspector.Help, MessageType.Info);
             if(!string.IsNullOrEmpty(_contextNote))EditorGUILayout.HelpBox(_contextNote,MessageType.Info);
             _search = EditorGUILayout.TextField("搜索", _search);
-            GUILayout.BeginHorizontal(); if(!_officialOnly)_other = EditorGUILayout.ToggleLeft("显示其它游戏", _other);
-            _samples = EditorGUILayout.ToggleLeft("显示示例 / 验证节点", _samples); GUILayout.EndHorizontal();
+            if(!_officialOnly)
+            {
+                GUILayout.BeginHorizontal();
+                _other = EditorGUILayout.ToggleLeft("显示其它游戏", _other);
+                _samples = EditorGUILayout.ToggleLeft("显示示例 / 验证节点", _samples);
+                GUILayout.EndHorizontal();
+            }
             if (GUILayout.Button("清空配置")) Pick(null);
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             foreach (var group in GameplayAuthoringTypeCatalog.Query(_baseType, _scope, _search, _other, _samples)
-                .Where(t=>!_officialOnly||((GameplaySkillNodeDescriptors.Get(t).AuthoringScope=="FRFrame"||GameplaySkillNodeDescriptors.Get(t).AuthoringScope=="Common")&&
-                    t!=typeof(GameplaySkillApplyEffectActionAuthoring)&&t!=typeof(GameplaySkillPlaySequenceActionAuthoring)))
-                .GroupBy(t => GameplaySkillNodeDescriptors.Get(t).CategoryPath))
+                .Where(t=>!_officialOnly||(t!=typeof(GameplaySkillApplyEffectActionAuthoring)&&t!=typeof(GameplaySkillPlaySequenceActionAuthoring)))
+                .GroupBy(GameplaySkillNodeDescriptors.Category))
             {
                 GUILayout.Label(group.Key, EditorStyles.boldLabel);
                 foreach (var type in group)
