@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 namespace FRFrame.Gameplay.Standard
 {
+    public enum GameplayActorProfileMode { Combat, NonCombat }
     /// <summary>Static initial attributes plus combat resource mapping; mutable values only enter the actor at creation.</summary>
     public sealed class GameplayActorProfile
     {
@@ -11,17 +12,30 @@ namespace FRFrame.Gameplay.Standard
         private readonly IReadOnlyList<(GameplaySkillDocumentDefinition skill,int level)> _skills;
         public GameplayActorProfile(IEnumerable<KeyValuePair<GameplayAttributeId, float>> attributes, GameplayCombatAttributeMap combat,
             IEnumerable<(GameplaySkillDocumentDefinition skill,int level)> startingSkills=null)
+            : this(attributes, GameplayActorProfileMode.Combat, combat, startingSkills) { }
+
+        /// <summary>NonCombat profiles initialize ordinary attributes and skills without health mapping.</summary>
+        public GameplayActorProfile(IEnumerable<KeyValuePair<GameplayAttributeId, float>> attributes, GameplayActorProfileMode mode,
+            GameplayCombatAttributeMap combat, IEnumerable<(GameplaySkillDocumentDefinition skill,int level)> startingSkills=null)
         {
-            Combat = combat ?? throw new ArgumentNullException(nameof(combat));
+            Combat = mode switch
+            {
+                GameplayActorProfileMode.Combat => combat ?? throw new ArgumentNullException(nameof(combat)),
+                GameplayActorProfileMode.NonCombat => null,
+                _ => throw new ArgumentOutOfRangeException(nameof(mode))
+            };
             var copy = new List<KeyValuePair<GameplayAttributeId, float>>(); var keys = new HashSet<GameplayAttributeId>();
             foreach (var pair in attributes ?? throw new ArgumentNullException(nameof(attributes)))
             {
                 if (!pair.Key.IsValid || !float.IsFinite(pair.Value) || !keys.Add(pair.Key)) throw new ArgumentException("Initial attributes require unique valid IDs and finite values.");
                 copy.Add(pair);
             }
-            if (!keys.Contains(combat.Health) || !keys.Contains(combat.MaxHealth)) throw new ArgumentException("Health/MaxHealth must be initialized.");
-            float health = copy.Find(p => p.Key == combat.Health).Value, max = copy.Find(p => p.Key == combat.MaxHealth).Value;
-            if (max <= 0 || health < 0 || health > max) throw new ArgumentException("Initial Health must be within positive MaxHealth.");
+            if (Combat != null)
+            {
+                if (!keys.Contains(Combat.Health) || !keys.Contains(Combat.MaxHealth)) throw new ArgumentException("Health/MaxHealth must be initialized.");
+                float health = copy.Find(p => p.Key == Combat.Health).Value, max = copy.Find(p => p.Key == Combat.MaxHealth).Value;
+                if (max <= 0 || health < 0 || health > max) throw new ArgumentException("Initial Health must be within positive MaxHealth.");
+            }
             _attributes = copy.AsReadOnly();
             var skills=new List<(GameplaySkillDocumentDefinition skill,int level)>(startingSkills??Array.Empty<(GameplaySkillDocumentDefinition skill,int level)>());
             var ids=new HashSet<int>();

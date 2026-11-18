@@ -18,6 +18,12 @@ namespace FRFrame.Gameplay
         void Execute(GameplayEffectApplicationContext application);
     }
 
+    /// <summary>An execution can reject an incompatible target before its enclosing Effect commits.</summary>
+    public interface IGameplayEffectTargetRequirement
+    {
+        string RejectionReason(IGameplayEffectExecutionTarget target);
+    }
+
     /// <summary>精确 GameplayTag 键到有限 float 的不可变本次调用值快照。</summary>
     public sealed class GameplaySetByCallerValues
     {
@@ -118,7 +124,8 @@ namespace FRFrame.Gameplay
         RefreshedAtLimit,
         RejectedAtLimit,
         RejectedByRequirements,
-        OverflowExecuted
+        OverflowExecuted,
+        RejectedByTarget
     }
 
     /// <summary>一次 Effect 申请的明确结果；拒绝叠层仍指向原活动 Handle。</summary>
@@ -130,16 +137,18 @@ namespace FRFrame.Gameplay
         public bool HasActiveHandle { get; }
         public GameplayEffectHandle ActiveHandle { get; }
         public int StackCount { get; }
+        public string RejectionReason { get; }
 
         /// <summary>Only a real newly-created contribution produces a layer handle.</summary>
         public GameplayEffectLayerHandle LayerHandle { get; }
 
         internal GameplayEffectApplicationResult(GameplayEffectApplicationOutcome outcome,
-            GameplayEffectHandle handle, int stackCount, GameplayEffectLayerHandle layerHandle = default)
+            GameplayEffectHandle handle, int stackCount, GameplayEffectLayerHandle layerHandle = default, string rejectionReason = null)
         {
             Outcome = outcome;
             Succeeded = outcome != GameplayEffectApplicationOutcome.RejectedAtLimit &&
-                outcome != GameplayEffectApplicationOutcome.RejectedByRequirements;
+                outcome != GameplayEffectApplicationOutcome.RejectedByRequirements && outcome != GameplayEffectApplicationOutcome.RejectedByTarget;
+            RejectionReason = rejectionReason;
             ActiveHandle = handle;
             HasActiveHandle = handle.IsValid;
             StackCount = stackCount;

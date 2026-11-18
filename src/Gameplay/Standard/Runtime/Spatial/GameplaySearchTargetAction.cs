@@ -310,7 +310,7 @@ namespace FRFrame.Gameplay.Standard
                 _lengthFromTarget ? endpointLength : _shape == GameplaySearchShape.Box || _shape == GameplaySearchShape.Line || _shape == GameplaySearchShape.Ray || _shape == GameplaySearchShape.Capsule ? GameplayValueEvaluator.Evaluate(_length, self) : 1,
                 _shape == GameplaySearchShape.Box || _shape == GameplaySearchShape.Line || _shape == GameplaySearchShape.Ray ? GameplayValueEvaluator.Evaluate(_width, self) : 1,
                 GameplayValueEvaluator.Evaluate(_height, self), context.TargetData.PrimaryTargetId, _cells, _cellSize);
-            request = new GameplaySpatialSearchRequest(context, geometry, actor.Faction,
+            request = new GameplaySpatialSearchRequest(actor.World.ResolveFaction, context, geometry, actor.Faction,
                 _faction, _tags, _layerMask, _repeatFromResult ? 1 : _maxTargets,
                 _repeatFromResult ? GameplayTargetOrder.Nearest : _order, _includeSelf,
                 _excludePrimaryTarget || visited != null

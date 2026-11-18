@@ -135,9 +135,10 @@ namespace FRFrame.Gameplay.Standard
                      trigger.Context.OriginSourceId != captured.OriginSourceId ||
                      trigger.Context.ActivationSourceId!=captured.ActivationSourceId)) return null;
                 if ((!primary || Definition.Mode == GameplayStandardActivationMode.Passive) && !SubjectMatches(trigger)) return null;
-                var inherited = trigger.Context?.Values ?? GameplayContextValues.Empty;
-                return captured.WithTarget(resolved.TargetData).WithValues(inherited.Merge(captured.Values)
-                    .WithValue(GameplayContextValues.TriggerMagnitudeKey, trigger.Magnitude));
+                if (Definition.Mode == GameplayStandardActivationMode.Passive && !Actor.IsTargetable) return null;
+                var values = (trigger.Context?.Values ?? GameplayContextValues.Empty).Merge(captured.Values);
+                if (trigger.PublishedScalars != null) values = values.Merge(trigger.PublishedScalars);
+                return captured.WithTarget(resolved.TargetData).WithValues(values.WithValue(GameplayContextValues.TriggerMagnitudeKey, trigger.Magnitude));
             });
             _bindings.Add(binding);
             if (!Actor.Abilities.TryOwnLifetime(Grant, binding)) { Actor.UninstallSkill(binding); _bindings.Remove(binding); throw new InvalidOperationException("Skill listener ownership was rejected."); }

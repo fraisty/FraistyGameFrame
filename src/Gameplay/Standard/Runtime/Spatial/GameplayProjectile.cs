@@ -283,7 +283,7 @@ namespace FRFrame.Gameplay.Standard
             var geometry = !fixedContacts && distance > 0
                 ? new GameplaySearchGeometry(GameplaySearchShape.Capsule, _definition.Plane, previous, Direction, _radius, length: distance, height: _radius * 2)
                 : new GameplaySearchGeometry(GameplaySearchShape.Circle, _definition.Plane, Position, Direction, _radius, height: _radius * 2);
-            var selected = Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context, geometry, Owner.Faction, _definition.Faction,
+            var selected = Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Owner.World.ResolveFaction, Context, geometry, Owner.Faction, _definition.Faction,
                 _definition.Tags, _definition.LayerMask, maxTargets: fixedContacts ? 1 : int.MaxValue,
                 excluded: fixedContacts ? id => _hits.Contains(id) || _definition.OnlyHitPrimaryTarget && id != _target : null,
                 useActorCenters: fixedContacts));

@@ -169,7 +169,7 @@ namespace FRFrame.Gameplay.Standard
         private GameplaySourceId[] SortedInside(){var ids=new List<GameplaySourceId>(_inside.Keys);ids.Sort((a,b)=>a.Value.CompareTo(b.Value));return ids.ToArray();}
         private void UpdateMembership()
         {
-            var selected=Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context,Geometry(),Owner.Faction,_definition.Faction,_definition.Tags,_definition.LayerMask));
+            var selected=Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Owner.World.ResolveFaction,Context,Geometry(),Owner.Faction,_definition.Faction,_definition.Tags,_definition.LayerMask));
             var current=new HashSet<GameplaySourceId>(selected.Targets);
             foreach(var id in SortedInside())if(!current.Contains(id))Exit(id);
             foreach(var id in selected.Targets)

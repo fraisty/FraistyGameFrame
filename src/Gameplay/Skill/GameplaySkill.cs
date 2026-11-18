@@ -199,6 +199,8 @@ namespace FRFrame.Gameplay
                 context = _definition.PreserveTriggerContext ? triggerEvent.Context.WithTarget(target)
                     .WithValues(triggerEvent.Context.Values.WithValue(GameplayContextValues.TriggerMagnitudeKey, triggerEvent.Magnitude)) :
                     context.WithAbilityLevel(triggerEvent.Context.AbilityLevel);
+            if (triggerEvent.PublishedScalars != null)
+                context = context.WithValues(context.Values.Merge(triggerEvent.PublishedScalars));
             // Optional per-installation cast scope adapter. Definitions remain immutable; null suppresses
             // execution for an unrelated event/inactive grant. Legacy callers do not install this adapter.
             if (_executionContext != null)

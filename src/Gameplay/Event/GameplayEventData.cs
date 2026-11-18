@@ -14,6 +14,8 @@ namespace FRFrame.Gameplay
         public float Magnitude { get; }
         /// <summary>Optional immutable child/hit envelope. Legacy events leave this null.</summary>
         public GameplayContext Context { get; }
+        /// <summary>Publisher-owned scalar facts, separate from the original caller context.</summary>
+        public GameplayContextValues PublishedScalars { get; }
         /// <summary>Optional synchronous Effect evidence. This envelope is passed to the runner, never published by Tag.</summary>
         public GameplayEffectLifecycleEvent EffectLifecycle { get; }
         public bool HasContext => Context != null;
@@ -22,6 +24,7 @@ namespace FRFrame.Gameplay
         {
             EffectLifecycle = lifecycle;
             Context = lifecycle.Application.Context;
+            PublishedScalars = null;
             InstigatorId = Context.InstigatorId;
             TargetId = lifecycle.Application.Target.TargetId;
             Magnitude = lifecycle.StackCount;
@@ -34,6 +37,10 @@ namespace FRFrame.Gameplay
                 context.TargetData.PrimaryTargetId, magnitude)
         { Context = context; }
 
+        /// <summary>Retains the original context identity and supplies authoritative scalars to rules.</summary>
+        public GameplayEventData(GameplayTag eventTag, GameplayContext context, float magnitude, GameplayContextValues publishedScalars)
+            : this(eventTag, context, magnitude)
+        { PublishedScalars = publishedScalars; }
 
         /// <summary>
         /// 创建事件数据。eventTag 必须有效，magnitude 必须为有限值；来源身份允许为 default。
@@ -50,6 +57,7 @@ namespace FRFrame.Gameplay
                 throw new ArgumentOutOfRangeException(nameof(magnitude), "Event magnitude must be finite.");
 
             Context = null;
+            PublishedScalars = null;
             EffectLifecycle = null;
             EventTag = eventTag;
             InstigatorId = instigatorId;

@@ -40,7 +40,13 @@ namespace FRFrame.Gameplay.Standard
                 if (!actor.World.TryGetActor(id, out var target)) continue;
                 var targeted = context.WithTarget(new GameplayTargetData(id, target.Position, null, new[] { id }));
                 var result = actor.ApplyEffect(targeted, Effect, null, context);
-                if (!result.Succeeded) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+                if (!result.Succeeded)
+                {
+                    if (result.RejectionReason != null)
+                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id, targeted, triggerEvent.EventTag,
+                            GameplaySkillTraceStage.ActionRejected, nameof(GameplayApplyToTargetsAction), detail: result.RejectionReason));
+                    return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+                }
                 if (owner.IsValid && GameplayEffectLease.TryCapture(target.Effects, result, out var lease))
                 {
                     var owned = new GameplayOwnedTargetEffectLease(actor.Abilities, owner, target.Effects, lease);

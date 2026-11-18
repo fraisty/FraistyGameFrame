@@ -35,6 +35,12 @@ namespace FRFrame.Gameplay.Standard
         public IGameplayRandomSource Random {get;}
         public IReadOnlyList<GameplayStandardActor> Actors => _actorView;
         public IGameplaySpatialQueryBackend Spatial { get; set; }
+        /// <summary>Optional directed game policy. Self is always allied and still subject to IncludeSelf.</summary>
+        public GameplayFactionResolver FactionRelations { get; set; }
+        public GameplayFactionRelation ResolveFaction(GameplaySourceId source, int sourceFaction, GameplaySourceId target, int targetFaction) =>
+            source == target ? GameplayFactionRelation.Allied :
+            FactionRelations?.Invoke(source, sourceFaction, target, targetFaction) ??
+            GameplaySpatialSearchRequest.DefaultRelation(sourceFaction, targetFaction);
         public GameplayEventDispatcher Events { get; } = new GameplayEventDispatcher();
         /// <summary>Committed outcomes drain in stable FIFO order in the current rule domain.
         /// Nested reactions enqueue without recursive dispatcher calls. Only exhausted causal
@@ -69,6 +75,7 @@ namespace FRFrame.Gameplay.Standard
                     if (reporter.IsDisposed) continue;
                     var tag = outcome.Kind == GameplayCombatOutcomeKind.Damage ? GameplayCombatEvents.Damage :
                         outcome.Kind == GameplayCombatOutcomeKind.Heal ? GameplayCombatEvents.Heal : GameplayCombatEvents.Shield;
+                    var facts = GameplayCombatEvents.Capture(outcome);
                     // Borrowed actors may use their game's actual dispatcher. Route to both real
                     // actor domains, once when shared, rather than publishing into a disconnected bus.
                     var dispatchers=new List<GameplayEventDispatcher>();
@@ -76,9 +83,9 @@ namespace FRFrame.Gameplay.Standard
                     if(!dispatchers.Contains(reporter.Events))dispatchers.Add(reporter.Events);
                     foreach(var dispatcher in dispatchers){
                         if(IsDisposed)break;
-                        dispatcher.Publish(new GameplayEventData(tag,outcome.Context,outcome.Applied));
+                        dispatcher.Publish(new GameplayEventData(tag,outcome.Context,outcome.Applied,facts));
                         if (!IsDisposed && outcome.Kind == GameplayCombatOutcomeKind.Damage && !outcome.Damage.IsMiss && !outcome.Damage.IsImmune)
-                            dispatcher.Publish(new GameplayEventData(GameplayCombatEvents.Hit,outcome.Context,outcome.Applied));
+                            dispatcher.Publish(new GameplayEventData(GameplayCombatEvents.Hit,outcome.Context,outcome.Applied,facts));
                     }
                 }
             }

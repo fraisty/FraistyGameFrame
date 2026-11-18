@@ -92,6 +92,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         throw new InvalidOperationException("当前输入缺少有效原点、目标或方向，或两个端点重合。");
                     geometry=request.Geometry;
                     label=search.RepeatFromResult?"搜索 · 首次查询 · 后续命中后重选":"搜索 · 查询范围";
+                if (search.Faction is GameplayFactionFilter.Neutrals or GameplayFactionFilter.NonAllied)
+                    label+=" · 阵营关系由运行宿主提供";
                 }
                 return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,label,geometry.Radius,
                     geometry.Angle,geometry.Length,geometry.Width,geometry:geometry);

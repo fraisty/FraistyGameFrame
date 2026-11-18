@@ -73,6 +73,7 @@ namespace FRFrame.Gameplay.Editor
         }
         public static bool Visible(object owner,string field)
         {
+            if(owner is GameplayActorProfileAsset profile && field=="Combat")return profile.Mode==GameplayActorProfileMode.Combat;
             if(owner is GameplaySequenceCueMarkerAuthoring cue){if(field=="Duration")return cue.HasDuration;if(field=="Magnitude")return cue.HasMagnitude;}
             if(owner is GameplayMoveTargetsActionAuthoring move){if(field=="Blocked")return move.UseControlGate;}
             if(owner is GameplaySearchTargetActionAuthoring search){

@@ -54,6 +54,19 @@ namespace FRFrame.Gameplay.Authoring
         public bool UseActionContext;
         public override IGameplaySkillTarget Build()=>new GameplaySkillContextTarget(UseActionContext);
     }
+    /// <summary>Targets the event publisher's actual actor or recipient. A missing or defeated actor rejects the rule.</summary>
+    [Serializable,Preserve] public sealed class GameplaySkillEventActorTargetAuthoring : GameplaySkillTargetAuthoring
+    {
+        public enum Role
+        {
+            [InspectorName("事件发起者（攻击方）")] Instigator,
+            [InspectorName("事件实际受者")] Recipient
+        }
+        [InspectorName("事件角色")] public Role Actor;
+        public override void Validate(GameplayAuthoringValidationContext v,string path)
+        { if (!Enum.IsDefined(typeof(Role), Actor)) v.Error(path + ".Actor", "请选择事件角色。"); }
+        public override IGameplaySkillTarget Build() => new GameplaySkillEventActorTarget(Actor == Role.Instigator);
+    }
     [Serializable,Preserve]public sealed class GameplaySpawnProjectileActionAuthoring:GameplaySkillActionAuthoring
     {
         public GameplayProjectileDefinitionAsset Projectile;

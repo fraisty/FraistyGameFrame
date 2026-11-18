@@ -166,6 +166,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 type.Name == "GameplaySkillSelfTargetAuthoring" ? "自身目标" :
                 type.Name == "GameplaySkillPointTargetAuthoring" ? "固定地点目标" :
                 type.Name == "GameplaySkillContextTargetAuthoring" ? "保留触发目标 / 地点" :
+                type.Name == "GameplaySkillEventActorTargetAuthoring" ? "实际事件角色" :
                 type.Name == "GameplaySkillApplyEffectActionAuthoring" ? "施加效果" :
                 type.Name == "GameplaySkillPlaySequenceActionAuthoring" ? "播放序列" :
                 type.Name == "GameplaySkillBranchActionAuthoring" ? "条件分支" :

@@ -24,6 +24,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         private static Inputs Caller()=>new Inputs(false,false,"调用者输入是可选 Actor / Point",true,true);
         private static Inputs Target(GameplaySkillTargetAuthoring target,Inputs input,bool timeline=false)=>
             target is GameplaySkillSelfTargetAuthoring?input.With(true,false,"显式自身"):
+            target is GameplaySkillEventActorTargetAuthoring?input.With(true,true,"实际事件角色存在且能被选中，才进入动作组"):
             target is GameplaySkillPointTargetAuthoring?input.With(false,true,"显式地点"):
             target is GameplaySkillContextTargetAuthoring { UseActionContext: true }?input:
             timeline?input.With(input.TriggerActor,input.TriggerPoint,"时间事件读取原 TriggerEvent.Context",input.OptionalTriggerActor,input.OptionalTriggerPoint):input;

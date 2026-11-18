@@ -160,7 +160,7 @@ namespace FRFrame.Gameplay.Standard
         }
 
         private bool CanTarget(GameplayStandardActor actor) =>
-            GameplaySpatialSearchRequest.CanTarget(actor, Owner.Id, Owner.Faction, Definition.Faction, Definition.Tags, Definition.LayerMask);
+            GameplaySpatialSearchRequest.CanTarget(actor, Owner.Id, Owner.Faction, Definition.Faction, Definition.Tags, Definition.LayerMask, relations: Owner.World.ResolveFaction);
 
         private bool TargetMotionIsCurrent(TargetMotion target) =>
             CanTarget(target.Actor) && target.Sample.Matches(new TargetSample(target.Actor));

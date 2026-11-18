@@ -85,7 +85,7 @@ namespace FRFrame.Gameplay.Standard
             float range = GameplaySpatialMath.Positive(_range, actor, context, "Point capture range");
             var shape = _angle == 360 ? GameplaySearchShape.Circle : GameplaySearchShape.Sector;
             var geometry = new GameplaySearchGeometry(shape, _plane, actor.Position, actor.Facing, range, _angle, height: range * 2);
-            var hit = actor.World.Spatial.Query(new GameplaySpatialSearchRequest(context, geometry, actor.Faction, _faction,
+            var hit = actor.World.Spatial.Query(new GameplaySpatialSearchRequest(actor.World.ResolveFaction, context, geometry, actor.Faction, _faction,
                 maxTargets: 1, useActorCenters: true));
             var point = actor.World.TryGetActor(hit.PrimaryTargetId, out var target)
                 ? target.Position

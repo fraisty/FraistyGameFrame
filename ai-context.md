@@ -725,6 +725,7 @@ Gameplay/
       GameplayCooldownAction.cs
       GameplayDispelEffectsAction.cs
       GameplayOwnedLeases.cs
+      GameplayPhaseBridge.cs
       GameplayPresentationCallbacks.cs
       GameplayPresentationDriver.cs
       GameplaySkillDocument.cs
@@ -61074,6 +61075,7 @@ namespace FRFrame.Gameplay.Authoring.Graph
         private static Inputs Caller()=>new Inputs(false,false,"调用者输入是可选 Actor / Point",true,true);
         private static Inputs Target(GameplaySkillTargetAuthoring target,Inputs input,bool timeline=false)=>
             target is GameplaySkillSelfTargetAuthoring?input.With(true,false,"显式自身"):
+            target is GameplaySkillEventActorTargetAuthoring?input.With(true,true,"实际事件角色存在且能被选中，才进入动作组"):
             target is GameplaySkillPointTargetAuthoring?input.With(false,true,"显式地点"):
             target is GameplaySkillContextTargetAuthoring { UseActionContext: true }?input:
             timeline?input.With(input.TriggerActor,input.TriggerPoint,"时间事件读取原 TriggerEvent.Context",input.OptionalTriggerActor,input.OptionalTriggerPoint):input;
@@ -62044,6 +62046,7 @@ namespace FRFrame.Gameplay.Authoring
     [CreateAssetMenu(menuName = "FRFrame Gameplay/角色战斗配置")]
     public sealed class GameplayActorProfileAsset : GameplayDefinitionAsset
     {
+        [InspectorName("配置模式")] public GameplayActorProfileMode Mode;
         public GameplayCombatMappingAuthoring Combat = new GameplayCombatMappingAuthoring();
         public GameplayProfileSkillAuthoring[] StartingSkills=Array.Empty<GameplayProfileSkillAuthoring>();
         public GameplayInitialAttributeAuthoring[] Attributes = {
@@ -62056,7 +62059,7 @@ namespace FRFrame.Gameplay.Authoring
         public override object BuildSharedDefinition(GameplayAuthoringBuildContext context) => Build(context);
         protected override void ValidateContent(GameplayAuthoringValidationContext v, string p)
         {
-            if (Combat == null) { v.Error(p + ".Combat", "Missing combat mapping."); return; }
+            if (Mode == GameplayActorProfileMode.Combat && Combat == null) { v.Error(p + ".Combat", "Missing combat mapping."); return; }
             if (Attributes == null) { v.Error(p + ".Attributes", "Missing initial attributes."); return; }
             for (int i = 0; i < Attributes.Length; i++)
                 if (Attributes[i] == null) v.Error(p + $".Attributes[{i}]", "Missing attribute.");
@@ -62067,18 +62070,17 @@ namespace FRFrame.Gameplay.Authoring
                 v.Asset(entry.Skill,p+".StartingSkills["+i+"].Skill");
                 if(entry.Skill!=null&&(!ids.Add(entry.Skill.SkillId)||entry.Level<1||entry.Level>entry.Skill.EffectiveMaxLevel))v.Error(p,"角色技能 ID 必须唯一且等级在有效范围内。");
             }}
-            try { CreateAttributes(); } catch (ArgumentException ex) { v.Error(p, ex.Message); }
+            try { CreateProfile(); } catch (ArgumentException ex) { v.Error(p, ex.Message); }
         }
-        private GameplayActorProfile CreateAttributes()
+        private GameplayActorProfile CreateProfile(IEnumerable<(GameplaySkillDocumentDefinition skill, int level)> skills = null)
         {
             var values = new List<KeyValuePair<GameplayAttributeId, float>>();
             foreach (var value in Attributes) { if (value == null) throw new ArgumentException("Missing initial attribute."); values.Add(new KeyValuePair<GameplayAttributeId, float>(value.Attribute.Build(), value.Value)); }
-            return new GameplayActorProfile(values, Combat.Build());
+            return new GameplayActorProfile(values, Mode, Mode == GameplayActorProfileMode.Combat ? Combat.Build() : null, skills);
         }
         public GameplayActorProfile Build(GameplayAuthoringBuildContext context) => context.Build(this,()=>{
-            CreateAttributes();var attributes=new List<KeyValuePair<GameplayAttributeId,float>>();foreach(var value in Attributes)attributes.Add(new KeyValuePair<GameplayAttributeId,float>(value.Attribute.Build(),value.Value));
             var skills=new List<(GameplaySkillDocumentDefinition skill,int level)>();foreach(var entry in StartingSkills)skills.Add((entry.Skill.Build(context),entry.Level));
-            return new GameplayActorProfile(attributes,Combat.Build(),skills);
+            return CreateProfile(skills);
         });
     }
 }
@@ -63052,6 +63054,19 @@ namespace FRFrame.Gameplay.Authoring
         [InspectorName("沿用时间轴启动时的捕获目标"), Tooltip("开启后，时间事件读取启动该编排的当前上下文。关闭后仍读取原触发事件。")]
         public bool UseActionContext;
         public override IGameplaySkillTarget Build()=>new GameplaySkillContextTarget(UseActionContext);
+    }
+    /// <summary>Targets the event publisher's actual actor or recipient. A missing or defeated actor rejects the rule.</summary>
+    [Serializable,Preserve] public sealed class GameplaySkillEventActorTargetAuthoring : GameplaySkillTargetAuthoring
+    {
+        public enum Role
+        {
+            [InspectorName("事件发起者（攻击方）")] Instigator,
+            [InspectorName("事件实际受者")] Recipient
+        }
+        [InspectorName("事件角色")] public Role Actor;
+        public override void Validate(GameplayAuthoringValidationContext v,string path)
+        { if (!Enum.IsDefined(typeof(Role), Actor)) v.Error(path + ".Actor", "请选择事件角色。"); }
+        public override IGameplaySkillTarget Build() => new GameplaySkillEventActorTarget(Actor == Role.Instigator);
     }
     [Serializable,Preserve]public sealed class GameplaySpawnProjectileActionAuthoring:GameplaySkillActionAuthoring
     {
@@ -65596,6 +65611,7 @@ namespace FRFrame.Gameplay.Editor
         }
         public static bool Visible(object owner,string field)
         {
+            if(owner is GameplayActorProfileAsset profile && field=="Combat")return profile.Mode==GameplayActorProfileMode.Combat;
             if(owner is GameplaySequenceCueMarkerAuthoring cue){if(field=="Duration")return cue.HasDuration;if(field=="Magnitude")return cue.HasMagnitude;}
             if(owner is GameplayMoveTargetsActionAuthoring move){if(field=="Blocked")return move.UseControlGate;}
             if(owner is GameplaySearchTargetActionAuthoring search){
@@ -68113,7 +68129,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("表现资源 / 位置 / 反馈","由已安装表现后端消费；不推进Gameplay时间。",Fields(value));
             else if(value is GameplayDispelEffectsActionAuthoring)yield return Group("驱散效果分类","作用于明确选择的目标；匹配 EffectTags，移除原因是 Dispel，不触发自然到期动作。至少选择一个 All/Any 分类。","EffectTags");
             else if(value is GameplayCooldownActionAuthoring cooldown)yield return Group("冷却 / 充能命令","SkillId=0仅当前cast；正数选择本角色已安装技能。重置使用上次捕获时长，减少冷却使用负数，恢复充能使用正整数。",cooldown.Operation==Standard.GameplayCooldownOperation.Restart?new[]{"SkillId","Operation"}:new[]{"SkillId","Operation","Value"});
-            else if(value is GameplayActorProfileAsset)yield return Group("战前角色配置","初始属性与技能等级解析到独立运行容器；共享配置不保存战斗状态。","Combat","Attributes","StartingSkills");
+            else if(value is GameplayActorProfileAsset)yield return Group("战前角色配置","战斗模式需要生命映射；非战斗模式可使用普通属性、资源、标签与技能。","Mode","Combat","Attributes","StartingSkills");
             else if(value is GameplayCaptureWorldPointActionAuthoring)
             {
                 var capture=Group("捕获世界落点","显式地点优先；自动选最近敌人中心，空场保存当前朝向的前向点。时间事件可选择沿用捕获目标。","Plane","Range","Faction");
@@ -69258,6 +69274,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         throw new InvalidOperationException("当前输入缺少有效原点、目标或方向，或两个端点重合。");
                     geometry=request.Geometry;
                     label=search.RepeatFromResult?"搜索 · 首次查询 · 后续命中后重选":"搜索 · 查询范围";
+                if (search.Faction is GameplayFactionFilter.Neutrals or GameplayFactionFilter.NonAllied)
+                    label+=" · 阵营关系由运行宿主提供";
                 }
                 return new GameplayRangePreviewShape(GameplayRangePreviewShapeKind.Sector,label,geometry.Radius,
                     geometry.Angle,geometry.Length,geometry.Width,geometry:geometry);
@@ -74930,6 +74948,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 type.Name == "GameplaySkillSelfTargetAuthoring" ? "自身目标" :
                 type.Name == "GameplaySkillPointTargetAuthoring" ? "固定地点目标" :
                 type.Name == "GameplaySkillContextTargetAuthoring" ? "保留触发目标 / 地点" :
+                type.Name == "GameplaySkillEventActorTargetAuthoring" ? "实际事件角色" :
                 type.Name == "GameplaySkillApplyEffectActionAuthoring" ? "施加效果" :
                 type.Name == "GameplaySkillPlaySequenceActionAuthoring" ? "播放序列" :
                 type.Name == "GameplaySkillBranchActionAuthoring" ? "条件分支" :
@@ -78125,6 +78144,12 @@ namespace FRFrame.Gameplay
         void Execute(GameplayEffectApplicationContext application);
     }
 
+    /// <summary>An execution can reject an incompatible target before its enclosing Effect commits.</summary>
+    public interface IGameplayEffectTargetRequirement
+    {
+        string RejectionReason(IGameplayEffectExecutionTarget target);
+    }
+
     /// <summary>精确 GameplayTag 键到有限 float 的不可变本次调用值快照。</summary>
     public sealed class GameplaySetByCallerValues
     {
@@ -78225,7 +78250,8 @@ namespace FRFrame.Gameplay
         RefreshedAtLimit,
         RejectedAtLimit,
         RejectedByRequirements,
-        OverflowExecuted
+        OverflowExecuted,
+        RejectedByTarget
     }
 
     /// <summary>一次 Effect 申请的明确结果；拒绝叠层仍指向原活动 Handle。</summary>
@@ -78237,16 +78263,18 @@ namespace FRFrame.Gameplay
         public bool HasActiveHandle { get; }
         public GameplayEffectHandle ActiveHandle { get; }
         public int StackCount { get; }
+        public string RejectionReason { get; }
 
         /// <summary>Only a real newly-created contribution produces a layer handle.</summary>
         public GameplayEffectLayerHandle LayerHandle { get; }
 
         internal GameplayEffectApplicationResult(GameplayEffectApplicationOutcome outcome,
-            GameplayEffectHandle handle, int stackCount, GameplayEffectLayerHandle layerHandle = default)
+            GameplayEffectHandle handle, int stackCount, GameplayEffectLayerHandle layerHandle = default, string rejectionReason = null)
         {
             Outcome = outcome;
             Succeeded = outcome != GameplayEffectApplicationOutcome.RejectedAtLimit &&
-                outcome != GameplayEffectApplicationOutcome.RejectedByRequirements;
+                outcome != GameplayEffectApplicationOutcome.RejectedByRequirements && outcome != GameplayEffectApplicationOutcome.RejectedByTarget;
+            RejectionReason = rejectionReason;
             ActiveHandle = handle;
             HasActiveHandle = handle.IsValid;
             StackCount = stackCount;
@@ -78570,6 +78598,9 @@ namespace FRFrame.Gameplay
             if (!ReferenceEquals(application.Target.Attributes, _target) || (_targetTags != null && !ReferenceEquals(application.Target.Tags, _targetTags)))
                 throw new ArgumentException("Execution target must belong to this container.", nameof(application));
             if (!MeetsRequirements(definition)) return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RejectedByRequirements, default, 0);
+            foreach (var execution in definition.Executions)
+                if (execution is IGameplayEffectTargetRequirement requirement && requirement.RejectionReason(application.Target) is string reason)
+                    return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RejectedByTarget, default, 0, rejectionReason: reason);
             if (definition.DurationPolicy == GameplayEffectDurationPolicy.Instant)
             {
                 foreach (var execution in definition.Executions) execution.Execute(application.WithStackCount(1));
@@ -79441,6 +79472,8 @@ namespace FRFrame.Gameplay
         public float Magnitude { get; }
         /// <summary>Optional immutable child/hit envelope. Legacy events leave this null.</summary>
         public GameplayContext Context { get; }
+        /// <summary>Publisher-owned scalar facts, separate from the original caller context.</summary>
+        public GameplayContextValues PublishedScalars { get; }
         /// <summary>Optional synchronous Effect evidence. This envelope is passed to the runner, never published by Tag.</summary>
         public GameplayEffectLifecycleEvent EffectLifecycle { get; }
         public bool HasContext => Context != null;
@@ -79449,6 +79482,7 @@ namespace FRFrame.Gameplay
         {
             EffectLifecycle = lifecycle;
             Context = lifecycle.Application.Context;
+            PublishedScalars = null;
             InstigatorId = Context.InstigatorId;
             TargetId = lifecycle.Application.Target.TargetId;
             Magnitude = lifecycle.StackCount;
@@ -79461,6 +79495,10 @@ namespace FRFrame.Gameplay
                 context.TargetData.PrimaryTargetId, magnitude)
         { Context = context; }
 
+        /// <summary>Retains the original context identity and supplies authoritative scalars to rules.</summary>
+        public GameplayEventData(GameplayTag eventTag, GameplayContext context, float magnitude, GameplayContextValues publishedScalars)
+            : this(eventTag, context, magnitude)
+        { PublishedScalars = publishedScalars; }
 
         /// <summary>
         /// 创建事件数据。eventTag 必须有效，magnitude 必须为有限值；来源身份允许为 default。
@@ -79477,6 +79515,7 @@ namespace FRFrame.Gameplay
                 throw new ArgumentOutOfRangeException(nameof(magnitude), "Event magnitude must be finite.");
 
             Context = null;
+            PublishedScalars = null;
             EffectLifecycle = null;
             EventTag = eventTag;
             InstigatorId = instigatorId;
@@ -86847,6 +86886,8 @@ namespace FRFrame.Gameplay
                 context = _definition.PreserveTriggerContext ? triggerEvent.Context.WithTarget(target)
                     .WithValues(triggerEvent.Context.Values.WithValue(GameplayContextValues.TriggerMagnitudeKey, triggerEvent.Magnitude)) :
                     context.WithAbilityLevel(triggerEvent.Context.AbilityLevel);
+            if (triggerEvent.PublishedScalars != null)
+                context = context.WithValues(context.Values.Merge(triggerEvent.PublishedScalars));
             // Optional per-installation cast scope adapter. Definitions remain immutable; null suppresses
             // execution for an unrelated event/inactive grant. Legacy callers do not install this adapter.
             if (_executionContext != null)
@@ -87250,11 +87291,16 @@ namespace FRFrame.Gameplay
             if (!Enum.IsDefined(typeof(GameplaySkillContextComparison), comparison)) throw new ArgumentOutOfRangeException(nameof(comparison));
             Key = key; Comparison = comparison; Constant = constant;
         }
-        public bool Evaluate(IGameplaySkillHost host, GameplayEventData triggerEvent) => triggerEvent.HasContext && EvaluateContext(triggerEvent.Context, host, triggerEvent);
+        public bool Evaluate(IGameplaySkillHost host, GameplayEventData triggerEvent) =>
+            triggerEvent.PublishedScalars != null && triggerEvent.PublishedScalars.TryGetValue(Key, out float value)
+                ? Matches(value) : triggerEvent.HasContext && EvaluateContext(triggerEvent.Context, host, triggerEvent);
         public bool EvaluateContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent)
         {
             if (context == null) throw new ArgumentNullException(nameof(context));
-            if (!context.Values.TryGetValue(Key, out float value)) return false;
+            return context.Values.TryGetValue(Key, out float value) && Matches(value);
+        }
+        private bool Matches(float value)
+        {
             switch (Comparison)
             {
                 case GameplaySkillContextComparison.Equal: return value == Constant;
@@ -87377,6 +87423,28 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Optional root-cast scalar: maximum reaction hops, integer 0..16. Default 16.
         /// Set in SkillDocument Defaults or captured input; cannot raise the World safety limit.</summary>
         public static readonly GameplayTag MaxChainDepth = new GameplayTag("Data.Standard.Combat.MaxChainDepth");
+        public static readonly GameplayTag Applied = new GameplayTag("Data.Standard.Combat.Result.Applied");
+        public static readonly GameplayTag Absorbed = new GameplayTag("Data.Standard.Combat.Result.Absorbed");
+        public static readonly GameplayTag Missed = new GameplayTag("Data.Standard.Combat.Result.Missed");
+        public static readonly GameplayTag Immune = new GameplayTag("Data.Standard.Combat.Result.Immune");
+        public static readonly GameplayTag Critical = new GameplayTag("Data.Standard.Combat.Result.Critical");
+        public static readonly GameplayTag DamageType = new GameplayTag("Data.Standard.Combat.Result.DamageType");
+        internal static GameplayContextValues Capture(GameplayCombatOutcome outcome)
+        {
+            bool damage = outcome.Kind == GameplayCombatOutcomeKind.Damage;
+            outcome.Context.Values.TryGetValue(NoRetaliate, out float noRetaliate);
+            return new GameplayContextValues(new Dictionary<GameplayTag, float>
+            {
+                [Applied] = outcome.Applied,
+                [Absorbed] = damage ? outcome.Damage.AbsorbedDamage : 0,
+                [Missed] = damage && outcome.Damage.IsMiss ? 1 : 0,
+                [Immune] = damage && outcome.Damage.IsImmune ? 1 : 0,
+                [Critical] = damage && outcome.Damage.IsCritical ? 1 : 0,
+                [DamageType] = damage ? (float)outcome.DamageType : -1,
+                [NoRetaliate] = noRetaliate
+            });
+        }
+
     }
     /// <summary>Defense routing: physical uses Defense, magical uses MagicDefense, true bypasses
     /// only Defense stages. Authored immunity/miss/shield/minimum ordering still applies.</summary>
@@ -87409,6 +87477,12 @@ namespace FRFrame.Gameplay.Standard
             new GameplayCombatOutcome(Context, Kind, Damage, Applied, Overflow, Before, After, DamageType, executionContext);
     }
     public enum GameplayDamageStageKind { Immunity, Miss, Defense, Critical, Shield, Minimum, Scale }
+
+    internal static class GameplayCombatTarget
+    {
+        internal static string RejectionReason(IGameplayEffectExecutionTarget target) =>
+            target is GameplayStandardActor { CombatAttributes: not null } ? null : "目标没有战斗属性映射，无法结算伤害、治疗或护盾。";
+    }
     public sealed class GameplayDamageStage
     {
         public GameplayDamageStageKind Kind { get; }
@@ -87439,8 +87513,9 @@ namespace FRFrame.Gameplay.Standard
     /// <summary>Official damage Effect execution on the existing DamagePipeline. Stages are pure;
     /// final HP/Shield commit is atomic. Explicit captured Critical/Miss values give deterministic
     /// preview/runtime inputs. A fully absorbed hit stops Minimum, avoiding damage through a full shield.</summary>
-    public sealed class GameplayDamageExecution : IGameplayEffectExecution
+    public sealed class GameplayDamageExecution : IGameplayEffectExecution, IGameplayEffectTargetRequirement
     {
+        string IGameplayEffectTargetRequirement.RejectionReason(IGameplayEffectExecutionTarget target) => GameplayCombatTarget.RejectionReason(target);
         public static readonly GameplayTag CriticalKey = new GameplayTag("Data.Standard.Critical");
         public static readonly GameplayTag MissKey = new GameplayTag("Data.Standard.Miss");
         /// <summary>The net HP loss in this committed damage execution, available only to its heal.</summary>
@@ -87582,8 +87657,9 @@ namespace FRFrame.Gameplay.Standard
         }
     }
     /// <summary>Standard heal on the mapped actual resource; bounded by MaxHealth, with explicit overheal feedback.</summary>
-    public sealed class GameplayHealExecution : IGameplayEffectExecution
+    public sealed class GameplayHealExecution : IGameplayEffectExecution, IGameplayEffectTargetRequirement
     {
+        string IGameplayEffectTargetRequirement.RejectionReason(IGameplayEffectExecutionTarget target) => GameplayCombatTarget.RejectionReason(target);
         private readonly IGameplayFloatValue _amount;
         public GameplayHealExecution(IGameplayFloatValue amount) => _amount = amount ?? throw new ArgumentNullException(nameof(amount));
         public void Execute(GameplayEffectApplicationContext application)
@@ -87599,8 +87675,9 @@ namespace FRFrame.Gameplay.Standard
         }
     }
     /// <summary>Instant shield capacity addition. Timed/owned contributions are a separate Effect lease operation.</summary>
-    public sealed class GameplayShieldExecution : IGameplayEffectExecution
+    public sealed class GameplayShieldExecution : IGameplayEffectExecution, IGameplayEffectTargetRequirement
     {
+        string IGameplayEffectTargetRequirement.RejectionReason(IGameplayEffectExecutionTarget target) => GameplayCombatTarget.RejectionReason(target);
         private readonly IGameplayFloatValue _amount;
         public GameplayShieldExecution(IGameplayFloatValue amount) => _amount = amount ?? throw new ArgumentNullException(nameof(amount));
         public void Execute(GameplayEffectApplicationContext application)
@@ -88195,7 +88272,7 @@ namespace FRFrame.Gameplay.Standard
         private GameplaySourceId[] SortedInside(){var ids=new List<GameplaySourceId>(_inside.Keys);ids.Sort((a,b)=>a.Value.CompareTo(b.Value));return ids.ToArray();}
         private void UpdateMembership()
         {
-            var selected=Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context,Geometry(),Owner.Faction,_definition.Faction,_definition.Tags,_definition.LayerMask));
+            var selected=Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Owner.World.ResolveFaction,Context,Geometry(),Owner.Faction,_definition.Faction,_definition.Tags,_definition.LayerMask));
             var current=new HashSet<GameplaySourceId>(selected.Targets);
             foreach(var id in SortedInside())if(!current.Contains(id))Exit(id);
             foreach(var id in selected.Targets)
@@ -88929,7 +89006,7 @@ namespace FRFrame.Gameplay.Standard
         }
 
         private bool CanTarget(GameplayStandardActor actor) =>
-            GameplaySpatialSearchRequest.CanTarget(actor, Owner.Id, Owner.Faction, Definition.Faction, Definition.Tags, Definition.LayerMask);
+            GameplaySpatialSearchRequest.CanTarget(actor, Owner.Id, Owner.Faction, Definition.Faction, Definition.Tags, Definition.LayerMask, relations: Owner.World.ResolveFaction);
 
         private bool TargetMotionIsCurrent(TargetMotion target) =>
             CanTarget(target.Actor) && target.Sample.Matches(new TargetSample(target.Actor));
@@ -89465,7 +89542,7 @@ namespace FRFrame.Gameplay.Standard
             var geometry = !fixedContacts && distance > 0
                 ? new GameplaySearchGeometry(GameplaySearchShape.Capsule, _definition.Plane, previous, Direction, _radius, length: distance, height: _radius * 2)
                 : new GameplaySearchGeometry(GameplaySearchShape.Circle, _definition.Plane, Position, Direction, _radius, height: _radius * 2);
-            var selected = Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Context, geometry, Owner.Faction, _definition.Faction,
+            var selected = Owner.World.Spatial.Query(new GameplaySpatialSearchRequest(Owner.World.ResolveFaction, Context, geometry, Owner.Faction, _definition.Faction,
                 _definition.Tags, _definition.LayerMask, maxTargets: fixedContacts ? 1 : int.MaxValue,
                 excluded: fixedContacts ? id => _hits.Contains(id) || _definition.OnlyHitPrimaryTarget && id != _target : null,
                 useActorCenters: fixedContacts));
@@ -89978,7 +90055,7 @@ namespace FRFrame.Gameplay.Standard
                 _lengthFromTarget ? endpointLength : _shape == GameplaySearchShape.Box || _shape == GameplaySearchShape.Line || _shape == GameplaySearchShape.Ray || _shape == GameplaySearchShape.Capsule ? GameplayValueEvaluator.Evaluate(_length, self) : 1,
                 _shape == GameplaySearchShape.Box || _shape == GameplaySearchShape.Line || _shape == GameplaySearchShape.Ray ? GameplayValueEvaluator.Evaluate(_width, self) : 1,
                 GameplayValueEvaluator.Evaluate(_height, self), context.TargetData.PrimaryTargetId, _cells, _cellSize);
-            request = new GameplaySpatialSearchRequest(context, geometry, actor.Faction,
+            request = new GameplaySpatialSearchRequest(actor.World.ResolveFaction, context, geometry, actor.Faction,
                 _faction, _tags, _layerMask, _repeatFromResult ? 1 : _maxTargets,
                 _repeatFromResult ? GameplayTargetOrder.Nearest : _order, _includeSelf,
                 _excludePrimaryTarget || visited != null
@@ -90006,7 +90083,13 @@ namespace FRFrame.Gameplay.Standard
         int Layer { get; }
         bool IsTargetable { get; }
     }
-    public enum GameplayFactionFilter { Any, Allies, Enemies }
+    public enum GameplayFactionFilter { Any, Allies, Enemies, Neutrals, NonAllied }
+    public enum GameplayFactionRelation { Allied, Hostile, Neutral }
+
+    /// <summary>Directed relation evaluated from live faction values. Games own the policy and
+    /// may use either actor identity or faction. Return Neutral for unknown pairs when appropriate.</summary>
+    public delegate GameplayFactionRelation GameplayFactionResolver(GameplaySourceId source, int sourceFaction,
+        GameplaySourceId target, int targetFaction);
     public enum GameplayTargetOrder { Nearest, Farthest, SourceId }
 
     /// <summary>Shared deterministic target policy; Physics and logical backends only supply candidates.
@@ -90025,7 +90108,17 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Use registered actor positions independently of the collider backend.</summary>
         public bool UseActorCenters { get; }
         private readonly Predicate<GameplaySourceId> _excluded;
+        private readonly GameplayFactionResolver _relations;
         public GameplaySpatialSearchRequest(GameplayContext context, GameplaySearchGeometry geometry,
+            int sourceFaction, GameplayFactionFilter faction = GameplayFactionFilter.Enemies,
+            GameplayTagQuery tags = null, int layerMask = -1, int maxTargets = int.MaxValue,
+            GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false,
+            Predicate<GameplaySourceId> excluded = null, bool useActorCenters = false)
+            : this(null, context, geometry, sourceFaction, faction, tags, layerMask, maxTargets, order,
+                includeSelf, excluded, useActorCenters) { }
+
+        /// <summary>Creates a request with an explicit directed faction resolver.</summary>
+        public GameplaySpatialSearchRequest(GameplayFactionResolver relations, GameplayContext context, GameplaySearchGeometry geometry,
             int sourceFaction, GameplayFactionFilter faction = GameplayFactionFilter.Enemies,
             GameplayTagQuery tags = null, int layerMask = -1, int maxTargets = int.MaxValue,
             GameplayTargetOrder order = GameplayTargetOrder.Nearest, bool includeSelf = false,
@@ -90038,7 +90131,7 @@ namespace FRFrame.Gameplay.Standard
                 throw new ArgumentOutOfRangeException(nameof(faction));
             SourceFaction = sourceFaction; Faction = faction; Tags = tags ?? GameplayTagQuery.Empty;
             LayerMask = layerMask; MaxTargets = maxTargets; Order = order; IncludeSelf = includeSelf;
-            _excluded = excluded; UseActorCenters = useActorCenters;
+            _excluded = excluded; _relations = relations; UseActorCenters = useActorCenters;
         }
         public GameplayTargetData Select(IEnumerable<IGameplaySpatialActor> candidates)
         {
@@ -90046,7 +90139,7 @@ namespace FRFrame.Gameplay.Standard
             var selected = new List<IGameplaySpatialActor>(); var seen = new HashSet<GameplaySourceId>();
             foreach (var actor in candidates)
             {
-                if (!CanTarget(actor, Context.InstigatorId, SourceFaction, Faction, Tags, LayerMask, IncludeSelf) || !Geometry.Contains(actor.Id, actor.Position) ||
+                if (!CanTarget(actor, Context.InstigatorId, SourceFaction, Faction, Tags, LayerMask, IncludeSelf, _relations) || !Geometry.Contains(actor.Id, actor.Position) ||
                     _excluded?.Invoke(actor.Id) == true || !seen.Add(actor.Id)) continue;
                 selected.Add(actor);
             }
@@ -90065,11 +90158,30 @@ namespace FRFrame.Gameplay.Standard
         }
 
         internal static bool CanTarget(IGameplaySpatialActor actor, GameplaySourceId source, int sourceFaction,
-            GameplayFactionFilter faction, GameplayTagQuery tags, int layerMask, bool includeSelf = false) =>
+            GameplayFactionFilter faction, GameplayTagQuery tags, int layerMask, bool includeSelf = false,
+            GameplayFactionResolver relations = null) =>
             actor != null && actor.Id.IsValid && actor.IsTargetable && actor.Tags != null && actor.Layer >= 0 && actor.Layer <= 31 &&
             (includeSelf || actor.Id != source) && (layerMask & (1 << actor.Layer)) != 0 &&
-            (faction != GameplayFactionFilter.Allies || actor.Faction == sourceFaction) &&
-            (faction != GameplayFactionFilter.Enemies || actor.Faction != sourceFaction) && tags.Matches(actor.Tags);
+            MatchesFaction(faction, source, sourceFaction, actor, relations) && tags.Matches(actor.Tags);
+
+        internal static GameplayFactionRelation DefaultRelation(int sourceFaction, int targetFaction) =>
+            sourceFaction == targetFaction ? GameplayFactionRelation.Allied : GameplayFactionRelation.Hostile;
+
+        private static bool MatchesFaction(GameplayFactionFilter filter, GameplaySourceId source, int sourceFaction,
+            IGameplaySpatialActor target, GameplayFactionResolver resolver)
+        {
+            if (filter == GameplayFactionFilter.Any) return true;
+            var relation = target.Id == source ? GameplayFactionRelation.Allied :
+                resolver?.Invoke(source, sourceFaction, target.Id, target.Faction) ?? DefaultRelation(sourceFaction, target.Faction);
+            return filter switch
+            {
+                GameplayFactionFilter.Allies => relation == GameplayFactionRelation.Allied,
+                GameplayFactionFilter.Enemies => relation == GameplayFactionRelation.Hostile,
+                GameplayFactionFilter.Neutrals => relation == GameplayFactionRelation.Neutral,
+                GameplayFactionFilter.NonAllied => relation is GameplayFactionRelation.Hostile or GameplayFactionRelation.Neutral,
+                _ => false
+            };
+        }
     }
     public interface IGameplaySpatialQueryBackend { GameplayTargetData Query(GameplaySpatialSearchRequest request); }
 
@@ -90173,7 +90285,7 @@ namespace FRFrame.Gameplay.Standard
             float range = GameplaySpatialMath.Positive(_range, actor, context, "Point capture range");
             var shape = _angle == 360 ? GameplaySearchShape.Circle : GameplaySearchShape.Sector;
             var geometry = new GameplaySearchGeometry(shape, _plane, actor.Position, actor.Facing, range, _angle, height: range * 2);
-            var hit = actor.World.Spatial.Query(new GameplaySpatialSearchRequest(context, geometry, actor.Faction, _faction,
+            var hit = actor.World.Spatial.Query(new GameplaySpatialSearchRequest(actor.World.ResolveFaction, context, geometry, actor.Faction, _faction,
                 maxTargets: 1, useActorCenters: true));
             var point = actor.World.TryGetActor(hit.PrimaryTargetId, out var target)
                 ? target.Position
@@ -90193,6 +90305,20 @@ using FRFrame.Gameplay.Extensions;
 
 namespace FRFrame.Gameplay.Standard
 {
+    /// <summary>Resolves the live actor identified by the actual event, independently of the skill owner.</summary>
+    public sealed class GameplaySkillEventActorTarget : IGameplaySkillTarget
+    {
+        private readonly bool _instigator;
+        public GameplaySkillEventActorTarget(bool instigator) => _instigator = instigator;
+
+        public GameplayTargetData Resolve(IGameplaySkillHost host, GameplayEventData triggerEvent)
+        {
+            var id = _instigator ? triggerEvent.InstigatorId : triggerEvent.TargetId;
+            return host is GameplayStandardActor owner && owner.World.TryGetActor(id, out var actor) && actor.IsTargetable
+                ? new GameplayTargetData(id, actor.Position) : null;
+        }
+    }
+
     /// <summary>Preserves the actual event's target snapshot, including captured point and multi-target list.</summary>
     public sealed class GameplaySkillContextTarget : IGameplaySkillTarget, IGameplaySkillContextTarget
     {
@@ -90421,8 +90547,11 @@ namespace FRFrame.Gameplay.Standard
         {
             GameplayStandardActor selected=null;float nearest=float.PositiveInfinity;
             foreach(var target in Owner.World.Actors)
-                if(target.IsTargetable&&target.Id!=actor.Id&&target.Faction!=actor.Faction)
-                {float distance=GameplaySpatialMath.Distance(actor.Position,target.Position);if(distance<nearest){nearest=distance;selected=target;}}
+                if(target.IsTargetable && actor.World.ResolveFaction(actor.Id, actor.Faction, target.Id, target.Faction)==GameplayFactionRelation.Hostile)
+                {
+                    float distance=GameplaySpatialMath.Distance(actor.Position,target.Position);
+                    if(distance<nearest || distance==nearest && target.Id.Value<selected.Id.Value){nearest=distance;selected=target;}
+                }
             return selected==null?null:new GameplayTargetData(selected.Id,selected.Position);
         }
         private void OnCombat(GameplayCombatOutcome outcome){if(SummonedActor!=null&&!SummonedActor.IsTargetable)Finish(GameplaySpatialEndReason.Died);}
@@ -90473,6 +90602,7 @@ using System.Collections.Generic;
 
 namespace FRFrame.Gameplay.Standard
 {
+    public enum GameplayActorProfileMode { Combat, NonCombat }
     /// <summary>Static initial attributes plus combat resource mapping; mutable values only enter the actor at creation.</summary>
     public sealed class GameplayActorProfile
     {
@@ -90481,17 +90611,30 @@ namespace FRFrame.Gameplay.Standard
         private readonly IReadOnlyList<(GameplaySkillDocumentDefinition skill,int level)> _skills;
         public GameplayActorProfile(IEnumerable<KeyValuePair<GameplayAttributeId, float>> attributes, GameplayCombatAttributeMap combat,
             IEnumerable<(GameplaySkillDocumentDefinition skill,int level)> startingSkills=null)
+            : this(attributes, GameplayActorProfileMode.Combat, combat, startingSkills) { }
+
+        /// <summary>NonCombat profiles initialize ordinary attributes and skills without health mapping.</summary>
+        public GameplayActorProfile(IEnumerable<KeyValuePair<GameplayAttributeId, float>> attributes, GameplayActorProfileMode mode,
+            GameplayCombatAttributeMap combat, IEnumerable<(GameplaySkillDocumentDefinition skill,int level)> startingSkills=null)
         {
-            Combat = combat ?? throw new ArgumentNullException(nameof(combat));
+            Combat = mode switch
+            {
+                GameplayActorProfileMode.Combat => combat ?? throw new ArgumentNullException(nameof(combat)),
+                GameplayActorProfileMode.NonCombat => null,
+                _ => throw new ArgumentOutOfRangeException(nameof(mode))
+            };
             var copy = new List<KeyValuePair<GameplayAttributeId, float>>(); var keys = new HashSet<GameplayAttributeId>();
             foreach (var pair in attributes ?? throw new ArgumentNullException(nameof(attributes)))
             {
                 if (!pair.Key.IsValid || !float.IsFinite(pair.Value) || !keys.Add(pair.Key)) throw new ArgumentException("Initial attributes require unique valid IDs and finite values.");
                 copy.Add(pair);
             }
-            if (!keys.Contains(combat.Health) || !keys.Contains(combat.MaxHealth)) throw new ArgumentException("Health/MaxHealth must be initialized.");
-            float health = copy.Find(p => p.Key == combat.Health).Value, max = copy.Find(p => p.Key == combat.MaxHealth).Value;
-            if (max <= 0 || health < 0 || health > max) throw new ArgumentException("Initial Health must be within positive MaxHealth.");
+            if (Combat != null)
+            {
+                if (!keys.Contains(Combat.Health) || !keys.Contains(Combat.MaxHealth)) throw new ArgumentException("Health/MaxHealth must be initialized.");
+                float health = copy.Find(p => p.Key == Combat.Health).Value, max = copy.Find(p => p.Key == Combat.MaxHealth).Value;
+                if (max <= 0 || health < 0 || health > max) throw new ArgumentException("Initial Health must be within positive MaxHealth.");
+            }
             _attributes = copy.AsReadOnly();
             var skills=new List<(GameplaySkillDocumentDefinition skill,int level)>(startingSkills??Array.Empty<(GameplaySkillDocumentDefinition skill,int level)>());
             var ids=new HashSet<int>();
@@ -90588,7 +90731,13 @@ namespace FRFrame.Gameplay.Standard
                 if (!actor.World.TryGetActor(id, out var target)) continue;
                 var targeted = context.WithTarget(new GameplayTargetData(id, target.Position, null, new[] { id }));
                 var result = actor.ApplyEffect(targeted, Effect, null, context);
-                if (!result.Succeeded) return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+                if (!result.Succeeded)
+                {
+                    if (result.RejectionReason != null)
+                        actor.RecordSkillTrace(new GameplaySkillTraceRecord(actor.Id, targeted, triggerEvent.EventTag,
+                            GameplaySkillTraceStage.ActionRejected, nameof(GameplayApplyToTargetsAction), detail: result.RejectionReason));
+                    return new GameplaySkillActionExecution(GameplaySkillActionResult.Rejected, context);
+                }
                 if (owner.IsValid && GameplayEffectLease.TryCapture(target.Effects, result, out var lease))
                 {
                     var owned = new GameplayOwnedTargetEffectLease(actor.Abilities, owner, target.Effects, lease);
@@ -90835,6 +90984,44 @@ namespace FRFrame.Gameplay.Standard
 }
 ````
 
+## File: Gameplay/Standard/Runtime/GameplayPhaseBridge.cs
+````csharp
+using System;
+
+namespace FRFrame.Gameplay.Standard
+{
+    /// <summary>Publishes host-authored phases to the owner's existing dispatcher. The host
+    /// orders phases and may publish multiple phases at one rule time. Only StepRules advances the world.</summary>
+    public sealed class GameplayPhaseBridge
+    {
+        public static readonly GameplayTag TurnIndex = new GameplayTag("Data.Standard.Phase.TurnIndex");
+        private readonly GameplayStandardWorld _world;
+        private readonly GameplaySourceId _source;
+
+        public GameplayPhaseBridge(GameplayStandardWorld world)
+        {
+            _world = world ?? throw new ArgumentNullException(nameof(world));
+            _source = world.Sources.Allocate();
+        }
+
+        /// <summary>Publishes one occurrence. Duplicate phases are meaningful at this layer;
+        /// the host owns turn order and prevents unintended repeated input.</summary>
+        public void Publish(GameplayStandardActor owner, int turn, GameplayTag phase,
+            GameplayTargetData target = null, GameplayContextValues values = null)
+        {
+            if (owner == null || owner.World != _world || owner.IsDisposed)
+                throw new ArgumentException("Phase owner must belong to this world.", nameof(owner));
+            if (turn < 1) throw new ArgumentOutOfRangeException(nameof(turn));
+            var context = new GameplayContext(owner.Id, target ?? new GameplayTargetData(owner.Id, owner.Position), _source, values);
+            owner.Events.Publish(new GameplayEventData(phase, context, turn, GameplayContextValues.Empty.WithValue(TurnIndex, turn)));
+        }
+
+        /// <summary>Use the world's single rule clock, in the unit chosen by the host.</summary>
+        public void StepRules(float amount) => _world.Advance(amount);
+    }
+}
+````
+
 ## File: Gameplay/Standard/Runtime/GameplayPresentationCallbacks.cs
 ````csharp
 using System;
@@ -91022,9 +91209,10 @@ namespace FRFrame.Gameplay.Standard
                      trigger.Context.OriginSourceId != captured.OriginSourceId ||
                      trigger.Context.ActivationSourceId!=captured.ActivationSourceId)) return null;
                 if ((!primary || Definition.Mode == GameplayStandardActivationMode.Passive) && !SubjectMatches(trigger)) return null;
-                var inherited = trigger.Context?.Values ?? GameplayContextValues.Empty;
-                return captured.WithTarget(resolved.TargetData).WithValues(inherited.Merge(captured.Values)
-                    .WithValue(GameplayContextValues.TriggerMagnitudeKey, trigger.Magnitude));
+                if (Definition.Mode == GameplayStandardActivationMode.Passive && !Actor.IsTargetable) return null;
+                var values = (trigger.Context?.Values ?? GameplayContextValues.Empty).Merge(captured.Values);
+                if (trigger.PublishedScalars != null) values = values.Merge(trigger.PublishedScalars);
+                return captured.WithTarget(resolved.TargetData).WithValues(values.WithValue(GameplayContextValues.TriggerMagnitudeKey, trigger.Magnitude));
             });
             _bindings.Add(binding);
             if (!Actor.Abilities.TryOwnLifetime(Grant, binding)) { Actor.UninstallSkill(binding); _bindings.Remove(binding); throw new InvalidOperationException("Skill listener ownership was rejected."); }
@@ -91259,6 +91447,12 @@ namespace FRFrame.Gameplay.Standard
         public IGameplayRandomSource Random {get;}
         public IReadOnlyList<GameplayStandardActor> Actors => _actorView;
         public IGameplaySpatialQueryBackend Spatial { get; set; }
+        /// <summary>Optional directed game policy. Self is always allied and still subject to IncludeSelf.</summary>
+        public GameplayFactionResolver FactionRelations { get; set; }
+        public GameplayFactionRelation ResolveFaction(GameplaySourceId source, int sourceFaction, GameplaySourceId target, int targetFaction) =>
+            source == target ? GameplayFactionRelation.Allied :
+            FactionRelations?.Invoke(source, sourceFaction, target, targetFaction) ??
+            GameplaySpatialSearchRequest.DefaultRelation(sourceFaction, targetFaction);
         public GameplayEventDispatcher Events { get; } = new GameplayEventDispatcher();
         /// <summary>Committed outcomes drain in stable FIFO order in the current rule domain.
         /// Nested reactions enqueue without recursive dispatcher calls. Only exhausted causal
@@ -91293,6 +91487,7 @@ namespace FRFrame.Gameplay.Standard
                     if (reporter.IsDisposed) continue;
                     var tag = outcome.Kind == GameplayCombatOutcomeKind.Damage ? GameplayCombatEvents.Damage :
                         outcome.Kind == GameplayCombatOutcomeKind.Heal ? GameplayCombatEvents.Heal : GameplayCombatEvents.Shield;
+                    var facts = GameplayCombatEvents.Capture(outcome);
                     // Borrowed actors may use their game's actual dispatcher. Route to both real
                     // actor domains, once when shared, rather than publishing into a disconnected bus.
                     var dispatchers=new List<GameplayEventDispatcher>();
@@ -91300,9 +91495,9 @@ namespace FRFrame.Gameplay.Standard
                     if(!dispatchers.Contains(reporter.Events))dispatchers.Add(reporter.Events);
                     foreach(var dispatcher in dispatchers){
                         if(IsDisposed)break;
-                        dispatcher.Publish(new GameplayEventData(tag,outcome.Context,outcome.Applied));
+                        dispatcher.Publish(new GameplayEventData(tag,outcome.Context,outcome.Applied,facts));
                         if (!IsDisposed && outcome.Kind == GameplayCombatOutcomeKind.Damage && !outcome.Damage.IsMiss && !outcome.Damage.IsImmune)
-                            dispatcher.Publish(new GameplayEventData(GameplayCombatEvents.Hit,outcome.Context,outcome.Applied));
+                            dispatcher.Publish(new GameplayEventData(GameplayCombatEvents.Hit,outcome.Context,outcome.Applied,facts));
                     }
                 }
             }
@@ -97622,6 +97817,63 @@ namespace FRFrame.Tests.Gameplay
     {
         private static readonly GameplayAttributeId Health = new GameplayAttributeId("Health"), MaxHealth = new GameplayAttributeId("MaxHealth"),
             Shield = new GameplayAttributeId("Shield"), Defense = new GameplayAttributeId("Defense");
+
+        [Test]
+        public void StandardSearchReevaluatesDirectedRelationsWithoutChangingTheRequest()
+        {
+            using var world = new GameplayStandardWorld();
+            var player=world.CreateActor(default,1);
+            var ally=world.CreateActor(new GameplayPoint(1,0),1);
+            var enemy=world.CreateActor(new GameplayPoint(2,0),2);
+            var beacon=world.CreateActor(new GameplayPoint(3,0),3);
+            var relation=GameplayFactionRelation.Neutral;
+            world.FactionRelations=(source,from,target,to)=>target==beacon.Id?relation:
+                from==to?GameplayFactionRelation.Allied:GameplayFactionRelation.Hostile;
+            var context=new GameplayContext(player.Id,new GameplayTargetData(player.Id));
+            var search=new GameplaySearchTargetAction(GameplaySearchShape.Circle,GameplaySpatialPlane.XY,GameplaySearchOrigin.Owner,
+                Number(5),Number(120),Number(1),Number(1),Number(1),GameplayFactionFilter.Neutrals,
+                null,-1,32,GameplayTargetOrder.Nearest,false,null,null,null);
+            Assert.That(search.TryCreateRequest(context,player,out var request),Is.True);
+            Assert.That(world.Spatial.Query(request).Targets,Is.EqualTo(new[]{beacon.Id}));
+            relation=GameplayFactionRelation.Allied;
+            Assert.That(world.Spatial.Query(request).Targets,Is.Empty);
+            Assert.That(world.ResolveFaction(beacon.Id,3,player.Id,1),Is.EqualTo(GameplayFactionRelation.Hostile));
+            var hostiles=new GameplaySpatialSearchRequest(world.ResolveFaction,context,request.Geometry,1,GameplayFactionFilter.Enemies);
+            Assert.That(world.Spatial.Query(hostiles).Targets,Is.EqualTo(new[]{enemy.Id}));
+            Assert.That(ally.IsTargetable,Is.True);
+        }
+
+        [Test]
+        public void NonCombatEffectsAndPhaseEventsUseTheSingleExplicitRuleClock()
+        {
+            using var world=new GameplayStandardWorld();
+            var actor=world.CreateActor(default);
+            var energy=new GameplayAttributeId("Energy");
+            new GameplayActorProfile(new[]{new KeyValuePair<GameplayAttributeId,float>(energy,3)},GameplayActorProfileMode.NonCombat,null).Initialize(actor);
+            var tag=new GameplayTag("State.Guard.Barrier");
+            var phase=new GameplayTag("Event.Guard.Turn.End");
+            var source=new GameplayContext(actor.Id,new GameplayTargetData(actor.Id));
+            var barrier=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration,3,1,Array.Empty<GameplayEffectAttributeModifierDefinition>(),
+                new[]{tag},new IGameplayEffectExecution[]{new GameplayAttributeDeltaExecution(energy,Number(1))});
+            var mixed=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Instant,0,Array.Empty<GameplayEffectAttributeModifierDefinition>(),
+                Array.Empty<GameplayTag>(),new IGameplayEffectExecution[]{new GameplayAttributeDeltaExecution(energy,Number(1)),
+                    new GameplayDamageExecution(Number(1),Array.Empty<GameplayDamageStage>())});
+            Assert.That(actor.ApplyEffect(source,mixed).Outcome,Is.EqualTo(GameplayEffectApplicationOutcome.RejectedByTarget));
+            Assert.That(actor.Attributes.GetCurrentValue(energy),Is.EqualTo(3));
+            Assert.That(actor.LastCombatOutcome,Is.Null);
+            var effect=actor.ApplyEffect(source,barrier);
+            var bridge=new GameplayPhaseBridge(world);
+            int notifications=0;
+            actor.Events.Subscribe(phase,e=>{notifications++;Assert.That(e.PublishedScalars.GetRequiredValue(GameplayPhaseBridge.TurnIndex),Is.EqualTo(1));});
+            bridge.Publish(actor,1,phase);bridge.Publish(actor,1,phase);
+            Assert.That(notifications,Is.EqualTo(2));
+            Assert.That(actor.Effects.TryGetRemainingDuration(effect.ActiveHandle,out float remaining),Is.True);
+            Assert.That(remaining,Is.EqualTo(3));
+            bridge.StepRules(1);
+            Assert.That(actor.Attributes.GetCurrentValue(energy),Is.EqualTo(4));
+            bridge.StepRules(2);
+            Assert.That(actor.Tags.HasTag(tag),Is.False);
+        }
         [Test]
         public void GeometryAndFilteringUseStableUniqueOrderAndRealBoundaries()
         {
@@ -97700,6 +97952,8 @@ namespace FRFrame.Tests.Gameplay
                 Assert.That(committedBeforeEvent,Is.True,"Damage producers report only after atomic resource settlement.");
                 Assert.That(committed.Context,Is.SameAs(captured));
                 Assert.That(committed.Magnitude,Is.EqualTo(60));
+                Assert.That(committed.PublishedScalars.GetRequiredValue(GameplayCombatEvents.Applied),Is.EqualTo(60));
+                Assert.That(committed.PublishedScalars.GetRequiredValue(GameplayCombatEvents.Absorbed),Is.EqualTo(40));
                 target.Attributes.SetBaseValue(Health, 1000); target.Attributes.SetBaseValue(Shield, 40);
                 new GameplayDamageExecution(new GameplayConstantFloatValue(100), new[] { defense, shield, crit, minimum }).Execute(application);
                 Assert.That(target.Attributes.GetCurrentValue(Health), Is.EqualTo(980));

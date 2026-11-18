@@ -105,11 +105,16 @@ namespace FRFrame.Gameplay
             if (!Enum.IsDefined(typeof(GameplaySkillContextComparison), comparison)) throw new ArgumentOutOfRangeException(nameof(comparison));
             Key = key; Comparison = comparison; Constant = constant;
         }
-        public bool Evaluate(IGameplaySkillHost host, GameplayEventData triggerEvent) => triggerEvent.HasContext && EvaluateContext(triggerEvent.Context, host, triggerEvent);
+        public bool Evaluate(IGameplaySkillHost host, GameplayEventData triggerEvent) =>
+            triggerEvent.PublishedScalars != null && triggerEvent.PublishedScalars.TryGetValue(Key, out float value)
+                ? Matches(value) : triggerEvent.HasContext && EvaluateContext(triggerEvent.Context, host, triggerEvent);
         public bool EvaluateContext(GameplayContext context, IGameplaySkillHost host, GameplayEventData triggerEvent)
         {
             if (context == null) throw new ArgumentNullException(nameof(context));
-            if (!context.Values.TryGetValue(Key, out float value)) return false;
+            return context.Values.TryGetValue(Key, out float value) && Matches(value);
+        }
+        private bool Matches(float value)
+        {
             switch (Comparison)
             {
                 case GameplaySkillContextComparison.Equal: return value == Constant;

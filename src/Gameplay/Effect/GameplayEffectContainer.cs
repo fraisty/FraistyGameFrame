@@ -98,6 +98,9 @@ namespace FRFrame.Gameplay
             if (!ReferenceEquals(application.Target.Attributes, _target) || (_targetTags != null && !ReferenceEquals(application.Target.Tags, _targetTags)))
                 throw new ArgumentException("Execution target must belong to this container.", nameof(application));
             if (!MeetsRequirements(definition)) return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RejectedByRequirements, default, 0);
+            foreach (var execution in definition.Executions)
+                if (execution is IGameplayEffectTargetRequirement requirement && requirement.RejectionReason(application.Target) is string reason)
+                    return new GameplayEffectApplicationResult(GameplayEffectApplicationOutcome.RejectedByTarget, default, 0, rejectionReason: reason);
             if (definition.DurationPolicy == GameplayEffectDurationPolicy.Instant)
             {
                 foreach (var execution in definition.Executions) execution.Execute(application.WithStackCount(1));

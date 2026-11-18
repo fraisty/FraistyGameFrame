@@ -13,6 +13,63 @@ namespace FRFrame.Tests.Gameplay
     {
         private static readonly GameplayAttributeId Health = new GameplayAttributeId("Health"), MaxHealth = new GameplayAttributeId("MaxHealth"),
             Shield = new GameplayAttributeId("Shield"), Defense = new GameplayAttributeId("Defense");
+
+        [Test]
+        public void StandardSearchReevaluatesDirectedRelationsWithoutChangingTheRequest()
+        {
+            using var world = new GameplayStandardWorld();
+            var player=world.CreateActor(default,1);
+            var ally=world.CreateActor(new GameplayPoint(1,0),1);
+            var enemy=world.CreateActor(new GameplayPoint(2,0),2);
+            var beacon=world.CreateActor(new GameplayPoint(3,0),3);
+            var relation=GameplayFactionRelation.Neutral;
+            world.FactionRelations=(source,from,target,to)=>target==beacon.Id?relation:
+                from==to?GameplayFactionRelation.Allied:GameplayFactionRelation.Hostile;
+            var context=new GameplayContext(player.Id,new GameplayTargetData(player.Id));
+            var search=new GameplaySearchTargetAction(GameplaySearchShape.Circle,GameplaySpatialPlane.XY,GameplaySearchOrigin.Owner,
+                Number(5),Number(120),Number(1),Number(1),Number(1),GameplayFactionFilter.Neutrals,
+                null,-1,32,GameplayTargetOrder.Nearest,false,null,null,null);
+            Assert.That(search.TryCreateRequest(context,player,out var request),Is.True);
+            Assert.That(world.Spatial.Query(request).Targets,Is.EqualTo(new[]{beacon.Id}));
+            relation=GameplayFactionRelation.Allied;
+            Assert.That(world.Spatial.Query(request).Targets,Is.Empty);
+            Assert.That(world.ResolveFaction(beacon.Id,3,player.Id,1),Is.EqualTo(GameplayFactionRelation.Hostile));
+            var hostiles=new GameplaySpatialSearchRequest(world.ResolveFaction,context,request.Geometry,1,GameplayFactionFilter.Enemies);
+            Assert.That(world.Spatial.Query(hostiles).Targets,Is.EqualTo(new[]{enemy.Id}));
+            Assert.That(ally.IsTargetable,Is.True);
+        }
+
+        [Test]
+        public void NonCombatEffectsAndPhaseEventsUseTheSingleExplicitRuleClock()
+        {
+            using var world=new GameplayStandardWorld();
+            var actor=world.CreateActor(default);
+            var energy=new GameplayAttributeId("Energy");
+            new GameplayActorProfile(new[]{new KeyValuePair<GameplayAttributeId,float>(energy,3)},GameplayActorProfileMode.NonCombat,null).Initialize(actor);
+            var tag=new GameplayTag("State.Guard.Barrier");
+            var phase=new GameplayTag("Event.Guard.Turn.End");
+            var source=new GameplayContext(actor.Id,new GameplayTargetData(actor.Id));
+            var barrier=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Duration,3,1,Array.Empty<GameplayEffectAttributeModifierDefinition>(),
+                new[]{tag},new IGameplayEffectExecution[]{new GameplayAttributeDeltaExecution(energy,Number(1))});
+            var mixed=new GameplayEffectDefinition(GameplayEffectDurationPolicy.Instant,0,Array.Empty<GameplayEffectAttributeModifierDefinition>(),
+                Array.Empty<GameplayTag>(),new IGameplayEffectExecution[]{new GameplayAttributeDeltaExecution(energy,Number(1)),
+                    new GameplayDamageExecution(Number(1),Array.Empty<GameplayDamageStage>())});
+            Assert.That(actor.ApplyEffect(source,mixed).Outcome,Is.EqualTo(GameplayEffectApplicationOutcome.RejectedByTarget));
+            Assert.That(actor.Attributes.GetCurrentValue(energy),Is.EqualTo(3));
+            Assert.That(actor.LastCombatOutcome,Is.Null);
+            var effect=actor.ApplyEffect(source,barrier);
+            var bridge=new GameplayPhaseBridge(world);
+            int notifications=0;
+            actor.Events.Subscribe(phase,e=>{notifications++;Assert.That(e.PublishedScalars.GetRequiredValue(GameplayPhaseBridge.TurnIndex),Is.EqualTo(1));});
+            bridge.Publish(actor,1,phase);bridge.Publish(actor,1,phase);
+            Assert.That(notifications,Is.EqualTo(2));
+            Assert.That(actor.Effects.TryGetRemainingDuration(effect.ActiveHandle,out float remaining),Is.True);
+            Assert.That(remaining,Is.EqualTo(3));
+            bridge.StepRules(1);
+            Assert.That(actor.Attributes.GetCurrentValue(energy),Is.EqualTo(4));
+            bridge.StepRules(2);
+            Assert.That(actor.Tags.HasTag(tag),Is.False);
+        }
         [Test]
         public void GeometryAndFilteringUseStableUniqueOrderAndRealBoundaries()
         {
@@ -91,6 +148,8 @@ namespace FRFrame.Tests.Gameplay
                 Assert.That(committedBeforeEvent,Is.True,"Damage producers report only after atomic resource settlement.");
                 Assert.That(committed.Context,Is.SameAs(captured));
                 Assert.That(committed.Magnitude,Is.EqualTo(60));
+                Assert.That(committed.PublishedScalars.GetRequiredValue(GameplayCombatEvents.Applied),Is.EqualTo(60));
+                Assert.That(committed.PublishedScalars.GetRequiredValue(GameplayCombatEvents.Absorbed),Is.EqualTo(40));
                 target.Attributes.SetBaseValue(Health, 1000); target.Attributes.SetBaseValue(Shield, 40);
                 new GameplayDamageExecution(new GameplayConstantFloatValue(100), new[] { defense, shield, crit, minimum }).Execute(application);
                 Assert.That(target.Attributes.GetCurrentValue(Health), Is.EqualTo(980));

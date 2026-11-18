@@ -34,6 +34,28 @@ namespace FRFrame.Gameplay.Standard
         /// <summary>Optional root-cast scalar: maximum reaction hops, integer 0..16. Default 16.
         /// Set in SkillDocument Defaults or captured input; cannot raise the World safety limit.</summary>
         public static readonly GameplayTag MaxChainDepth = new GameplayTag("Data.Standard.Combat.MaxChainDepth");
+        public static readonly GameplayTag Applied = new GameplayTag("Data.Standard.Combat.Result.Applied");
+        public static readonly GameplayTag Absorbed = new GameplayTag("Data.Standard.Combat.Result.Absorbed");
+        public static readonly GameplayTag Missed = new GameplayTag("Data.Standard.Combat.Result.Missed");
+        public static readonly GameplayTag Immune = new GameplayTag("Data.Standard.Combat.Result.Immune");
+        public static readonly GameplayTag Critical = new GameplayTag("Data.Standard.Combat.Result.Critical");
+        public static readonly GameplayTag DamageType = new GameplayTag("Data.Standard.Combat.Result.DamageType");
+        internal static GameplayContextValues Capture(GameplayCombatOutcome outcome)
+        {
+            bool damage = outcome.Kind == GameplayCombatOutcomeKind.Damage;
+            outcome.Context.Values.TryGetValue(NoRetaliate, out float noRetaliate);
+            return new GameplayContextValues(new Dictionary<GameplayTag, float>
+            {
+                [Applied] = outcome.Applied,
+                [Absorbed] = damage ? outcome.Damage.AbsorbedDamage : 0,
+                [Missed] = damage && outcome.Damage.IsMiss ? 1 : 0,
+                [Immune] = damage && outcome.Damage.IsImmune ? 1 : 0,
+                [Critical] = damage && outcome.Damage.IsCritical ? 1 : 0,
+                [DamageType] = damage ? (float)outcome.DamageType : -1,
+                [NoRetaliate] = noRetaliate
+            });
+        }
+
     }
     /// <summary>Defense routing: physical uses Defense, magical uses MagicDefense, true bypasses
     /// only Defense stages. Authored immunity/miss/shield/minimum ordering still applies.</summary>
@@ -66,6 +88,12 @@ namespace FRFrame.Gameplay.Standard
             new GameplayCombatOutcome(Context, Kind, Damage, Applied, Overflow, Before, After, DamageType, executionContext);
     }
     public enum GameplayDamageStageKind { Immunity, Miss, Defense, Critical, Shield, Minimum, Scale }
+
+    internal static class GameplayCombatTarget
+    {
+        internal static string RejectionReason(IGameplayEffectExecutionTarget target) =>
+            target is GameplayStandardActor { CombatAttributes: not null } ? null : "目标没有战斗属性映射，无法结算伤害、治疗或护盾。";
+    }
     public sealed class GameplayDamageStage
     {
         public GameplayDamageStageKind Kind { get; }
@@ -96,8 +124,9 @@ namespace FRFrame.Gameplay.Standard
     /// <summary>Official damage Effect execution on the existing DamagePipeline. Stages are pure;
     /// final HP/Shield commit is atomic. Explicit captured Critical/Miss values give deterministic
     /// preview/runtime inputs. A fully absorbed hit stops Minimum, avoiding damage through a full shield.</summary>
-    public sealed class GameplayDamageExecution : IGameplayEffectExecution
+    public sealed class GameplayDamageExecution : IGameplayEffectExecution, IGameplayEffectTargetRequirement
     {
+        string IGameplayEffectTargetRequirement.RejectionReason(IGameplayEffectExecutionTarget target) => GameplayCombatTarget.RejectionReason(target);
         public static readonly GameplayTag CriticalKey = new GameplayTag("Data.Standard.Critical");
         public static readonly GameplayTag MissKey = new GameplayTag("Data.Standard.Miss");
         /// <summary>The net HP loss in this committed damage execution, available only to its heal.</summary>
@@ -239,8 +268,9 @@ namespace FRFrame.Gameplay.Standard
         }
     }
     /// <summary>Standard heal on the mapped actual resource; bounded by MaxHealth, with explicit overheal feedback.</summary>
-    public sealed class GameplayHealExecution : IGameplayEffectExecution
+    public sealed class GameplayHealExecution : IGameplayEffectExecution, IGameplayEffectTargetRequirement
     {
+        string IGameplayEffectTargetRequirement.RejectionReason(IGameplayEffectExecutionTarget target) => GameplayCombatTarget.RejectionReason(target);
         private readonly IGameplayFloatValue _amount;
         public GameplayHealExecution(IGameplayFloatValue amount) => _amount = amount ?? throw new ArgumentNullException(nameof(amount));
         public void Execute(GameplayEffectApplicationContext application)
@@ -256,8 +286,9 @@ namespace FRFrame.Gameplay.Standard
         }
     }
     /// <summary>Instant shield capacity addition. Timed/owned contributions are a separate Effect lease operation.</summary>
-    public sealed class GameplayShieldExecution : IGameplayEffectExecution
+    public sealed class GameplayShieldExecution : IGameplayEffectExecution, IGameplayEffectTargetRequirement
     {
+        string IGameplayEffectTargetRequirement.RejectionReason(IGameplayEffectExecutionTarget target) => GameplayCombatTarget.RejectionReason(target);
         private readonly IGameplayFloatValue _amount;
         public GameplayShieldExecution(IGameplayFloatValue amount) => _amount = amount ?? throw new ArgumentNullException(nameof(amount));
         public void Execute(GameplayEffectApplicationContext application)

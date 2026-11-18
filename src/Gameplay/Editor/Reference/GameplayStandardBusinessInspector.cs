@@ -85,7 +85,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                 yield return Group("表现资源 / 位置 / 反馈","由已安装表现后端消费；不推进Gameplay时间。",Fields(value));
             else if(value is GameplayDispelEffectsActionAuthoring)yield return Group("驱散效果分类","作用于明确选择的目标；匹配 EffectTags，移除原因是 Dispel，不触发自然到期动作。至少选择一个 All/Any 分类。","EffectTags");
             else if(value is GameplayCooldownActionAuthoring cooldown)yield return Group("冷却 / 充能命令","SkillId=0仅当前cast；正数选择本角色已安装技能。重置使用上次捕获时长，减少冷却使用负数，恢复充能使用正整数。",cooldown.Operation==Standard.GameplayCooldownOperation.Restart?new[]{"SkillId","Operation"}:new[]{"SkillId","Operation","Value"});
-            else if(value is GameplayActorProfileAsset)yield return Group("战前角色配置","初始属性与技能等级解析到独立运行容器；共享配置不保存战斗状态。","Combat","Attributes","StartingSkills");
+            else if(value is GameplayActorProfileAsset)yield return Group("战前角色配置","战斗模式需要生命映射；非战斗模式可使用普通属性、资源、标签与技能。","Mode","Combat","Attributes","StartingSkills");
             else if(value is GameplayCaptureWorldPointActionAuthoring)
             {
                 var capture=Group("捕获世界落点","显式地点优先；自动选最近敌人中心，空场保存当前朝向的前向点。时间事件可选择沿用捕获目标。","Plane","Range","Faction");

@@ -54,8 +54,11 @@ namespace FRFrame.Gameplay.Standard
         {
             GameplayStandardActor selected=null;float nearest=float.PositiveInfinity;
             foreach(var target in Owner.World.Actors)
-                if(target.IsTargetable&&target.Id!=actor.Id&&target.Faction!=actor.Faction)
-                {float distance=GameplaySpatialMath.Distance(actor.Position,target.Position);if(distance<nearest){nearest=distance;selected=target;}}
+                if(target.IsTargetable && actor.World.ResolveFaction(actor.Id, actor.Faction, target.Id, target.Faction)==GameplayFactionRelation.Hostile)
+                {
+                    float distance=GameplaySpatialMath.Distance(actor.Position,target.Position);
+                    if(distance<nearest || distance==nearest && target.Id.Value<selected.Id.Value){nearest=distance;selected=target;}
+                }
             return selected==null?null:new GameplayTargetData(selected.Id,selected.Position);
         }
         private void OnCombat(GameplayCombatOutcome outcome){if(SummonedActor!=null&&!SummonedActor.IsTargetable)Finish(GameplaySpatialEndReason.Died);}

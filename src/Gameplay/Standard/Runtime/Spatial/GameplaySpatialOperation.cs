@@ -4,6 +4,20 @@ using FRFrame.Gameplay.Extensions;
 
 namespace FRFrame.Gameplay.Standard
 {
+    /// <summary>Resolves the live actor identified by the actual event, independently of the skill owner.</summary>
+    public sealed class GameplaySkillEventActorTarget : IGameplaySkillTarget
+    {
+        private readonly bool _instigator;
+        public GameplaySkillEventActorTarget(bool instigator) => _instigator = instigator;
+
+        public GameplayTargetData Resolve(IGameplaySkillHost host, GameplayEventData triggerEvent)
+        {
+            var id = _instigator ? triggerEvent.InstigatorId : triggerEvent.TargetId;
+            return host is GameplayStandardActor owner && owner.World.TryGetActor(id, out var actor) && actor.IsTargetable
+                ? new GameplayTargetData(id, actor.Position) : null;
+        }
+    }
+
     /// <summary>Preserves the actual event's target snapshot, including captured point and multi-target list.</summary>
     public sealed class GameplaySkillContextTarget : IGameplaySkillTarget, IGameplaySkillContextTarget
     {
