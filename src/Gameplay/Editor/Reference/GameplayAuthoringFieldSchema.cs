@@ -163,7 +163,9 @@ namespace FRFrame.Gameplay.Editor
                             if(owner is GameplayEndAbilityActionAuthoring&&p.name=="Cancel")
                                 p.boolValue=EditorGUILayout.Popup("结束类型",p.boolValue?1:0,new[]{"正常结束","取消结束"})==1;
                             else if(group.Choices.TryGetValue(path,out var choices))p.intValue=EditorGUILayout.IntPopup(GameplayAuthoringInspector.Label(p),p.intValue,choices.Select(c=>new GUIContent(c)).ToArray(),Enumerable.Range(0,choices.Length).ToArray());
-                            else GameplayAuthoringInspector.Field(p,group.Labels.TryGetValue(path,out var label)?new GUIContent(label):GameplayAuthoringInspector.Label(p));
+                            else if(p.propertyType!=SerializedPropertyType.ManagedReference ||
+                                !GameplaySkillFieldSchema.DrawIntegrationField(p,p))
+                                GameplayAuthoringInspector.Field(p,group.Labels.TryGetValue(path,out var label)?new GUIContent(label):GameplayAuthoringInspector.Label(p));
                         }
                         if(disabled!=null)EditorGUILayout.HelpBox(disabled,MessageType.Warning);
                         else if(note!=null)EditorGUILayout.LabelField(note,EditorStyles.wordWrappedMiniLabel);

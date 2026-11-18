@@ -22,8 +22,9 @@ namespace FRFrame.Gameplay.Unity
             var nativeRenderers = new HashSet<Renderer>();
             foreach (var component in binding.GetComponentsInChildren<MonoBehaviour>())
             {
-                if (component is not IGameplayVisualColorTarget native || !native.Renderer.enabled) continue;
-                nativeRenderers.Add(native.Renderer);
+                if (component is not IGameplayVisualColorTarget native) continue;
+                var renderer = native.Renderer;
+                if (!renderer || !renderer.enabled || !nativeRenderers.Add(renderer)) continue;
                 Color original = native.Color;
                 writers.Add(weight => { if (component) native.Color = Blend(original, weight); });
             }

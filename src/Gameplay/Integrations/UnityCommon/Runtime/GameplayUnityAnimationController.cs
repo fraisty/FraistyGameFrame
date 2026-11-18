@@ -38,22 +38,43 @@ namespace FRFrame.Gameplay.Unity
         /// and queued requests. This fallback has no ability grant and dispatches no skill events.</summary>
         public bool TrySetHostPose(GameplayAnimationDefinition pose, bool restart = false)
         {
-            if (_disposed) return false;
+            if (_disposed || Actor.IsDisposed || !Subject) return false;
             if (pose == null) { _hostPose?.Dispose(); return true; }
             if (!restart && _hostPose?.HostDefinition == pose && _hostPose.IsPlaying) return true;
-            var writes = pose.ResolveWrites(Subject);
+            var context = new GameplayContext(Actor.Id, new GameplayTargetData(Actor.Id, Actor.Position));
+            GameplayAnimationWriteTarget[] writes;
+            try { writes = pose.ResolveWrites(Subject); }
+            catch (Exception error) { return RejectAnimation(pose, context, "HostPoseTarget: " + error.Message); }
             foreach (var current in PhysicalPlayers)
                 if (current != _hostPose && Conflicts(current.Writes, writes)) return false;
             if (EarlierQueuedConflict(writes, long.MaxValue)) return false;
-            var context = new GameplayContext(Actor.Id, new GameplayTargetData(Actor.Id, Actor.Position));
-            var player = pose.Create(Subject, context);
+            IGameplayAnimationPlayer player = null;
+            float speed;
+            try
+            {
+                speed = GameplayValueEvaluator.Evaluate(pose.Speed, PresentationValueContext(context));
+                if (!float.IsFinite(speed) || speed <= 0)
+                    return RejectAnimation(pose, context, "HostPoseSpeed: expected a positive finite speed.");
+                player = pose.Create(Subject, context);
+                if (player == null || !float.IsFinite(player.Duration) || player.Duration <= 0)
+                    throw new InvalidOperationException("Expected a playable resource with positive finite duration.");
+            }
+            catch (Exception error)
+            {
+                player?.Dispose();
+                return RejectAnimation(pose, context, "HostPosePreflight: " + error.Message);
+            }
             _hostPose?.Dispose();
-            var playback = new Playback(this, pose.Channel, int.MinValue, context, default, player,
-                GameplayValueEvaluator.Evaluate(pose.Speed), writes) { HostDefinition = pose };
+            var playback = new Playback(this, pose.Channel, int.MinValue, context, default, player, speed, writes)
+                { HostDefinition = pose };
             _hostPose = playback;
             PhysicalPlayers.Add(playback);
             try { player.Seek(0); playback.Sampled = true; return true; }
-            catch { playback.Dispose(); throw; }
+            catch (Exception error)
+            {
+                playback.Dispose();
+                return RejectAnimation(pose, context, "HostPoseStart: " + error.Message);
+            }
         }
         private bool RejectAnimation(GameplayAnimationDefinition definition,GameplayContext context,string reason)
         {
@@ -113,12 +134,8 @@ namespace FRFrame.Gameplay.Unity
         {
             if(_disposed)return;
             if(!float.IsFinite(amount)||amount<0)throw new ArgumentOutOfRangeException(nameof(amount));
-            if (!Actor.IsTargetable)
-            {
-                _activeTint?.Dispose();
-                DisposeQueues();
-                foreach (var playback in new List<Playback>(_channels.Values)) playback.Dispose();
-            }
+            if (!Actor.IsTargetable) _activeTint?.Dispose();
+            if (_queues.Count != 0 && !CanQueueAnimation) DisposeQueues();
             var cues=_cues.ToArray();
             var floating=_floating.ToArray();
             foreach(var playback in new List<Playback>(_channels.Values))playback.Advance(amount);

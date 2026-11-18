@@ -45,6 +45,8 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
             .Where(t => !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) != null)
             .OrderBy(t => t.FullName).Select(t => (IGameplaySkillValueEditor)Activator.CreateInstance(t)).ToArray();
         private static readonly IGameplaySkillValueSections[] ValueSections=Providers.OfType<IGameplaySkillValueSections>().ToArray();
+        internal static bool DrawIntegrationField(SerializedProperty root, SerializedProperty field) =>
+            Providers.Any(provider => provider.DrawField(root, field));
         private static readonly Dictionary<Type, Type> CoreValues = new Dictionary<Type, Type> {
             {typeof(GameplayEffectDefinitionAsset),typeof(GameplayEffectDefinitionData)},
             {typeof(GameplayAbilityDefinitionAsset),typeof(GameplayAbilityDefinitionData)},

@@ -16,7 +16,14 @@ namespace FRFrame.Gameplay.Unity.Editor
             if(type==typeof(GameplayShowCombatTextActionAuthoring)||type==typeof(GameplayFloatingTextAsset))return new GameplaySkillNodeEditorDescriptor("战斗飘字","FRFrame/表现","展示同来源已提交结果；复用Core UIWidget/Pool。不会决定伤害或另建规则时钟。",visualKind:GameplayNodeVisualKind.Presentation);
             if(type==typeof(GameplayUnityEffectPresentationAuthoring))return new GameplaySkillNodeEditorDescriptor("Unity 状态外观","FRFrame/表现","跟踪真实 Effect 句柄与层数；首次或满层声光可从相应生命周期行连接。",visualKind:GameplayNodeVisualKind.Presentation);
             var cue=property?.FindPropertyRelative("Cue")?.objectReferenceValue as GameplayPresentationCueAsset;
-            return new GameplaySkillNodeEditorDescriptor(cue==null?"播放特效 / 音效":cue.Kind==GameplayPresentationCueAsset.CueKind.Vfx?"生成特效":"播放音效","FRFrame/表现","复用 FRFrame Pool/Audio。时间编排由施放授权，Effect 事件由实际提交授权。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
+            string caption = cue?.Kind switch
+            {
+                GameplayPresentationCueAsset.CueKind.Vfx => "生成特效",
+                GameplayPresentationCueAsset.CueKind.Audio => "播放音效",
+                GameplayPresentationCueAsset.CueKind.Tint => "角色闪色",
+                _ => "播放表现"
+            };
+            return new GameplaySkillNodeEditorDescriptor(caption,"FRFrame/表现","时间编排由施放授权，Effect 事件由实际提交授权。",visualKind:GameplayNodeVisualKind.Presentation,isPresentationCue:true);
         }
     }
     /// <summary>SDK-neutral preview uses exactly the Runtime asset factory. It owns only presentation
@@ -76,8 +83,14 @@ namespace FRFrame.Gameplay.Unity.Editor
         internal void UpdateStatus(GameplaySkillDocumentAsset document, GameplayUnityEffectPresentationAuthoring status,float seconds,float start)
         {
             UpdateValues(document,new GameplayPresentationCueData{Prefab=status.StatusPrefab,Binding=status.Binding,Offset=status.Offset,
+                Origin=GameplayPresentationCueAsset.PositionSource.PrimaryTarget,
                 Duration=new GameplayConstantFloatValueAuthoring{Value=Mathf.Max(.3f,seconds)}},start);
-            _statusPreview=true;_cuePreview?.BindSource(null,true);
+            _statusPreview=true;
+            if (_cuePreview != null)
+            {
+                _cuePreview.StatusStyle=true;
+                _cuePreview.BindSource(null,true);
+            }
         }
         public float Duration=>_presentationStart+(_cuePreview!=null?_cuePreview.Duration:_player==null?0:(float)Math.Min(float.MaxValue,(double)_player.Duration/_speed));
         /// <summary>Temporary camera for preview export/diagnostics; the session retains ownership.</summary>
@@ -126,7 +139,18 @@ namespace FRFrame.Gameplay.Unity.Editor
             _error=null;
             try
             {
-                if(_source==null&&_values==null){_speed=1;if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());_cuePreview?.BindSource(_previewSource,_sharedPreviewSource||_statusPreview);return;}
+                if(_source==null&&_values==null)
+                {
+                    _speed=1;
+                    if(_cueValues!=null||_textValues!=null)_cuePreview=new GameplayUnityCuePreview(_cueValues,_textValues,PreviewApplication());
+                    else if(_cueSource!=null||_textSource!=null)_cuePreview=new GameplayUnityCuePreview(_cueSource,_textSource,PreviewApplication());
+                    if(_cuePreview!=null)
+                    {
+                        _cuePreview.StatusStyle=_statusPreview;
+                        _cuePreview.BindSource(_previewSource,_sharedPreviewSource||_statusPreview);
+                    }
+                    return;
+                }
                 _subject=(_values??_source.CaptureGraphValues() as GameplayAnimationData).CreatePreviewSubject();_subject.hideFlags=HideFlags.HideAndDontSave;
                 _preview=new PreviewRenderUtility();_preview.AddSingleGO(_subject);
                 (_values??_source.CaptureGraphValues() as GameplayAnimationData).ConfigurePreviewCamera(_preview.camera);

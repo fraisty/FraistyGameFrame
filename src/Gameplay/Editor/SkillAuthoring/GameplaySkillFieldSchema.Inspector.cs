@@ -106,10 +106,17 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                         {
                             if (property.propertyType == SerializedPropertyType.ManagedReference && property.managedReferenceValue is GameplaySkillTargetAuthoring target)
                                 DrawChildren(property, target, path, propertyKey, false);
-                            else if (!Providers.OfType<IGameplaySkillFieldControlProvider>().Any(provider => provider.DrawSourceLink(root, property)) &&
-                                (owner is GameplayEffectDefinitionData || owner is GameplayConstantFloatValueAuthoring ||
-                                    owner is GameplayDamageExecutionAuthoring))
-                                DrawCardSummary(property, field.Label);
+                            else
+                            {
+                                EditorGUI.BeginChangeCheck();
+                                bool providedOnCard = DrawIntegrationField(root, property);
+                                if (EditorGUI.EndChangeCheck()) edit.Paths.Add(field.Path);
+                                if (!providedOnCard &&
+                                    !Providers.OfType<IGameplaySkillFieldControlProvider>().Any(provider => provider.DrawSourceLink(root, property)) &&
+                                    (owner is GameplayEffectDefinitionData || owner is GameplayConstantFloatValueAuthoring ||
+                                     owner is GameplayDamageExecutionAuthoring))
+                                    DrawCardSummary(property, field.Label);
+                            }
                             continue;
                         }
                         if (field.Port != null)
@@ -129,7 +136,7 @@ namespace FRFrame.Gameplay.Editor.SkillAuthoring
                             continue;
                         }
                         EditorGUI.BeginChangeCheck();
-                        bool provided = Providers.Any(provider => provider.DrawField(root, property));
+                        bool provided = DrawIntegrationField(root, property);
                         if (EditorGUI.EndChangeCheck()) edit.Paths.Add(field.Path);
                         if (provided) continue;
                         if (field.Kind == InspectorFieldKind.List || field.Kind == InspectorFieldKind.Structure)

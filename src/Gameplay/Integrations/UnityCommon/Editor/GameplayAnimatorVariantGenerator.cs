@@ -21,15 +21,28 @@ namespace FRFrame.Gameplay.Unity.Editor
             internal float Weight = 1;
         }
 
+        private sealed class GroupPolicy
+        {
+            internal string Channel = "Body";
+            internal int Priority = 10;
+            internal float Blend;
+            internal bool Loop, Restore = true, Weighted = true;
+
+            internal GroupPolicy Copy() => (GroupPolicy)MemberwiseClone();
+            internal string Description =>
+                $"{Channel} · P{Priority} · 混合 {Blend:R}s · 循环 {Loop} · 恢复 {Restore} · 权重 {Weighted}";
+        }
+
         private GameplayUnityAnimationAsset _source;
         private GameObject _prefab, _scannedPrefab;
         private AnimatorController _controller;
         private DefaultAsset _folder;
         private Row[] _rows;
-        private int _layer, _scannedLayer, _priority = 10, _bulkLevel = 1;
-        private float _blend, _bulkWeight = 1, _seconds;
-        private bool _loop, _restore = true, _weighted = true;
-        private string _filter = "", _channel = "Body", _group = "动作", _error, _approvedPlan;
+        private int _layer, _scannedLayer, _bulkLevel = 1;
+        private float _bulkWeight = 1, _seconds;
+        private readonly Dictionary<string, GroupPolicy> _policies = new(StringComparer.Ordinal);
+        private GroupPolicy _defaults = new();
+        private string _filter = "", _group = "动作", _error, _approvedPlan;
         private Vector2 _scroll;
         private GameplayAnimationPreviewSession _preview;
 
@@ -92,11 +105,19 @@ namespace FRFrame.Gameplay.Unity.Editor
         {
             EnsureEditable();
             if (!source) throw new ArgumentNullException(nameof(source));
+            if (source.Backend != GameplayUnityAnimationAsset.PlaybackBackend.AnimatorState || !AssetDatabase.IsOpenForEdit(source))
+                throw new InvalidOperationException("请选择可编辑的 Animator State Source。");
             ValidateSelection(ScanLayer(Controller(source.PreviewPrefab), source.Layer), selected);
+            SetVariants(source, selected, null);
+        }
+
+        private static void SetVariants(GameplayUnityAnimationAsset source, GameplayUnityAnimationAsset.LevelVariant[] selected, GroupPolicy policy)
+        {
             Undo.RecordObject(source, "更新动画变体");
             source.Variants = selected.Select(v => new GameplayUnityAnimationAsset.LevelVariant
             { StateName = v.StateName, Clip = v.Clip, MinimumLevel = v.MinimumLevel, Weight = v.Weight }).ToArray();
             source.WeightedVariants = true;
+            if (policy != null) UsePolicy(source, policy);
             EditorUtility.SetDirty(source);
             GameplayAuthoringSourceChanges.Notify(source);
         }
@@ -116,11 +137,11 @@ namespace FRFrame.Gameplay.Unity.Editor
                 _source=selected;
                 if (_source)
                 {
-                    _prefab=_source.PreviewPrefab;_layer=_source.Layer;_channel=_source.Channel;
-                    _priority=_source.Priority;_blend=_source.BlendDuration;_loop=_source.Loop;_restore=_source.RestorePrevious;
-                    _weighted=_source.WeightedVariants;
+                    _prefab=_source.PreviewPrefab;_layer=_source.Layer;
+                    _defaults=new GroupPolicy { Channel=_source.Channel, Priority=_source.Priority, Blend=_source.BlendDuration,
+                        Loop=_source.Loop, Restore=_source.RestorePrevious, Weighted=_source.WeightedVariants };
                 }
-                _rows=null;_approvedPlan=null;
+                _rows=null;_policies.Clear();_approvedPlan=null;
             }
             _prefab=(GameObject)EditorGUILayout.ObjectField("真实模型",_prefab,typeof(GameObject),false);
             if (_prefab && _prefab.GetComponentInChildren<Animator>(true)?.runtimeAnimatorController is AnimatorController controller)
@@ -128,7 +149,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             if (GUILayout.Button("扫描直接剪辑")) Attempt(() =>
             {
                 _controller=Controller(_prefab);_rows=ScanLayer(_controller,_layer);_scannedPrefab=_prefab;_scannedLayer=_layer;
-                _approvedPlan=null;
+                _policies.Clear();_approvedPlan=null;
             });
             _scroll=EditorGUILayout.BeginScrollView(_scroll);
             if (_rows != null)
@@ -164,15 +185,17 @@ namespace FRFrame.Gameplay.Unity.Editor
                 _bulkWeight=EditorGUILayout.FloatField("批量权重",_bulkWeight);
                 if (GUILayout.Button("将等级 / 权重应用于勾选行"))
                     foreach (var row in _rows.Where(r=>r.Selected)){row.Level=_bulkLevel;row.Weight=_bulkWeight;}
-                _channel=EditorGUILayout.TextField("通道",_channel);
-                _priority=EditorGUILayout.IntField("优先级",_priority);
-                _blend=EditorGUILayout.FloatField("混合秒数",_blend);
-                using(new EditorGUILayout.HorizontalScope())
-                {
-                    _loop=EditorGUILayout.ToggleLeft("循环",_loop);
-                    _restore=EditorGUILayout.ToggleLeft("恢复之前",_restore);
-                    _weighted=EditorGUILayout.ToggleLeft("组内权重",_weighted);
-                }
+                string[] names=_rows.Where(r=>r.Selected).Select(r=>r.Group).Distinct(StringComparer.Ordinal).ToArray();
+                EditorGUILayout.LabelField("批量播放策略", EditorStyles.boldLabel);
+                DrawPolicy(_defaults);
+                if (names.Length>0 && GUILayout.Button("将批量策略填入所选组"))
+                    foreach (var name in names) _policies[name]=_defaults.Copy();
+                foreach (var name in names)
+                    using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                    {
+                        EditorGUILayout.LabelField(string.IsNullOrWhiteSpace(name) ? "未命名组" : name, EditorStyles.boldLabel);
+                        DrawPolicy(Policy(name));
+                    }
                 if(_preview!=null)
                 {
                     _seconds=EditorGUILayout.Slider("实际剪辑时间",_seconds,0,Mathf.Max(.01f,_preview.Duration));
@@ -196,6 +219,26 @@ namespace FRFrame.Gameplay.Unity.Editor
             EditorGUILayout.EndScrollView();
         }
 
+        private GroupPolicy Policy(string group)
+        {
+            if (!_policies.TryGetValue(group, out var policy))
+                _policies.Add(group, policy=_defaults.Copy());
+            return policy;
+        }
+
+        private static void DrawPolicy(GroupPolicy policy)
+        {
+            policy.Channel=EditorGUILayout.TextField("通道",policy.Channel);
+            policy.Priority=EditorGUILayout.IntField("优先级",policy.Priority);
+            policy.Blend=EditorGUILayout.FloatField("混合秒数",policy.Blend);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                policy.Loop=EditorGUILayout.ToggleLeft("循环",policy.Loop);
+                policy.Restore=EditorGUILayout.ToggleLeft("恢复之前",policy.Restore);
+                policy.Weighted=EditorGUILayout.ToggleLeft("组内权重",policy.Weighted);
+            }
+        }
+
         private void Attempt(Action action)
         {
             try { action();_error=null; }
@@ -206,22 +249,27 @@ namespace FRFrame.Gameplay.Unity.Editor
         {
             if(_prefab!=_scannedPrefab||_layer!=_scannedLayer||Controller(_prefab)!=_controller)
                 throw new InvalidOperationException("模型、Controller 或层已变化，请重新扫描。");
-            if(string.IsNullOrWhiteSpace(_channel)||!float.IsFinite(_blend)||_blend<0)
-                throw new InvalidOperationException("请填写通道和有效混合秒数。");
             var chosen=_rows.Where(r=>r.Selected).ToArray();
             ValidateSelection(ScanLayer(_controller,_scannedLayer),chosen.Select(Variant).ToArray());
             if(chosen.Any(r=>string.IsNullOrWhiteSpace(r.Group)||r.Group.IndexOfAny(System.IO.Path.GetInvalidFileNameChars())>=0))
                 throw new InvalidOperationException("组名不能为空或含路径字符。");
             groups=chosen.GroupBy(r=>r.Group,StringComparer.Ordinal).ToArray();
+            foreach (var group in groups)
+            {
+                var policy=Policy(group.Key);
+                if (string.IsNullOrWhiteSpace(policy.Channel)||!float.IsFinite(policy.Blend)||policy.Blend<0)
+                    throw new InvalidOperationException($"「{group.Key}」需要通道和有效混合秒数。");
+            }
             folder=_folder ? AssetDatabase.GetAssetPath(_folder) : "";
             var destination=folder;
             var plan = groups.Select(g=>
-                (string.IsNullOrEmpty(destination)?"":(AssetDatabase.LoadMainAssetAtPath(SourcePath(destination,g.Key))?"跳过（已存在） ":"创建 ")+SourcePath(destination,g.Key)+"\n")+
-                g.Key+" · "+string.Join(" / ",g.Select(r=>$"{r.State} {r.Clip.name} Lv{r.Level} 权重{r.Weight:R}")));
+                (string.IsNullOrEmpty(destination)?"":(AssetDatabase.LoadMainAssetAtPath(SourcePath(destination,g.Key))||System.IO.File.Exists(SourcePath(destination,g.Key))?"冲突（整批取消） ":"创建 ")+SourcePath(destination,g.Key)+"\n")+
+                $"{g.Key} · L{_layer} / {Policy(g.Key).Description}\n"+
+                string.Join(" / ",g.Select(r=>$"{r.State} {r.Clip.name} Lv{r.Level} 权重{r.Weight:R}")));
             var oldVariants=_source?.Variants??Array.Empty<GameplayUnityAnimationAsset.LevelVariant>();
             return (_source?$"更新 {AssetDatabase.GetAssetPath(_source)} [{_source.DefinitionId}] · 旧 L{_source.Layer}/{_source.Channel}/P{_source.Priority}/混合{_source.BlendDuration:R}s · 循环{_source.Loop} · 恢复{_source.RestorePrevious} · 权重{_source.WeightedVariants}\n"+
                 string.Join(" / ",oldVariants.Where(v=>v!=null).Select(v=>$"{v.StateName} {v.Clip?.name} Lv{v.MinimumLevel} 权重{v.Weight:R}"))+"\n":"")+
-                $"新 L{_layer}/{_channel}/P{_priority}/混合{_blend:R}s · 循环{_loop} · 恢复{_restore} · 权重{_weighted}\n"+
+                $"来源 {AssetDatabase.GetAssetPath(_controller)} · L{_layer} {_controller.layers[_layer].name}\n"+
                 string.Join("\n",plan);
         }
 
@@ -238,31 +286,30 @@ namespace FRFrame.Gameplay.Unity.Editor
         private void ApplyPlan()
         {
             var groups=Approved(out _);
-            if(groups.Length!=1||_source.PreviewPrefab!=_prefab||_source.Layer!=_layer||
+            if(!_source||groups.Length!=1||_source.PreviewPrefab!=_prefab||_source.Layer!=_layer||
                 _source.Backend!=GameplayUnityAnimationAsset.PlaybackBackend.AnimatorState||!AssetDatabase.IsOpenForEdit(_source))
                 throw new InvalidOperationException("请使用同一模型及层的可编辑 Animator Source，且只选择一组。");
             Undo.IncrementCurrentGroup();
-            Apply(_source,groups[0].Select(Variant).ToArray());
-            UsePolicy(_source);
+            SetVariants(_source,groups[0].Select(Variant).ToArray(),Policy(groups[0].Key));
             AssetDatabase.SaveAssetIfDirty(_source);
-            GameplayAuthoringSourceChanges.Notify(_source);
             _approvedPlan=null;
         }
 
-        private void UsePolicy(GameplayUnityAnimationAsset asset)
+        private static void UsePolicy(GameplayUnityAnimationAsset asset, GroupPolicy policy)
         {
-            asset.Channel=_channel;asset.Priority=_priority;asset.BlendDuration=_blend;
-            asset.Loop=_loop;asset.RestorePrevious=_restore;asset.WeightedVariants=_weighted;
+            asset.Channel=policy.Channel;asset.Priority=policy.Priority;asset.BlendDuration=policy.Blend;
+            asset.Loop=policy.Loop;asset.RestorePrevious=policy.Restore;asset.WeightedVariants=policy.Weighted;
         }
 
         private void ShowPreview(Row row)
         {
             _preview?.Dispose();
+            var policy=Policy(row.Group);
             _preview=new GameplayAnimationPreviewSession();
             _preview.UpdateValues(null,new GameplayUnityAnimationData
             {
                 PreviewPrefab=_prefab,Clip=row.Clip,StateName=row.State,Layer=_scannedLayer,
-                Channel=_channel,Priority=_priority,BlendDuration=_blend,Loop=_loop,RestorePrevious=_restore
+                Channel=policy.Channel,Priority=policy.Priority,BlendDuration=policy.Blend,Loop=policy.Loop,RestorePrevious=policy.Restore
             },0);
             _seconds=0;
         }
@@ -278,8 +325,9 @@ namespace FRFrame.Gameplay.Unity.Editor
 
         private List<string> WriteSources(IGrouping<string,Row>[] groups,string folder)
         {
-            if(!(folder=="Assets"||folder.StartsWith("Assets/",StringComparison.Ordinal))||!AssetDatabase.IsValidFolder(folder))
-                throw new InvalidOperationException("请选择 Assets 内已有文件夹。");
+            if(!(folder=="Assets"||folder.StartsWith("Assets/",StringComparison.Ordinal))||!AssetDatabase.IsValidFolder(folder)||
+                !AssetDatabase.IsOpenForEdit(folder, StatusQueryOptions.ForceUpdate))
+                throw new InvalidOperationException("请选择 Assets 内可写的文件夹。");
             var candidates=groups.Select(group=>(Group: group, Path: SourcePath(folder,group.Key))).ToArray();
             if(candidates.Select(c=>c.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=candidates.Length||
                 candidates.Any(c=>AssetDatabase.LoadMainAssetAtPath(c.Path)||System.IO.File.Exists(c.Path)))
@@ -292,7 +340,8 @@ namespace FRFrame.Gameplay.Unity.Editor
                     var baseRow=candidate.Group.First();
                     var asset=CreateInstance<GameplayUnityAnimationAsset>();
                     asset.PreviewPrefab=_prefab;asset.Layer=_layer;asset.Clip=baseRow.Clip;asset.StateName=baseRow.State;
-                    asset.Variants=candidate.Group.Select(Variant).ToArray();UsePolicy(asset);
+                    asset.Variants=candidate.Group.Select(Variant).ToArray();
+                    UsePolicy(asset,Policy(candidate.Group.Key));
                     using(var values=new SerializedObject(asset))
                     {
                         values.FindProperty("definitionId").stringValue="Animation.Unity."+Guid.NewGuid().ToString("N");

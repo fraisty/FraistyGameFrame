@@ -10,6 +10,11 @@ namespace FRFrame.Gameplay.Unity
         private readonly HashSet<string> _replacingChannels=new HashSet<string>();
         private static long _queueOrder;
         private static bool _promotingQueues;
+        // A temporary targeting disable does not end a grant. Death disallows deferred starts,
+        // while an explicit play (including a death animation) still follows its grant.
+        private bool CanQueueAnimation => !_disposed && !Actor.IsDisposed && Subject &&
+            (Actor.CombatAttributes == null ||
+             !Actor.Resources.TryGetBalance(Actor.CombatAttributes.Health, out var health) || health > 0);
         /// <summary>Queued source factory failures are observable; a bad request is released, and
         /// the next surviving request may start. No gameplay hit/cost is driven by this event.</summary>
         public event Action<GameplayContext,string> AnimationQueueFailed;
@@ -22,6 +27,7 @@ namespace FRFrame.Gameplay.Unity
             if(definition==null)throw new ArgumentNullException(nameof(definition));
             if(_disposed||Actor.IsDisposed)return RejectAnimation(definition,context,"OwnerDisposed");
             if(Subject==null)return RejectAnimation(definition,context,"SubjectMissing");
+            if(!CanQueueAnimation)return RejectAnimation(definition,context,"QueueOwnerDead");
             if(context==null||!GameplayStandardActivation.TryFindGrant(Actor,context,out var grant))return RejectAnimation(definition,context,"ActiveGrantMissing");
             GameplayAnimationWriteTarget[] writes;
             try{writes=definition.ResolveWrites(Subject);}catch(Exception ex){return RejectAnimation(definition,context,"PhysicalTargetMissing: "+ex.Message);}
@@ -38,7 +44,7 @@ namespace FRFrame.Gameplay.Unity
         private static bool EarlierQueuedConflict(GameplayAnimationWriteTarget[] writes,long order)
         {
             foreach(var controller in Controllers)foreach(var queue in controller._queues.Values)foreach(var request in queue)
-                if(request.Order<order&&GameplayStandardActivation.TryFindGrant(controller.Actor,request.Context,out _)){
+                if(request.Order<order&&controller.CanQueueAnimation&&GameplayStandardActivation.TryFindGrant(controller.Actor,request.Context,out _)){
                     try{if(Conflicts(request.Definition.ResolveWrites(controller.Subject),writes))return true;}
                     catch{ /* Invalid targets are diagnosed and released when their channel head promotes. */ }
                 }
@@ -59,7 +65,7 @@ namespace FRFrame.Gameplay.Unity
                     foreach(var request in fronts)
                     {
                         var owner=request.Owner;
-                        if(!GameplayStandardActivation.TryFindGrant(owner.Actor,request.Context,out _)){request.Dispose();changed=true;continue;}
+                        if(!owner.CanQueueAnimation||!GameplayStandardActivation.TryFindGrant(owner.Actor,request.Context,out _)){request.Dispose();changed=true;continue;}
                         try
                         {
                             var writes=request.Definition.ResolveWrites(owner.Subject);

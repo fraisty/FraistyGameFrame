@@ -192,7 +192,38 @@ namespace FRFrame.Gameplay.Unity.Editor
                     return true;
             }
         }
-        public bool DrawField(SerializedProperty root,SerializedProperty field)=>false;
+        public bool DrawField(SerializedProperty root,SerializedProperty field)
+        {
+            if (!SupportsControl(field)) return false;
+            bool shared = field.serializedObject.targetObject is GameplayEffectDefinitionAsset;
+            if (shared)
+            {
+                var presentation = field.managedReferenceValue as GameplayUnityEffectPresentationAuthoring;
+                var current = presentation?.StatusPrefab;
+                var prefab = (GameObject)EditorGUILayout.ObjectField("状态预制体", current, typeof(GameObject), false);
+                if (prefab != current)
+                {
+                    if (presentation != null && prefab)
+                        field.FindPropertyRelative("StatusPrefab").objectReferenceValue = prefab;
+                    else
+                    {
+                        field.managedReferenceValue = prefab ? new GameplayUnityEffectPresentationAuthoring { StatusPrefab = prefab } : null;
+                        return true;
+                    }
+                }
+                if (prefab && !prefab.TryGetComponent<GameplayEffectStatusView>(out _))
+                    EditorGUILayout.HelpBox("预制体根节点需要 GameplayEffectStatusView。", MessageType.Warning);
+            }
+            else DrawSourceLink(root, field);
+            if (field.managedReferenceValue == null) return true;
+
+            EditorGUILayout.PropertyField(field.FindPropertyRelative("Offset"), new GUIContent("世界偏移"));
+            EditorGUILayout.PropertyField(field.FindPropertyRelative("Binding"),
+                new GUIContent("目标挂点", "可见模型下的 Transform 路径。留空或找不到时使用角色位置，找不到会记录诊断。"));
+            EditorGUILayout.PropertyField(field.FindPropertyRelative("DisplayGroup"),
+                new GUIContent("显示组", "同组显示一份，取有效效果中的最高层。留空时只合并同一定义。"));
+            return true;
+        }
         public bool Supports(object values) => values is GameplayAnimationData || values is GameplayPresentationCueData || values is GameplayFloatingTextData ||
             values is GameplayEffectDefinitionData effect && effect.Presentation is GameplayUnityEffectPresentationAuthoring;
         public IGameplaySkillPreviewSession Create(GameplaySkillDocumentAsset document, object values, float startSeconds)

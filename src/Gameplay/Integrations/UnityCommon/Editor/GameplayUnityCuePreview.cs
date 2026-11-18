@@ -35,10 +35,10 @@ namespace FRFrame.Gameplay.Unity.Editor
         private int _panControl;
         private GameplayAnimationAsset _modelSource;
         private GameObject _ownerModel,_targetModel;
-        private bool _bindingFound;
+        private float _referenceScaleX;
         private string _referenceError;
         private string _dragSourceKey;
-        private uint _dragSourceHash;
+        private string _dragSourceSignature;
         private float _sampleSeconds;
         private bool _sampleStarted;
         private bool _facingLeft = SessionState.GetBool("FRFrame.CuePreview.FacingLeft", false);
@@ -57,6 +57,7 @@ namespace FRFrame.Gameplay.Unity.Editor
         private Vector3 _draft, _dragStart;
         private Renderer[] _renderers;
         internal GameObject Subject {get;private set;}
+        internal bool StatusStyle { get; set; }
         internal Camera Camera=>_preview?.camera;
         internal float Duration {get;private set;}
         internal GameplayUnityCuePreview(GameplayPresentationCueAsset cue,GameplayFloatingTextAsset text,GameplayEffectApplicationContext application)
@@ -220,7 +221,9 @@ namespace FRFrame.Gameplay.Unity.Editor
         }
         internal void DrawControls()
         {
-            if(_cue?.RecycleWhenParticlesFinish==true)
+            if (StatusStyle)
+                EditorGUILayout.LabelField("状态样式预览", Duration.ToString("0.###") + " 秒（示意）");
+            else if(_cue?.RecycleWhenParticlesFinish==true)
                 EditorGUILayout.LabelField("播完回收 · 预览范围估算",Duration.ToString("0.###")+" 秒");
             else EditorGUILayout.LabelField("素材预览时长",Duration.ToString("0.###")+" 秒");
             if (_cue == null)
@@ -262,22 +265,28 @@ namespace FRFrame.Gameplay.Unity.Editor
                     _owner = AnchorField("模拟 Owner", _owner, "Owner");
                     _target = AnchorField("模拟 Target", _target, "Target");
                     if (_cue.Origin == PositionSource.ContextPoint) _point = AnchorField("模拟 Point", _point, "Point");
-                    bool facingLeft = EditorGUILayout.Toggle("施法者朝左", _facingLeft);
+                    bool facingLeft = EditorGUILayout.Toggle(new GUIContent("模拟施法者镜像",
+                        "显式模拟宿主传给 Cue 的镜像状态。参考模型按 X 轴镜像；实机 Sprite 翻转由宿主映射。"), _facingLeft);
                     if (facingLeft != _facingLeft) SessionState.SetBool("FRFrame.CuePreview.FacingLeft", _facingLeft = facingLeft);
-                    float height = EditorGUILayout.Slider("角色参考高度", _actorHeight, .2f, 4);
-                    if (height != _actorHeight) SessionState.SetFloat("FRFrame.CuePreview.ActorHeight", _actorHeight = height);
-                    if (UsesBinding) _binding = AnchorField("模拟挂点偏移", _binding, "Binding");
+                    if (!_modelSource)
+                    {
+                        float height = EditorGUILayout.Slider("示意角色高度", _actorHeight, .2f, 4);
+                        if (height != _actorHeight) SessionState.SetFloat("FRFrame.CuePreview.ActorHeight", _actorHeight = height);
+                        if (UsesBinding) _binding = AnchorField("模拟挂点偏移", _binding, "Binding");
+                    }
+                    else if (UsesBinding && !ReferenceBinding)
+                        EditorGUILayout.HelpBox($"此参考模型没有 Transform「{_cue.Binding}」。状态/VFX 使用角色位置，Tint 实机会拒绝缺失挂点。", MessageType.Info);
                     if (End.HasValue)
                         EditorGUILayout.LabelField($"两点距离 {Vector3.Distance(Origin, End.Value):0.##}。Scale X 乘距离，Y 调宽度。\nCallbackSegment 的实机起点与命中点由回调提供。", EditorStyles.wordWrappedMiniLabel);
                     else if (_cue.Follow)
                         EditorGUILayout.LabelField(_cue.Origin == PositionSource.ContextPoint
                             ? "ContextPoint 是固定世界地点，没有跟随对象。"
                             : "跟随所选 Actor 或挂点。绿色虚线标出跟随锚点。", EditorStyles.wordWrappedMiniLabel);
-                    if (WritableDocument) EditorGUILayout.LabelField("拖动中心十字调偏移，拖动 X / Y 方块调缩放。Esc 取消。", EditorStyles.wordWrappedMiniLabel);
+                    if (CanDragGeometry) EditorGUILayout.LabelField("拖动中心十字调偏移，拖动轴柄调缩放。Esc 取消。", EditorStyles.wordWrappedMiniLabel);
                 }
             }
             if(_unsupportedAnimator)EditorGUILayout.LabelField("多状态 Animator 需在实机检查；当前仅预览该对象的静态姿态。",EditorStyles.wordWrappedMiniLabel);
-            DrawSourceFields();
+            if (!StatusStyle) DrawSourceFields();
         }
 
         private static MethodInfo AudioMethod(string name) => typeof(AudioImporter).Assembly
@@ -344,14 +353,22 @@ namespace FRFrame.Gameplay.Unity.Editor
 
         private void StopAudition()
         {
-            if(_auditioning)AudioMethod("StopAllPreviewClips")?.Invoke(null,null);
-            _auditioning=false;
-            EditorApplication.update-=StopExpiredAudition;
-            AssemblyReloadEvents.beforeAssemblyReload-=StopAudition;
-            if(_auditionPath!=null)
+            try { if(_auditioning)AudioMethod("StopAllPreviewClips")?.Invoke(null,null); }
+            finally
             {
-                if(!AssetDatabase.DeleteAsset(_auditionPath))System.IO.File.Delete(_auditionPath);
-                _auditionPath=null;
+                _auditioning=false;
+                EditorApplication.update-=StopExpiredAudition;
+                AssemblyReloadEvents.beforeAssemblyReload-=StopAudition;
+                if(_auditionPath!=null)
+                {
+                    string path=_auditionPath;
+                    _auditionPath=null;
+                    if(!AssetDatabase.DeleteAsset(path))
+                    {
+                        System.IO.File.Delete(path);
+                        System.IO.File.Delete(path+".meta");
+                    }
+                }
             }
         }
 
@@ -365,7 +382,9 @@ namespace FRFrame.Gameplay.Unity.Editor
             try
             {
                 _ownerModel=source.CreatePreviewSubject();_targetModel=source.CreatePreviewSubject();
+                _referenceScaleX=Mathf.Abs(_ownerModel.transform.localScale.x);
                 _preview.AddSingleGO(_ownerModel);_preview.AddSingleGO(_targetModel);
+                UpdateReferencePoses();
             }
             catch(Exception error)
             {
@@ -397,7 +416,15 @@ namespace FRFrame.Gameplay.Unity.Editor
                         EditorGUILayout.Toggle("朝向镜像", _cue.MirrorFacing);
                         EditorGUILayout.TextField("挂点", _cue.Binding ?? "");
                     }
-                    else EditorGUILayout.LabelField($"音量 {_cue.Volume:0.##} / 音高 {_cue.Pitch:0.##} / 循环 {(_cue.AudioLoop ? "开" : "关")}");
+                    else if (_cue.Kind == GameplayPresentationCueAsset.CueKind.Audio)
+                        EditorGUILayout.LabelField($"音量 {_cue.Volume:0.##} / 音高 {_cue.Pitch:0.##} / 循环 {(_cue.AudioLoop ? "开" : "关")}");
+                    else
+                    {
+                        EditorGUILayout.LabelField("目标", _cue.Origin == PositionSource.Owner ? "施法者" : "实际目标");
+                        EditorGUILayout.TextField("目标挂点", _cue.Binding ?? "");
+                        EditorGUILayout.ColorField("闪色", _cue.TintColor);
+                        EditorGUILayout.LabelField($"淡入 {_cue.TintFadeIn:0.###}s · 淡出 {_cue.TintFadeOut:0.###}s · 预览时限 {Duration:0.###}s");
+                    }
                 }
                 return;
             }
@@ -446,21 +473,24 @@ namespace FRFrame.Gameplay.Unity.Editor
 
         private bool UsesBinding => !string.IsNullOrEmpty(_cue.Binding) &&
             (_cue.Origin == PositionSource.Owner || _cue.Origin == PositionSource.PrimaryTarget);
+        private bool CanDragGeometry => !StatusStyle && _cue.Kind == GameplayPresentationCueAsset.CueKind.Vfx && WritableDocument;
+        private GameObject BindingModel => _cue.Origin == PositionSource.PrimaryTarget ? _targetModel : _ownerModel;
+        private Transform ReferenceBinding => UsesBinding && BindingModel ? BindingModel.transform.Find(_cue.Binding) : null;
         private Vector3 OwnerPoint => _hotControl!=0&&_dragAxis==4?_draft:_owner;
         private Vector3 TargetPoint => _hotControl!=0&&_dragAxis==5?_draft:_target;
         private Vector3 Origin => _cue.Origin switch
         {
             PositionSource.ContextPoint => _point,
             PositionSource.TargetToOwner => TargetPoint,
-            PositionSource.PrimaryTarget => BoundPoint(_targetModel,TargetPoint),
-            _ => BoundPoint(_ownerModel,OwnerPoint)
+            PositionSource.PrimaryTarget => BoundPoint(TargetPoint),
+            _ => BoundPoint(OwnerPoint)
         };
-        private Vector3 BoundPoint(GameObject model,Vector3 position)
+        private Vector3 BoundPoint(Vector3 position)
         {
             if(!UsesBinding)return position;
-            var anchor=model?model.transform.Find(_cue.Binding):null;
-            _bindingFound=anchor;
-            return anchor?anchor.position:position+_binding;
+            var anchor=ReferenceBinding;
+            return anchor ? position + anchor.position - BindingModel.transform.position :
+                _modelSource ? position : position + _binding;
         }
         private Vector3? End => _cue?.Origin switch
         {
@@ -470,12 +500,25 @@ namespace FRFrame.Gameplay.Unity.Editor
         };
         private (Vector3 Position, Quaternion Rotation, Vector3 Scale) Pose => GameplayUnityAnimationController.ResolveCueGeometry(
             Origin, End, _hotControl != 0 && _dragAxis == 0 ? _draft : _cue.Offset,
-            _hotControl != 0 && _dragAxis != 0 ? _draft : _cue.Scale, _cue.MirrorFacing && _facingLeft, _intensity);
+            _hotControl != 0 && _dragAxis is 1 or 2 or 3 or 6 ? _draft : _cue.Scale, _cue.MirrorFacing && _facingLeft, _intensity);
+
+        private void UpdateReferencePoses()
+        {
+            if (!_ownerModel || !_targetModel) return;
+            var owner=_ownerModel.transform;
+            var scale=owner.localScale;
+            scale.x=_facingLeft ? -_referenceScaleX : _referenceScaleX;
+            owner.localScale=scale;
+            owner.position=OwnerPoint;
+            _targetModel.transform.position=TargetPoint;
+            _ownerModel.SetActive(_spatial);
+            _targetModel.SetActive(_spatial);
+        }
+
         internal void Render(Rect viewport)
         {
             if(_preview==null){EditorGUI.HelpBox(viewport,"选择实际音频素材；可试听或在真实Scene安装运行。",MessageType.Info);return;}
-            if (_ownerModel) { _ownerModel.SetActive(_spatial);_ownerModel.transform.position=OwnerPoint; }
-            if (_targetModel) { _targetModel.SetActive(_spatial);_targetModel.transform.position=TargetPoint; }
+            UpdateReferencePoses();
             if (GUI.Button(new Rect(viewport.x+4,viewport.y+3,66,18),"重置视角",EditorStyles.miniButton))
             { _zoom=1;_pan=Vector3.zero; }
             viewport.yMin+=23;
@@ -534,7 +577,7 @@ namespace FRFrame.Gameplay.Unity.Editor
             {
                 int axis = evt.shift&&Vector2.Distance(evt.mousePosition,Project(viewport,_owner))<13?4:
                     evt.shift&&Vector2.Distance(evt.mousePosition,Project(viewport,_target))<13?5:
-                    Vector2.Distance(evt.mousePosition, center) < 10 ? 0 :
+                    !CanDragGeometry ? -1 : Vector2.Distance(evt.mousePosition, center) < 10 ? 0 :
                     Vector2.Distance(evt.mousePosition, center + xAxis * 34) < 9 ? 1 :
                     Vector2.Distance(evt.mousePosition, center + yAxis * 34) < 9 ? (_xz?3:2) :
                     Vector2.Distance(evt.mousePosition, center + (xAxis+yAxis).normalized * 43) < 9 ? 6 : -1;
@@ -544,7 +587,8 @@ namespace FRFrame.Gameplay.Unity.Editor
                     if(!WritableDocument||!_source.TryResolve(out string current))return;
                     using var origin=new SerializedObject(_source.Owner);
                     _dragSourceKey=_source.Key;
-                    _dragSourceHash=origin.FindProperty(current).contentHash;
+                    // A managed-reference contentHash can keep the same value when a child changes.
+                    _dragSourceSignature=JsonUtility.ToJson(origin.FindProperty(current).managedReferenceValue);
                 }
                 _dragAxis = axis;
                 _dragBasis = axis == 6 ? (xAxis+yAxis).normalized : axis == 1 ? xAxis : yAxis;
@@ -582,7 +626,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 {
                     using var serialized = new SerializedObject(document);
                     var source=serialized.FindProperty(path);
-                    if(source.contentHash!=_dragSourceHash)return;
+                    if(JsonUtility.ToJson(source.managedReferenceValue)!=_dragSourceSignature)return;
                     var property = source.FindPropertyRelative(field);
                     property.vector3Value = value;
                     Undo.IncrementCurrentGroup();
@@ -608,9 +652,9 @@ namespace FRFrame.Gameplay.Unity.Editor
             Color previous = Handles.color;
             var pose = Pose;
             var owner = Project(viewport, _owner);
-            Mark(OwnerPoint, "Owner", new Color(.35f,.85f,1), _actorHeight);
-            Mark(TargetPoint, "Target", new Color(1,.6f,.35f), _actorHeight);
-            Mark(Origin, UsesBinding ? _bindingFound ? "实际挂点" : "模拟挂点" : "原点", Color.white);
+            Mark(OwnerPoint, "Owner", new Color(.35f,.85f,1), _modelSource ? 0 : _actorHeight);
+            Mark(TargetPoint, "Target", new Color(1,.6f,.35f), _modelSource ? 0 : _actorHeight);
+            Mark(Origin, UsesBinding ? ReferenceBinding ? "参考模型挂点" : _modelSource ? "缺失挂点" : "模拟挂点" : "原点", Color.white);
             if (End.HasValue) { Handles.color = Color.yellow; Handles.DrawAAPolyLine(2, Project(viewport, Origin), Project(viewport, End.Value)); }
             Handles.color = Color.gray;
             Handles.DrawAAPolyLine(2, owner, Project(viewport, _owner + Vector3.right));
@@ -620,8 +664,11 @@ namespace FRFrame.Gameplay.Unity.Editor
             Handles.color = Color.green;
             if (_cue.Follow && (_cue.Origin == PositionSource.Owner || _cue.Origin == PositionSource.PrimaryTarget))
                 Handles.DrawDottedLine(Project(viewport, Origin), center, 4);
-            Handles.DrawAAPolyLine(2, center - Vector2.right * 6, center + Vector2.right * 6);
-            Handles.DrawAAPolyLine(2, center - Vector2.up * 6, center + Vector2.up * 6);
+            if (!_tintMaterial)
+            {
+                Handles.DrawAAPolyLine(2, center - Vector2.right * 6, center + Vector2.right * 6);
+                Handles.DrawAAPolyLine(2, center - Vector2.up * 6, center + Vector2.up * 6);
+            }
             if (Subject.activeSelf && _renderers.Length > 0)
             {
                 var bounds = _renderers[0].bounds;
@@ -631,7 +678,7 @@ namespace FRFrame.Gameplay.Unity.Editor
                 Handles.color = new Color(.7f, 1, .8f, .7f);
                 Handles.DrawAAPolyLine(1, min, new Vector2(max.x,min.y), max, new Vector2(min.x,max.y), min);
             }
-            if (WritableDocument)
+            if (CanDragGeometry)
             {
                 DrawScaleHandle(pose.Rotation * Vector3.right, "X", new Color(1,.55f,.42f));
                 var up=pose.Rotation*(_xz?Vector3.forward:Vector3.up);
@@ -640,7 +687,9 @@ namespace FRFrame.Gameplay.Unity.Editor
                 Vector2 uniform=center+(HandleAxis(viewport,pose.Rotation*Vector3.right)+HandleAxis(viewport,up)).normalized*43;
                 Handles.DrawSolidDisc(uniform,Vector3.forward,4);
             }
-            GUI.Label(new Rect(5, 3, viewport.width - 10, 18), $"生成位置 {pose.Position.ToString("F2")}", EditorStyles.miniLabel);
+            string label=_tintMaterial ? "闪色目标 " + (_cue.Origin==PositionSource.Owner ? "Owner" : "Target") :
+                StatusStyle ? $"状态样式位置 {pose.Position.ToString("F2")}" : $"生成位置 {pose.Position.ToString("F2")}";
+            GUI.Label(new Rect(5, 3, viewport.width - 10, 18), label, EditorStyles.miniLabel);
             Handles.color = previous;
             Handles.EndGUI();
             GUI.EndGroup();

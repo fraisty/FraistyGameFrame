@@ -19,6 +19,10 @@ namespace FRFrame.Gameplay.Unity
         public AudioManager CueAudio {get;set;}
         /// <summary>Optional camera layer for spawned cue and status views in a scoped viewport.</summary>
         public int? ViewRenderLayer {get;set;}
+        /// <summary>Optional host mapping for the visible model's mirror state, for example a SpriteRenderer
+        /// flipped without changing its transform. The default preserves the subject's signed X scale.</summary>
+        public Func<bool> ResolveCueMirror { get; set; }
+        private bool IsCueMirrored => ResolveCueMirror?.Invoke() ?? Subject.transform.localScale.x < 0;
         public int ActiveCueCount=>_cues.Count;
         internal GameObjectPoolModule SpatialViewPool=>CuePool??(_ownedPool??(_ownedPool=new GameObjectPoolModule()));
 
@@ -63,7 +67,7 @@ namespace FRFrame.Gameplay.Unity
             if (!TryResolveCuePose(definition, context, Actor, segment, out var point, out var parent, out var end, out var target)) return false;
             var application = definition.RecycleWhenParticlesFinish && definition.Intensity == null ? null : PresentationValueContext(context);
             float duration = definition.RecycleWhenParticlesFinish ? 0 : CueDuration(definition, application);
-            return PlayCueAt(definition, point, parent, end, duration, Actor.Facing.X < 0,
+            return PlayCueAt(definition, point, parent, end, duration, definition.MirrorFacing && IsCueMirrored,
                 CueIntensity(definition, application), grant, target);
         }
 
@@ -73,7 +77,8 @@ namespace FRFrame.Gameplay.Unity
                 !ReferenceEquals(lifecycle.Application.Target, Actor) || context.TargetData.PrimaryTargetId != Actor.Id) return false;
             Actor.World.TryGetActor(lifecycle.Application.Context.InstigatorId, out var instigator);
             if (!TryResolveCuePose(definition, context, instigator, null, out var point, out var parent, out var end, out var target)) return false;
-            bool mirror = (instigator ?? Actor).Facing.X < 0;
+            var source = instigator?.Presentation as GameplayUnityAnimationController ?? this;
+            bool mirror = definition.MirrorFacing && source.Subject && source.IsCueMirrored;
             _committedEffectCues.Enqueue((definition, point, parent, end, mirror, lifecycle.Application, target));
             return true;
         }
@@ -163,7 +168,7 @@ namespace FRFrame.Gameplay.Unity
                     var view=pool.GetOrCreate(key,definition.Prefab.name,definition.Prefab);
                     cue.View=view;cue.Pool=pool;cue.Key=key;cue.Location=definition.Prefab.name;
                     ApplyViewRenderLayer(view);
-                    var pose = ResolveCueGeometry(point, end, definition.Offset, definition.Scale, definition.MirrorFacing && mirror, intensity);
+                    var pose = ResolveCueGeometry(point, end, definition.Offset, definition.Scale, mirror, intensity);
                     view.transform.SetParent(null, false);
                     view.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
                     view.transform.localScale = pose.Scale;

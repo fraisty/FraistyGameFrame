@@ -86,6 +86,10 @@ namespace FRFrame.Gameplay.Unity
         private EffectViewLease CreateEffectView(GameplayEffectHandle handle, GameplayEffectDefinition definition, GameplayUnityEffectPresentation presentation)
         {
             var anchor = string.IsNullOrEmpty(presentation.Binding) ? null : Subject.transform.Find(presentation.Binding);
+            if (!anchor && !string.IsNullOrEmpty(presentation.Binding))
+                Actor.RecordSkillTrace(new GameplaySkillTraceRecord(Actor.Id, null, default,
+                    GameplaySkillTraceStage.ActionRejected, "EffectStatusBinding",
+                    detail: $"Subject '{Subject.name}' has no Transform '{presentation.Binding}'. Using actor position."));
             var lease = new EffectViewLease(definition, presentation, anchor, SpatialViewPool);
             ApplyViewRenderLayer(lease.View.gameObject);
             _effectViews.Add(handle, lease);
