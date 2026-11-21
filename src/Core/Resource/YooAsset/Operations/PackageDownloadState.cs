@@ -1,4 +1,6 @@
+using System;
 using Cysharp.Threading.Tasks;
+using UnityEngine;
 using YooAsset;
 
 namespace FRFrame
@@ -11,7 +13,7 @@ namespace FRFrame
         public override void OnEnter()
         {
             base.OnEnter();
-            BeginDownloadAsync().Forget();
+            BeginDownloadAsync().Forget(FailPrepare);
         }
 
         private async UniTask BeginDownloadAsync()
@@ -73,8 +75,9 @@ namespace FRFrame
             prepareDoneSignal?.TrySetResult(true);
         }
 
-        private void FailPrepare()
+        private void FailPrepare(Exception exception = null)
         {
+            if (exception != null) Debug.LogException(exception);
             UniTaskCompletionSource<bool> prepareDone = GetData("prepareDone") as UniTaskCompletionSource<bool>;
             prepareDone?.TrySetResult(false);
         }

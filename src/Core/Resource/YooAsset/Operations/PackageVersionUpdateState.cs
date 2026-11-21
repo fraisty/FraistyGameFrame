@@ -1,4 +1,6 @@
+using System;
 using Cysharp.Threading.Tasks;
+using UnityEngine;
 
 namespace FRFrame
 {
@@ -11,7 +13,7 @@ namespace FRFrame
         public override void OnEnter()
         {
             base.OnEnter();
-            UpdatePackageVersionAsync().Forget();
+            UpdatePackageVersionAsync().Forget(FailPrepare);
         }
 
         private async UniTask UpdatePackageVersionAsync()
@@ -38,8 +40,9 @@ namespace FRFrame
             ChangeState<PackageManifestUpdateState>();
         }
 
-        private void FailPrepare()
+        private void FailPrepare(Exception exception = null)
         {
+            if (exception != null) Debug.LogException(exception);
             UniTaskCompletionSource<bool> prepareDone = GetData("prepareDone") as UniTaskCompletionSource<bool>;
             prepareDone?.TrySetResult(false);
         }
