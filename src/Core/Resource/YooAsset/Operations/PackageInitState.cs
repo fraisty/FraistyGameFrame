@@ -1,4 +1,6 @@
+using System;
 using Cysharp.Threading.Tasks;
+using UnityEngine;
 using YooAsset;
 
 namespace FRFrame
@@ -12,7 +14,7 @@ namespace FRFrame
         public override void OnEnter()
         {
             base.OnEnter();
-            InitializePackageAsync().Forget();
+            InitializePackageAsync().Forget(FailPrepare);
         }
 
         private async UniTask InitializePackageAsync()
@@ -42,15 +44,16 @@ namespace FRFrame
             if (!ok)
             {
                 FRLog.Error($"PackageInitState failed : {packageConfig.name}");
-                //TODO：事件通知屏幕变化
+                FailPrepare();
                 return;
             }
 
             ChangeState<PackageVersionUpdateState>();
         }
 
-        private void FailPrepare()
+        private void FailPrepare(Exception exception = null)
         {
+            if (exception != null) Debug.LogException(exception);
             UniTaskCompletionSource<bool> prepareDone = GetData("prepareDone") as UniTaskCompletionSource<bool>;
             prepareDone?.TrySetResult(false);
         }

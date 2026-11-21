@@ -27,9 +27,10 @@ namespace FRFrame
         private readonly HashSet<string> _initializedPackages = new HashSet<string>();
         private readonly Dictionary<string, PackageRuntimeInfo> _packageInfos = new Dictionary<string, PackageRuntimeInfo>();
 
-        public async UniTask CreateGamePackageDefault(PackageConfig packageConfig)
+        /// <summary>Prepares the package and reports whether initialization, manifest loading and any downloads succeeded.</summary>
+        public async UniTask<bool> CreateGamePackageDefault(PackageConfig packageConfig)
         {
-            UniTaskCompletionSource<bool> prepaerDone = new UniTaskCompletionSource<bool>();
+            UniTaskCompletionSource<bool> prepareDone = new UniTaskCompletionSource<bool>();
             AssetsPrepareFsmController fsm = FRFM.Fsm.CreateFsm<AssetsPrepareFsmController>(
                 new FsmCreateOption()
                 {
@@ -39,16 +40,17 @@ namespace FRFrame
                 });
 
             fsm.SetData("packageConfig", packageConfig);
-            fsm.SetData("prepareDone", prepaerDone);
+            fsm.SetData("prepareDone", prepareDone);
             fsm.Start();
 
-            bool ok = await prepaerDone.Task;
+            bool ok = await prepareDone.Task;
             if (!ok)
             {
                 FRLog.Info("CreateGamePackageDefault " + packageConfig.name + " Failed");
             }
 
             FRLog.Info("CreateGamePackageDefault " + packageConfig.name + " Finish");
+            return ok;
         }
         
         
@@ -412,6 +414,12 @@ namespace FRFrame
         public bool IsPackageInitialized(string packageName)
         {
             return _initializedPackages.Contains(packageName);
+        }
+
+        /// <summary>Returns whether the initialized package has an active manifest for resolving assets.</summary>
+        public bool IsPackageReady(string packageName)
+        {
+            return IsPackageInitialized(packageName) && GetPackage(packageName)?.PackageValid == true;
         }
 
         public bool IsDefaultPackage(string packageName)

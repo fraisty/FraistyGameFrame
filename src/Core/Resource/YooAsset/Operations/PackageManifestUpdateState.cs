@@ -1,4 +1,6 @@
+using System;
 using Cysharp.Threading.Tasks;
+using UnityEngine;
 
 namespace FRFrame
 {
@@ -10,7 +12,7 @@ namespace FRFrame
         public override void OnEnter()
         {
             base.OnEnter();
-            UpdateManifestAsync().Forget();
+            UpdateManifestAsync().Forget(FailPrepare);
         }
 
         private async UniTask UpdateManifestAsync()
@@ -35,14 +37,16 @@ namespace FRFrame
             if (!ok)
             {
                 FRLog.Error($"Update package manifest failed : {packageConfig.name}");
+                FailPrepare();
                 return;
             }
 
             ChangeState<PackageDownloaderCreateState>();
         }
 
-        private void FailPrepare()
+        private void FailPrepare(Exception exception = null)
         {
+            if (exception != null) Debug.LogException(exception);
             UniTaskCompletionSource<bool> prepareDone = GetData("prepareDone") as UniTaskCompletionSource<bool>;
             prepareDone?.TrySetResult(false);
         }
