@@ -11,7 +11,3 @@
 
 ## 📂 独立源码目录
 如果需要让 AI 查看单个脚本文件，请访问 [`/src`](./src) 目录。
-
-## 📚 模块设计与选型文档
-
-- [Network 模块选型结论与验证计划](./src/Core/Network/NetworkModule_Selection.md)：独立 .NET 10 Server、LiteNetLib 首选候选、协议序列化对照及 Android/iOS POC 验收计划。
