@@ -25,21 +25,18 @@ namespace FRFrame.Network.Replication
         private readonly LesStreamRoutes _routes = new LesStreamRoutes();
         private readonly ClientEntityManager[] _managers = new ClientEntityManager[2];
         private readonly LesProbePeer[] _peers = new LesProbePeer[2];
+        private readonly bool[] _baselines = new bool[2];
         private readonly bool[] _ackedStreams = new bool[2];
         private readonly int[] _reliableReplies = new int[2];
         private readonly bool[] _unreliableReplies = new bool[2];
         private readonly Action<string> _log;
         private int _connection = -1;
-        private int _baselineCount;
 
         public NetworkProbeClient(string host, int port, Action<string> log)
         {
             _log = log;
             if (!_transport.Connect(host, port))
-            {
-                _transport.Dispose();
                 throw new InvalidOperationException($"Could not start probe connection to {host}:{port}.");
-            }
         }
 
         public bool Passed { get; private set; }
@@ -81,7 +78,7 @@ namespace FRFrame.Network.Replication
             }
 
             _transport.CompleteTick(elapsedMilliseconds);
-            if (!Passed && _baselineCount == 2 && _ackedStreams[0] && _ackedStreams[1] &&
+            if (!Passed && _baselines[0] && _baselines[1] && _ackedStreams[0] && _ackedStreams[1] &&
                 _reliableReplies[0] == 2 && _reliableReplies[1] == 2 &&
                 _unreliableReplies[0] && _unreliableReplies[1])
             {
@@ -131,10 +128,13 @@ namespace FRFrame.Network.Replication
                 throw new InvalidOperationException("Invalid LES empty baseline frame.");
 
             var index = route.WireHeader - 1;
+            if (_baselines[index])
+                return;
+
             if (_managers[index].Deserialize(packet) != DeserializeResult.Done)
                 throw new InvalidOperationException($"LES stream {route.WireHeader} rejected its baseline.");
 
-            _baselineCount++;
+            _baselines[index] = true;
             _log($"LES stream {route.WireHeader} accepted baseline on manager header {route.ManagerHeader}.");
             // Empty LES ClientInput header: packet type plus two UInt16 fields. No entities or user input.
             Span<byte> reply = stackalloc byte[6];

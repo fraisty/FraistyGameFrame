@@ -17,10 +17,42 @@ namespace FRFrame.Network.Transport
         private const int SendBudget = 8;
         private readonly Dictionary<int, Connection> _connections = new Dictionary<int, Connection>();
         private readonly Dictionary<int, Connection> _receiving = new Dictionary<int, Connection>();
-        private readonly NetManager _manager;
+        private readonly ProbeNetManager _manager;
         private int _connectionSerial;
         private bool _accepting;
         private bool _flushRequested;
+
+        private sealed class ProbeNetManager : NetManager
+        {
+            public ProbeNetManager(INetEventListener listener) : base(listener) { }
+
+            public bool StartManual(IPAddress ipv4, IPAddress ipv6, int port)
+            {
+                if (IsRunning)
+                    return false;
+
+                var started = false;
+                try
+                {
+                    started = StartInManualMode(ipv4, ipv6, port);
+                    return started;
+                }
+                finally
+                {
+                    if (!started)
+                    {
+                        if (IsRunning)
+                            Stop();
+                        else
+                        {
+                            // LiteNetLib 2.1.5 allocates the IPv4 socket before Bind; Stop skips failed starts.
+                            _udpSocketv4?.Dispose();
+                            _udpSocketv4 = null!;
+                        }
+                    }
+                }
+            }
+        }
 
         private sealed class Connection
         {
@@ -40,11 +72,12 @@ namespace FRFrame.Network.Transport
         public LiteNetDatagrams()
         {
             var events = new EventBasedNetListener();
-            _manager = new NetManager(events)
+            _manager = new ProbeNetManager(events)
             {
                 AutoRecycle = true,
                 ChannelsCount = 1,
                 MtuDiscovery = false,
+                MaxFragmentsCount = 0,
                 MaxPacketPerManualReceive = 64
             };
             events.ConnectionRequestEvent += request =>
@@ -64,7 +97,7 @@ namespace FRFrame.Network.Transport
             };
             events.PeerDisconnectedEvent += (peer, _) =>
             {
-                if (_receiving.Remove(peer.Id, out var connection))
+                if (peer != null && _receiving.Remove(peer.Id, out var connection))
                 {
                     _connections.Remove(connection.Id);
                     ConnectionsClosed++;
@@ -85,16 +118,26 @@ namespace FRFrame.Network.Transport
         public bool Listen(IPAddress ipv4, bool ipv6Loopback, int port)
         {
             _manager.IPv6Enabled = ipv6Loopback;
-            _accepting = _manager.StartInManualMode(ipv4, IPAddress.IPv6Loopback, port);
+            _accepting = _manager.StartManual(ipv4, IPAddress.IPv6Loopback, port);
             return _accepting;
         }
 
         public bool Connect(string host, int port)
         {
-            if (!_manager.StartInManualMode(0))
+            if (!_manager.StartManual(IPAddress.Any, IPAddress.IPv6Any, 0))
                 return false;
 
-            return _manager.Connect(host, port, ProbeKey) != null;
+            var connecting = false;
+            try
+            {
+                connecting = _manager.Connect(host, port, ProbeKey) != null;
+                return connecting;
+            }
+            finally
+            {
+                if (!connecting)
+                    Dispose();
+            }
         }
 
         public bool IsConnected(int connection) => _connections.ContainsKey(connection);
