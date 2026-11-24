@@ -1,0 +1,8 @@
+{
+    "name": "FRFrame.Network.Transport.LiteNetLib",
+    "rootNamespace": "FRFrame.Network.Transport",
+    "references": ["FRFrame.Network.Shared", "LiteNetLib"],
+    "overrideReferences": true,
+    "autoReferenced": false,
+    "noEngineReferences": true
+}

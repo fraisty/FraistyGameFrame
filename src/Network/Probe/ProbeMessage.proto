@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package frframe.network.poc;
+option csharp_namespace = "FRFrame.Network.Probe";
+
+message ProtoProbe
+{
+    int32 sequence = 1;
+    string text = 2;
+    bytes samples = 3;
+}

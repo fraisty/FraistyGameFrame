@@ -1,0 +1,13 @@
+{
+    "name": "FRFrame.Network.Replication",
+    "rootNamespace": "FRFrame.Network.Replication",
+    "references": [
+        "FRFrame.Network.Shared",
+        "FRFrame.Network.Probe",
+        "FRFrame.Network.Transport.LiteNetLib"
+    ],
+    "overrideReferences": true,
+    "precompiledReferences": ["LiteEntitySystem.dll", "RefMagic.dll", "K4os.Compression.LZ4.dll"],
+    "autoReferenced": false,
+    "noEngineReferences": true
+}

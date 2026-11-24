@@ -3,7 +3,9 @@
     "rootNamespace": "FRFrame.Network.Unity",
     "references": [
         "FRFrame.Network.Client",
-        "FRFrame.Network.Shared"
+        "FRFrame.Network.Shared",
+        "FRFrame.Network.Probe",
+        "FRFrame.Network.Replication"
     ],
     "overrideReferences": true,
     "autoReferenced": false
