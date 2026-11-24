@@ -1,0 +1,7 @@
+{
+    "name": "FRFrame.Network.Shared",
+    "rootNamespace": "FRFrame.Network.Shared",
+    "overrideReferences": true,
+    "autoReferenced": false,
+    "noEngineReferences": true
+}

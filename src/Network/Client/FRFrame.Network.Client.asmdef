@@ -1,0 +1,10 @@
+{
+    "name": "FRFrame.Network.Client",
+    "rootNamespace": "FRFrame.Network.Client",
+    "references": [
+        "FRFrame.Network.Shared"
+    ],
+    "overrideReferences": true,
+    "autoReferenced": false,
+    "noEngineReferences": true
+}

@@ -748,6 +748,16 @@ Gameplay/
     GameplayLevelFloatValue.cs
     GameplayResourceFloatValue.cs
   FRFrame.Gameplay.asmdef
+Network/
+  Client/
+    ClientProtocol.cs
+    FRFrame.Network.Client.asmdef
+  Shared/
+    FRFrame.Network.Shared.asmdef
+    ProtocolVersion.cs
+  Unity/
+    FRFrame.Network.Unity.asmdef
+    NetworkStartupDiagnostics.cs
 Tests/
   Gameplay/
     EditMode/
@@ -93371,6 +93381,103 @@ namespace FRFrame.Gameplay
     "defineConstraints": [],
     "versionDefines": [],
     "noEngineReferences": true
+}
+````
+
+## File: Network/Client/ClientProtocol.cs
+````csharp
+using FRFrame.Network.Shared;
+
+namespace FRFrame.Network.Client
+{
+    /// <summary>Exposes the protocol revision implemented by the client.</summary>
+    public static class ClientProtocol
+    {
+        /// <summary>Gets the protocol revision for client startup diagnostics.</summary>
+        public static ProtocolVersion Version => ProtocolVersion.Current;
+    }
+}
+````
+
+## File: Network/Client/FRFrame.Network.Client.asmdef
+````
+{
+    "name": "FRFrame.Network.Client",
+    "rootNamespace": "FRFrame.Network.Client",
+    "references": [
+        "FRFrame.Network.Shared"
+    ],
+    "overrideReferences": true,
+    "autoReferenced": false,
+    "noEngineReferences": true
+}
+````
+
+## File: Network/Shared/FRFrame.Network.Shared.asmdef
+````
+{
+    "name": "FRFrame.Network.Shared",
+    "rootNamespace": "FRFrame.Network.Shared",
+    "overrideReferences": true,
+    "autoReferenced": false,
+    "noEngineReferences": true
+}
+````
+
+## File: Network/Shared/ProtocolVersion.cs
+````csharp
+namespace FRFrame.Network.Shared
+{
+    /// <summary>Identifies the protocol revision used by the client and server.</summary>
+    public readonly struct ProtocolVersion
+    {
+        private ProtocolVersion(int value)
+        {
+            Value = value;
+        }
+
+        /// <summary>Gets the revision identifier.</summary>
+        public int Value { get; }
+
+        /// <summary>Gets the protocol revision implemented by this build.</summary>
+        public static ProtocolVersion Current => new ProtocolVersion(1);
+    }
+}
+````
+
+## File: Network/Unity/FRFrame.Network.Unity.asmdef
+````
+{
+    "name": "FRFrame.Network.Unity",
+    "rootNamespace": "FRFrame.Network.Unity",
+    "references": [
+        "FRFrame.Network.Client",
+        "FRFrame.Network.Shared"
+    ],
+    "overrideReferences": true,
+    "autoReferenced": false
+}
+````
+
+## File: Network/Unity/NetworkStartupDiagnostics.cs
+````csharp
+using FRFrame.Network.Client;
+using UnityEngine;
+using UnityEngine.Scripting;
+
+// The startup callback has no scene references.
+[assembly: AlwaysLinkAssembly]
+
+namespace FRFrame.Network.Unity
+{
+    internal static class NetworkStartupDiagnostics
+    {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+        private static void LogProtocolVersion()
+        {
+            Debug.Log($"[FRFrame.Network] Client protocol version {ClientProtocol.Version.Value}.");
+        }
+    }
 }
 ````
 
