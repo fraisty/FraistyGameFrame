@@ -1,21 +1,25 @@
+#nullable enable
 using System;
-using System.IO;
 using System.Linq;
+using System.Text;
 using FRFrame.Network.Shared;
+using FRFrame.Network.Protocol.Wire;
 using Google.Protobuf;
 
-namespace FRFrame.Network.Probe
+namespace FRFrame.Network.Protocol
 {
-    /// <summary>Single Protobuf codec for POC-2 application opcodes.</summary>
+    /// <summary>Serializes the shared control DTO on both the client and server.</summary>
     public static class SliceCodec
     {
+        public const int MaxTextBytes = 240;
+        public const int MaxTicketBytes = 44;
         private static readonly MessageParser<SliceWire> Parser = SliceWire.Parser.WithDiscardUnknownFields(true);
 
-        public static byte[] Write(ProbeOp op, SliceMessage message)
+        public static byte[] Write(OpCode op, SliceMessage message)
         {
             var wire = new SliceWire
             {
-                RequestId = message.RequestId, Error = (uint)message.Error, ReplyTo = (uint)message.ReplyTo,
+                Error = (uint)message.Error, ReplyTo = (uint)message.ReplyTo,
                 Room = message.Room, Player = message.Player, Session = message.Session, Text = message.Text,
                 Stream = message.Stream, Generation = message.Generation, Header = message.Header,
                 Schema = message.Schema, Hash = message.Hash, Marker = message.Marker, Online = message.Online,
@@ -23,37 +27,53 @@ namespace FRFrame.Network.Probe
                 Token = message.Token, Target = message.Target, DelayMs = message.DelayMs
             };
             wire.MemberIds.AddRange(message.MemberIds);
-            return ProbeEnvelope.Write(op, wire.ToByteArray());
+            return Envelope.Write(op, wire.ToByteArray(), new RequestId(message.RequestId));
         }
 
-        public static bool TryRead(ReadOnlySpan<byte> payload, out SliceMessage message)
+        public static bool TryReadPacket(ReadOnlySpan<byte> packet, MessageDirection direction, PacketDelivery delivery,
+            out EnvelopeHeader header, out SliceMessage message, out ErrorCode error)
         {
             message = null!;
-            try
-            {
-                using var stream = new MemoryStream(payload.ToArray(), false);
-                using var input = CodedInputStream.CreateWithLimits(stream, ProbeEnvelope.MaxPayload, 4);
-                var wire = Parser.ParseFrom(input);
-                if (wire.Error > (uint)SliceError.CallbackTimeout ||
-                    (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((ProbeOp)wire.ReplyTo))) ||
-                    wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 || wire.Token.Length > 44)
-                    return false;
+            return Envelope.TryRead(packet, out header, out var payload, out error, direction, delivery) &&
+                TryRead(header, payload, out message, out error);
+        }
 
-                message = new SliceMessage
-                {
-                    RequestId = wire.RequestId, Error = (SliceError)wire.Error, ReplyTo = (ProbeOp)wire.ReplyTo,
-                    Room = wire.Room, Player = wire.Player, Session = wire.Session, Text = wire.Text,
-                    Stream = wire.Stream, Generation = wire.Generation, Header = wire.Header, Schema = wire.Schema,
-                    Hash = wire.Hash, Marker = wire.Marker, MemberIds = wire.MemberIds.ToArray(), Online = wire.Online,
-                    Capacity = wire.Capacity, Epoch = wire.Epoch, ConnectionGeneration = wire.ConnectionGeneration,
-                    Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs
-                };
-                return true;
-            }
-            catch (InvalidProtocolBufferException)
+        private static bool TryRead(EnvelopeHeader header, ReadOnlySpan<byte> payload,
+            out SliceMessage message, out ErrorCode error)
+        {
+            message = null!;
+            if (header.Descriptor.Payload != PayloadKind.Slice)
             {
+                error = ErrorCode.UnknownOpCode;
                 return false;
             }
+            if (!BoundedProtobuf.TryParse(Parser, payload, header.Descriptor.MaxPayload, out var wire, out error))
+                return false;
+            if (wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 ||
+                Encoding.UTF8.GetByteCount(wire.Text) > MaxTextBytes ||
+                Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes)
+            {
+                error = ErrorCode.PayloadTooLarge;
+                return false;
+            }
+            if (wire.Error > (uint)ErrorCode.InternalError ||
+                (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((OpCode)wire.ReplyTo))) ||
+                (header.Descriptor.Kind == MessageKind.Response && wire.ReplyTo == 0))
+            {
+                error = ErrorCode.MalformedMessage;
+                return false;
+            }
+
+            message = new SliceMessage
+            {
+                RequestId = header.RequestId.Value, Error = (ErrorCode)wire.Error, ReplyTo = (OpCode)wire.ReplyTo,
+                Room = wire.Room, Player = wire.Player, Session = wire.Session, Text = wire.Text,
+                Stream = wire.Stream, Generation = wire.Generation, Header = wire.Header, Schema = wire.Schema,
+                Hash = wire.Hash, Marker = wire.Marker, MemberIds = wire.MemberIds.ToArray(), Online = wire.Online,
+                Capacity = wire.Capacity, Epoch = wire.Epoch, ConnectionGeneration = wire.ConnectionGeneration,
+                Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs
+            };
+            return true;
         }
     }
 }

@@ -1,5 +1,5 @@
 using System;
-using FRFrame.Network.Probe;
+using FRFrame.Network.Protocol;
 using FRFrame.Network.Replication;
 using UnityEngine;
 
@@ -20,7 +20,7 @@ namespace FRFrame.Network.Unity
         }
 
 #if UNITY_EDITOR
-        [UnityEditor.MenuItem("FRFrame/Network/Run Local POC-1 Probe")]
+        [UnityEditor.MenuItem("FRFrame/Network/Run Local P1 Protocol Probe")]
         private static void RunEditorProbe()
         {
             if (Application.isPlaying)
@@ -33,9 +33,9 @@ namespace FRFrame.Network.Unity
         private static void Run(string host, int port)
         {
             void Log(string value) => Debug.Log($"[FRFrame.Network] {value}");
-            ProbeCodecs.VerifyAndMeasure(Log);
+            ProtocolChecks.Run(Log);
             var probe = new NetworkProbeClient(host, port, Log);
-            var owner = new GameObject("FRFrame Network POC-1 Probe");
+            var owner = new GameObject("FRFrame Network P1 Protocol Probe");
             DontDestroyOnLoad(owner);
             owner.AddComponent<NetworkLocalProbe>()._probe = probe;
         }
@@ -49,7 +49,7 @@ namespace FRFrame.Network.Unity
                 if (_probe.Passed)
                     Destroy(gameObject);
                 else if (_seconds >= 15)
-                    throw new TimeoutException("POC-1 probe timed out after 15 seconds.");
+                    throw new TimeoutException("P1 protocol probe timed out after 15 seconds.");
             }
             catch (Exception error)
             {

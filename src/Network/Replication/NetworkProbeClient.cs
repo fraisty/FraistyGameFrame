@@ -1,6 +1,6 @@
 using System;
 using System.Buffers.Binary;
-using FRFrame.Network.Probe;
+using FRFrame.Network.Protocol;
 using FRFrame.Network.Shared;
 using FRFrame.Network.Transport;
 using LiteEntitySystem;
@@ -27,8 +27,8 @@ namespace FRFrame.Network.Replication
         private readonly LesProbePeer[] _peers = new LesProbePeer[2];
         private readonly bool[] _baselines = new bool[2];
         private readonly bool[] _ackedStreams = new bool[2];
-        private readonly int[] _reliableReplies = new int[2];
-        private readonly bool[] _unreliableReplies = new bool[2];
+        private int _reliableReplies;
+        private bool _unreliableReply;
         private readonly Action<string> _log;
         private int _connection = -1;
 
@@ -56,22 +56,19 @@ namespace FRFrame.Network.Replication
                     _managers[i] = new ClientEntityManager(ProbeMarker.CreateTypes(), _peers[i], route.ManagerHeader);
                 }
 
-                foreach (var op in new[] { ProbeOp.Protobuf, ProbeOp.MessagePack })
+                for (var sequence = 1; sequence <= 3; sequence++)
                 {
-                    for (var sequence = 1; sequence <= 3; sequence++)
-                    {
-                        var message = ProbeCodecs.Sample();
-                        message.Sequence = sequence;
-                        var delivery = sequence == 3 ? PacketDelivery.Unreliable : PacketDelivery.ReliableOrdered;
-                        if (!_transport.TrySend(_connection, delivery, ProbeEnvelope.Write(op, ProbeCodecs.Encode(op, message))))
-                            throw new InvalidOperationException($"Probe {op} enqueue failed.");
-                    }
+                    var message = ProbeCodec.Sample();
+                    message.Sequence = sequence;
+                    var delivery = sequence == 3 ? PacketDelivery.Unreliable : PacketDelivery.ReliableOrdered;
+                    if (!_transport.TrySend(_connection, delivery, Envelope.Write(OpCode.Protobuf, ProbeCodec.Encode(message))))
+                        throw new InvalidOperationException("Protobuf probe enqueue failed.");
                 }
             }
 
             while (_transport.TryReceive(out var received))
             {
-                if (received.Bytes[0] == ProbeEnvelope.Header)
+                if (received.Bytes[0] == Envelope.Header)
                     ReadControl(received);
                 else
                     ReadBaseline(received.Bytes);
@@ -79,11 +76,10 @@ namespace FRFrame.Network.Replication
 
             _transport.CompleteTick(elapsedMilliseconds);
             if (!Passed && _baselines[0] && _baselines[1] && _ackedStreams[0] && _ackedStreams[1] &&
-                _reliableReplies[0] == 2 && _reliableReplies[1] == 2 &&
-                _unreliableReplies[0] && _unreliableReplies[1])
+                _reliableReplies == 2 && _unreliableReply)
             {
                 Passed = true;
-                _log("POC-1 PASS: Protobuf and MessagePack echoed in both delivery classes; two LES streams on one connection.");
+                _log("P1 PASS: Protobuf echoed in both delivery classes; two LES streams on one connection.");
             }
         }
 
@@ -91,29 +87,30 @@ namespace FRFrame.Network.Replication
 
         private void ReadControl(ReceivedPacket received)
         {
-            if (!ProbeEnvelope.TryRead(received.Bytes, out var op, out var payload))
-                throw new InvalidOperationException("Invalid server envelope.");
+            if (!Envelope.TryRead(received.Bytes, out var header, out var payload, out var error,
+                    MessageDirection.ServerToClient, received.Delivery))
+                throw new InvalidOperationException($"Invalid server envelope: {error}.");
+            var op = header.Op;
 
-            if (op == ProbeOp.LesAcknowledged && payload.Length == 1 && payload[0] is 1 or 2)
+            if (op == OpCode.LesAcknowledged && ProbeCodec.TryDecodeAcknowledgement(payload, out var stream))
             {
-                _ackedStreams[payload[0] - 1] = true;
-                _log($"LES stream {payload[0]} reverse translation acknowledged.");
+                _ackedStreams[stream - 1] = true;
+                _log($"LES stream {stream} reverse translation acknowledged.");
                 return;
             }
 
-            var index = op == ProbeOp.ProtobufEcho ? 0 : op == ProbeOp.MessagePackEcho ? 1 : -1;
-            if (index < 0 || !ProbeCodecs.TryDecode(op, payload, out var message))
+            if (op != OpCode.ProtobufEcho || !ProbeCodec.TryDecode(payload, out var message))
                 throw new InvalidOperationException($"Invalid {op} echo.");
 
-            var expected = ProbeCodecs.Sample();
+            var expected = ProbeCodec.Sample();
             expected.Sequence = received.Delivery == PacketDelivery.ReliableOrdered
-                ? ++_reliableReplies[index]
+                ? ++_reliableReplies
                 : 3;
-            if (!ProbeCodecs.Matches(expected, message))
+            if (!ProbeCodec.Matches(expected, message))
                 throw new InvalidOperationException($"Out-of-order or changed {op} echo.");
 
             if (received.Delivery == PacketDelivery.Unreliable)
-                _unreliableReplies[index] = true;
+                _unreliableReply = true;
             _log($"{op} {received.Delivery} #{message.Sequence}");
         }
 

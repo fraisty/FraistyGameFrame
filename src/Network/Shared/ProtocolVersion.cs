@@ -12,6 +12,6 @@ namespace FRFrame.Network.Shared
         public int Value { get; }
 
         /// <summary>Gets the protocol revision implemented by this build.</summary>
-        public static ProtocolVersion Current => new ProtocolVersion(1);
+        public static ProtocolVersion Current => new ProtocolVersion(2);
     }
 }

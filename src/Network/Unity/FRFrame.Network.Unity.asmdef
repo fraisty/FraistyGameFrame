@@ -4,7 +4,7 @@
     "references": [
         "FRFrame.Network.Client",
         "FRFrame.Network.Shared",
-        "FRFrame.Network.Probe",
+        "FRFrame.Network.Protocol",
         "FRFrame.Network.Replication",
         "Unity.InputSystem"
     ],

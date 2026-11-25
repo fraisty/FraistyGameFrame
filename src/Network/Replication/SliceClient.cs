@@ -3,7 +3,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
-using FRFrame.Network.Probe;
+using FRFrame.Network.Protocol;
 using FRFrame.Network.Shared;
 using FRFrame.Network.Transport;
 using LiteEntitySystem;
@@ -38,7 +38,7 @@ namespace FRFrame.Network.Replication
         public int OnlineMask { get; internal set; }
         public int Marker { get; internal set; }
         public SliceStreamState State { get; internal set; }
-        public SliceError Error { get; internal set; }
+        public ErrorCode Error { get; internal set; }
         public int Baselines { get; internal set; }
         public int Diffs { get; internal set; }
         public uint StreamId { get; internal set; }
@@ -71,7 +71,7 @@ namespace FRFrame.Network.Replication
         public bool Disconnected => _transport.ConnectionsClosed != 0 || (_connection >= 0 && !Connected);
         public bool Authenticated => Connected && _authenticated;
         public bool CanRecover => _token.Length != 0;
-        public SliceError AuthenticationError { get; private set; }
+        public ErrorCode AuthenticationError { get; private set; }
         private bool _authenticated;
         public int Player { get; private set; }
         public int Session { get; private set; }
@@ -86,11 +86,11 @@ namespace FRFrame.Network.Replication
         public int OnlineMask => Selected?.OnlineMask ?? 0;
         public int Marker => Selected?.Marker ?? 0;
         public SliceStreamState StreamState => Selected?.State ?? SliceStreamState.Idle;
-        public SliceError StreamError => Selected?.Error ?? SliceError.None;
+        public ErrorCode StreamError => Selected?.Error ?? ErrorCode.None;
         public bool Ready => StreamState == SliceStreamState.Ready;
         public int Baselines => Selected?.Baselines ?? 0;
         public int Diffs => Selected?.Diffs ?? 0;
-        public event Action<ProbeOp, SliceMessage>? Received;
+        public event Action<OpCode, SliceMessage>? Received;
 
         public static void SetReplicationLog(Action<string> info, Action<string> warning, Action<string> error) =>
             LiteEntitySystem.Logger.LoggerImpl = new SliceLesLog(info, warning, error);
@@ -114,7 +114,7 @@ namespace FRFrame.Network.Replication
             if (Connected)
                 _transport.Disconnect(_connection);
             foreach (var room in _rooms.Values)
-                EndStream(room, SliceStreamState.Closed, SliceError.StreamUnavailable, cancel: false);
+                EndStream(room, SliceStreamState.Closed, ErrorCode.StreamUnavailable, cancel: false);
         }
 
         public bool Reconnect(bool recover)
@@ -127,7 +127,7 @@ namespace FRFrame.Network.Replication
             _connection = -1;
             _recover = recover;
             Replaced = false;
-            AuthenticationError = SliceError.None;
+            AuthenticationError = ErrorCode.None;
             return _transport.Connect(_host, _port);
         }
 
@@ -140,21 +140,21 @@ namespace FRFrame.Network.Replication
         }
 
         public uint CreateRoom(string definition = SliceMessage.DefinitionId) =>
-            Send(ProbeOp.CreateRoom, new SliceMessage { Text = definition });
-        public uint JoinRoom(int room) => Send(ProbeOp.JoinRoom, new SliceMessage { Room = room });
+            Send(OpCode.CreateRoom, new SliceMessage { Text = definition });
+        public uint JoinRoom(int room) => Send(OpCode.JoinRoom, new SliceMessage { Room = room });
         public uint LeaveRoom(int room, int successor = 0) =>
-            Send(ProbeOp.LeaveRoom, new SliceMessage { Room = room, Target = successor });
-        public uint Kick(int room, int player) => Send(ProbeOp.Kick, new SliceMessage { Room = room, Target = player });
+            Send(OpCode.LeaveRoom, new SliceMessage { Room = room, Target = successor });
+        public uint Kick(int room, int player) => Send(OpCode.Kick, new SliceMessage { Room = room, Target = player });
         public uint TransferOwner(int room, int player) =>
-            Send(ProbeOp.TransferOwner, new SliceMessage { Room = room, Target = player });
+            Send(OpCode.TransferOwner, new SliceMessage { Room = room, Target = player });
         public uint CloseRoom(int room, uint requestId = 0) =>
-            Send(ProbeOp.CloseRoom, new SliceMessage { Room = room, RequestId = requestId });
+            Send(OpCode.CloseRoom, new SliceMessage { Room = room, RequestId = requestId });
         public uint SetMarker(int marker) => SetMarker(Room, marker);
         public uint SetMarker(int room, int marker, int delayMs = 0, uint requestId = 0) =>
-            Send(ProbeOp.SetMarker, new SliceMessage { Room = room, Marker = marker, DelayMs = delayMs, RequestId = requestId });
+            Send(OpCode.SetMarker, new SliceMessage { Room = room, Marker = marker, DelayMs = delayMs, RequestId = requestId });
         public uint SendText(string text, uint requestId = 0) => SendText(Room, text, requestId);
         public uint SendText(int room, string text, uint requestId = 0) =>
-            Send(ProbeOp.RoomMessage, new SliceMessage { Room = room, Text = text, RequestId = requestId });
+            Send(OpCode.RoomMessage, new SliceMessage { Room = room, Text = text, RequestId = requestId });
 
         public void Tick(float elapsedMilliseconds, sbyte x, sbyte y, Action<PawnSample> sample)
         {
@@ -163,13 +163,13 @@ namespace FRFrame.Network.Replication
             {
                 _connection = _transport.ClientConnection;
                 _authRequest = _recover
-                    ? Send(ProbeOp.Recover, new SliceMessage { Token = _token })
-                    : Send(ProbeOp.Login, new SliceMessage { Text = _identity });
+                    ? Send(OpCode.Recover, new SliceMessage { Token = _token })
+                    : Send(OpCode.Login, new SliceMessage { Text = _identity });
             }
 
             while (_transport.TryReceive(out var packet) && Connected)
             {
-                if (packet.Bytes[0] == ProbeEnvelope.Header)
+                if (packet.Bytes[0] == Envelope.Header)
                     ReadControl(packet);
                 else
                     ReadStream(packet);
@@ -178,9 +178,9 @@ namespace FRFrame.Network.Replication
             foreach (var room in _rooms.Values)
             {
                 if (Disconnected && room.State is SliceStreamState.Pending or SliceStreamState.Ready)
-                    EndStream(room, SliceStreamState.Closed, SliceError.StreamUnavailable, cancel: false);
+                    EndStream(room, SliceStreamState.Closed, ErrorCode.StreamUnavailable, cancel: false);
                 if (room.State == SliceStreamState.Pending && (room.Remaining -= elapsedMilliseconds) <= 0)
-                    EndStream(room, SliceStreamState.Failed, SliceError.StreamUnavailable, cancel: true);
+                    EndStream(room, SliceStreamState.Failed, ErrorCode.StreamUnavailable, cancel: true);
                 if (room.State != SliceStreamState.Ready || room.Baselines == 0 || room.Manager == null)
                     continue;
                 room.Manager.GetPlayerController<PocPlayerController>()?.SetInput(room.Id == Room ? x : (sbyte)0, room.Id == Room ? y : (sbyte)0);
@@ -196,7 +196,7 @@ namespace FRFrame.Network.Replication
             try
             {
                 foreach (var room in _rooms.Values)
-                    EndStream(room, SliceStreamState.Closed, SliceError.None, cancel: false);
+                    EndStream(room, SliceStreamState.Closed, ErrorCode.None, cancel: false);
                 _rooms.Clear();
                 _token = "";
             }
@@ -206,7 +206,7 @@ namespace FRFrame.Network.Replication
             }
         }
 
-        internal uint Send(ProbeOp op, SliceMessage request)
+        internal uint Send(OpCode op, SliceMessage request)
         {
             if (!Connected)
                 return 0;
@@ -222,14 +222,14 @@ namespace FRFrame.Network.Replication
 
         private void ReadControl(ReceivedPacket received)
         {
-            if (received.Delivery != PacketDelivery.ReliableOrdered ||
-                !ProbeEnvelope.TryRead(received.Bytes, out var op, out var payload) ||
-                op < ProbeOp.Response || SliceMessage.IsClientRequest(op) || !SliceCodec.TryRead(payload, out var message))
+            if (!SliceCodec.TryReadPacket(received.Bytes, MessageDirection.ServerToClient, received.Delivery,
+                    out var header, out var message, out _))
                 return;
+            var op = header.Op;
 
-            if (op == ProbeOp.Response)
+            if (op == OpCode.Response)
                 ApplyReply(message);
-            else if (op == ProbeOp.Members && Authenticated && message.MemberIds.Contains(Player))
+            else if (op == OpCode.Members && Authenticated && message.MemberIds.Contains(Player))
             {
                 var room = GetRoom(message.Room, message.Text);
                 room.Owner = message.Player;
@@ -239,9 +239,9 @@ namespace FRFrame.Network.Replication
                 if (room.State == SliceStreamState.Idle)
                     Open(room);
             }
-            else if (op is ProbeOp.RoomClosed or ProbeOp.RoomLeft)
+            else if (op is OpCode.RoomClosed or OpCode.RoomLeft)
                 RemoveRoom(message.Room);
-            else if (op == ProbeOp.SessionReplaced && message.Session == Session)
+            else if (op == OpCode.SessionReplaced && message.Session == Session)
             {
                 Replaced = true;
                 _token = "";
@@ -250,9 +250,9 @@ namespace FRFrame.Network.Replication
             }
             else if (_rooms.TryGetValue(message.Room, out var room))
             {
-                if (op == ProbeOp.MarkerChanged)
+                if (op == OpCode.MarkerChanged)
                     room.Marker = message.Marker;
-                if (op == ProbeOp.StreamClosed && message.Error != SliceError.None && MatchesStream(room, message))
+                if (op == OpCode.StreamClosed && message.Error != ErrorCode.None && MatchesStream(room, message))
                     EndStream(room, SliceStreamState.Closed, message.Error, cancel: false);
             }
             Received?.Invoke(op, message);
@@ -260,16 +260,16 @@ namespace FRFrame.Network.Replication
 
         private void ApplyReply(SliceMessage message)
         {
-            if (message.ReplyTo is ProbeOp.Login or ProbeOp.Recover)
+            if (message.ReplyTo is OpCode.Login or OpCode.Recover)
             {
                 if (_authRequest == 0 || message.RequestId != _authRequest)
                     return;
                 _authRequest = 0;
                 AuthenticationError = message.Error;
-                if (AuthenticationError != SliceError.None)
+                if (AuthenticationError != ErrorCode.None)
                 {
                     _authenticated = false;
-                    if (AuthenticationError != SliceError.Overloaded)
+                    if (AuthenticationError != ErrorCode.Overloaded)
                     {
                         _token = "";
                         Session = Player = Epoch = ConnectionGeneration = 0;
@@ -297,22 +297,22 @@ namespace FRFrame.Network.Replication
             // Create/Join responses may be historical replays. Members owns the room projection.
             if (!_rooms.TryGetValue(message.Room, out var current) || current.State != SliceStreamState.Pending)
                 return;
-            if (message.ReplyTo == ProbeOp.StreamOpen && message.RequestId == current.OpenRequest && current.Route == null)
+            if (message.ReplyTo == OpCode.StreamOpen && message.RequestId == current.OpenRequest && current.Route == null)
             {
-                if (message.Error != SliceError.None)
+                if (message.Error != ErrorCode.None)
                     EndStream(current, SliceStreamState.Failed, message.Error, cancel: false);
                 else if (message.Text == current.Definition && message.Stream != 0 &&
                          message.Schema == SliceMessage.SchemaVersion && message.Header is > 0 and <= byte.MaxValue)
                     AcceptOffer(current, message);
                 else
-                    EndStream(current, SliceStreamState.Failed, SliceError.SchemaMismatch, cancel: false);
+                    EndStream(current, SliceStreamState.Failed, ErrorCode.SchemaMismatch, cancel: false);
             }
-            else if (message.ReplyTo == ProbeOp.StreamReady && message.RequestId == current.ReadyRequest && MatchesStream(current, message))
+            else if (message.ReplyTo == OpCode.StreamReady && message.RequestId == current.ReadyRequest && MatchesStream(current, message))
             {
-                if (message.Error == SliceError.None)
+                if (message.Error == ErrorCode.None)
                 {
                     current.State = SliceStreamState.Ready;
-                    Send(ProbeOp.StreamConfirm, new SliceMessage { Room = current.Id, Stream = current.StreamId, Generation = current.Generation });
+                    Send(OpCode.StreamConfirm, new SliceMessage { Room = current.Id, Stream = current.StreamId, Generation = current.Generation });
                     _log($"POC-2 stream Ready room={current.Id} id={current.StreamId} generation={current.Generation} header={current.WireHeader}");
                 }
                 else
@@ -341,9 +341,9 @@ namespace FRFrame.Network.Replication
             if (room.Definition == SliceMessage.PlainRoom)
                 return;
             room.State = SliceStreamState.Pending;
-            room.Error = SliceError.None;
+            room.Error = ErrorCode.None;
             room.Remaining = 10_000;
-            room.OpenRequest = Send(ProbeOp.StreamOpen, new SliceMessage { Room = room.Id });
+            room.OpenRequest = Send(OpCode.StreamOpen, new SliceMessage { Room = room.Id });
         }
 
         private void AcceptOffer(SliceClientRoom room, SliceMessage offer)
@@ -351,7 +351,7 @@ namespace FRFrame.Network.Replication
             room.Route = _routes.Accept((byte)offer.Header, offer.Generation, 1);
             if (room.Route == null)
             {
-                EndStream(room, SliceStreamState.Failed, SliceError.StreamUnavailable, cancel: false);
+                EndStream(room, SliceStreamState.Failed, ErrorCode.StreamUnavailable, cancel: false);
                 return;
             }
             room.StreamId = offer.Stream;
@@ -360,11 +360,11 @@ namespace FRFrame.Network.Replication
             if (room.Manager.ClassDataHash != offer.Hash)
             {
                 _log($"POC-2 rejected stream hash. server={offer.Hash} local={room.Manager.ClassDataHash}; {DescribeLayout()}");
-                EndStream(room, SliceStreamState.Failed, SliceError.SchemaMismatch, cancel: true);
+                EndStream(room, SliceStreamState.Failed, ErrorCode.SchemaMismatch, cancel: true);
                 return;
             }
             room.Remaining = 10_000;
-            room.ReadyRequest = Send(ProbeOp.StreamReady, new SliceMessage
+            room.ReadyRequest = Send(OpCode.StreamReady, new SliceMessage
             {
                 Room = room.Id, Text = room.Definition, Stream = offer.Stream, Generation = offer.Generation,
                 Schema = offer.Schema, Hash = room.Manager.ClassDataHash
@@ -412,17 +412,17 @@ namespace FRFrame.Network.Replication
         private void RemoveRoom(int id)
         {
             if (_rooms.Remove(id, out var room))
-                EndStream(room, SliceStreamState.Closed, SliceError.None, cancel: false);
+                EndStream(room, SliceStreamState.Closed, ErrorCode.None, cancel: false);
             if (id == Room)
                 Room = _rooms.Keys.FirstOrDefault();
         }
 
-        private void EndStream(SliceClientRoom room, SliceStreamState state, SliceError reason, bool cancel)
+        private void EndStream(SliceClientRoom room, SliceStreamState state, ErrorCode reason, bool cancel)
         {
             if (room.Route != null)
             {
                 if (cancel)
-                    Send(ProbeOp.StreamCancel, new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = room.Generation });
+                    Send(OpCode.StreamCancel, new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = room.Generation });
                 _routes.Close(room.Route);
             }
             room.Route = null;
@@ -433,7 +433,7 @@ namespace FRFrame.Network.Replication
             room.State = state;
             room.Error = reason;
             manager?.Reset();
-            if (reason != SliceError.None)
+            if (reason != ErrorCode.None)
                 _log($"POC-2 stream {state} reason={reason} room={room.Id}");
         }
     }

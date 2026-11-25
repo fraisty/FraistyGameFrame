@@ -95,31 +95,31 @@ namespace FRFrame.Network.Replication
             }
         }
 
-        private void OnMessage(ProbeOp op, SliceMessage message)
+        private void OnMessage(OpCode op, SliceMessage message)
         {
-            if (op == ProbeOp.Response)
+            if (op == OpCode.Response)
             {
-                if (message.ReplyTo == ProbeOp.Login && message.Error == SliceError.None)
+                if (message.ReplyTo == OpCode.Login && message.Error == ErrorCode.None)
                 {
                     if (_create)
                         _client.CreateRoom();
                     else
                         _joinAt = _elapsed;
                 }
-                if (message.ReplyTo == ProbeOp.JoinRoom && message.Error == SliceError.RoomUnavailable && _joinAttempts < 24)
+                if (message.ReplyTo == OpCode.JoinRoom && message.Error == ErrorCode.RoomUnavailable && _joinAttempts < 24)
                     _joinAt = _elapsed + 0.5f;
-                if (message.ReplyTo == ProbeOp.RoomMessage && message.RequestId == _message)
+                if (message.ReplyTo == OpCode.RoomMessage && message.RequestId == _message)
                 {
-                    if (message.Error == SliceError.None)
+                    if (message.Error == ErrorCode.None)
                         _replies++;
-                    else if (message.Error == SliceError.RequestIdConflict)
+                    else if (message.Error == ErrorCode.RequestIdConflict)
                         _conflicts++;
                 }
             }
-            else if (op == ProbeOp.RoomBroadcast && message.Player is >= 1 and <= 3 &&
+            else if (op == OpCode.RoomBroadcast && message.Player is >= 1 and <= 3 &&
                      message.Text == $"poc2-hello-{message.Player}")
                 _messages[message.Player - 1]++;
-            else if (op == ProbeOp.MarkerChanged && message.Player == _client.Owner && message.Marker == 7)
+            else if (op == OpCode.MarkerChanged && message.Player == _client.Owner && message.Marker == 7)
                 _markers++;
         }
     }

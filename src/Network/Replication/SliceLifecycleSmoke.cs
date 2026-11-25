@@ -158,28 +158,28 @@ namespace FRFrame.Network.Replication
             }
         }
 
-        private void OnMessage(ProbeOp op, SliceMessage message)
+        private void OnMessage(OpCode op, SliceMessage message)
         {
-            if (op == ProbeOp.Response && message.ReplyTo is ProbeOp.Login or ProbeOp.Recover &&
-                message.Error != SliceError.None)
+            if (op == OpCode.Response && message.ReplyTo is OpCode.Login or OpCode.Recover &&
+                message.Error != ErrorCode.None)
             {
                 Failure = $"{message.ReplyTo} returned {message.Error}.";
                 return;
             }
-            if (op == ProbeOp.Response && message.Error == SliceError.None)
+            if (op == OpCode.Response && message.Error == ErrorCode.None)
             {
-                if (message.ReplyTo == ProbeOp.Login && !_started)
+                if (message.ReplyTo == OpCode.Login && !_started)
                 {
                     _started = true;
                     if (_client.Player == 1)
                         _client.CreateRoom(SliceMessage.SharedDefinitionId);
                 }
-                else if (message.ReplyTo == ProbeOp.CreateRoom && !_secondCreated)
+                else if (message.ReplyTo == OpCode.CreateRoom && !_secondCreated)
                 {
                     _secondCreated = true;
                     _client.CreateRoom(SliceMessage.SharedDefinitionId);
                 }
-                else if (message.ReplyTo == ProbeOp.Recover || (message.ReplyTo == ProbeOp.Login && _recovering))
+                else if (message.ReplyTo == OpCode.Recover || (message.ReplyTo == OpCode.Login && _recovering))
                 {
                     var same = _client.Session == _oldSession && _client.Epoch == _oldEpoch;
                     if ((_client.Player == 1 ? !same : _client.Session == _oldSession || _client.Epoch <= _oldEpoch) ||
@@ -189,20 +189,20 @@ namespace FRFrame.Network.Replication
                     if (_client.Player == 1)
                         _client.SetMarker(1, 8, 2200, _delayed);
                 }
-                else if (message.ReplyTo == ProbeOp.SetMarker && message.RequestId == _delayed && _rejoined)
+                else if (message.ReplyTo == OpCode.SetMarker && message.RequestId == _delayed && _rejoined)
                     _markerComplete = message.Marker == 8;
-                else if (message.ReplyTo == ProbeOp.TransferOwner && _handoff)
+                else if (message.ReplyTo == OpCode.TransferOwner && _handoff)
                     _client.LeaveRoom(2);
             }
-            else if (op == ProbeOp.Members && message.Room == 1 && _client.Player == 3)
+            else if (op == OpCode.Members && message.Room == 1 && _client.Player == 3)
             {
                 for (var i = 0; i < message.MemberIds.Length; i++)
                     if (message.MemberIds[i] != 3 && (message.Online & (1 << i)) == 0)
                         _observedOffline.Add(message.MemberIds[i]);
             }
-            else if (op == ProbeOp.MarkerChanged && message.Room == 2 && message.Marker == 4)
+            else if (op == OpCode.MarkerChanged && message.Room == 2 && message.Marker == 4)
                 _secondMarker = true;
-            else if (op == ProbeOp.RoomBroadcast)
+            else if (op == OpCode.RoomBroadcast)
             {
                 if (message.Room == 2 && message.Text == "poc3-room-two")
                     _secondMessage = true;
@@ -226,7 +226,7 @@ namespace FRFrame.Network.Replication
                 if (message.Room == 1 && message.Text == "poc3-room-two-closed")
                     _finalSignal = true;
             }
-            else if (op == ProbeOp.RoomClosed && message.Room == 2 && _client.Player == 2)
+            else if (op == OpCode.RoomClosed && message.Room == 2 && _client.Player == 2)
                 _client.SendText(1, "poc3-room-two-closed");
         }
 
@@ -291,9 +291,9 @@ namespace FRFrame.Network.Replication
             _request = _client.SendText("poc4-rt");
         }
 
-        private void Result(ProbeOp op, SliceMessage message)
+        private void Result(OpCode op, SliceMessage message)
         {
-            if (op != ProbeOp.Response || message.ReplyTo != ProbeOp.RoomMessage || _request == 0 || message.RequestId != _request)
+            if (op != OpCode.Response || message.ReplyTo != OpCode.RoomMessage || _request == 0 || message.RequestId != _request)
                 return;
             _log($"POC-4 RTT player={_client.Player} ms={_clock.ElapsedMilliseconds - _sent} result={message.Error}");
             _request = 0;

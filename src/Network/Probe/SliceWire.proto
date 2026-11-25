@@ -1,9 +1,12 @@
 syntax = "proto3";
-option csharp_namespace = "FRFrame.Network.Probe";
+package frframe.network.v1;
+option csharp_namespace = "FRFrame.Network.Protocol.Wire";
 
-// The surrounding FRFrame envelope supplies the opcode. Keep fields flat and bounded.
+// The surrounding FRFrame envelope supplies the OpCode and RequestId.
+// The shared control DTO is validated against its request shape at the application boundary.
 message SliceWire {
-  uint32 request_id = 1;
+  reserved 1, 17;
+  reserved "request_id";
   uint32 error = 2;
   uint32 reply_to = 3;
   int32 room = 4;

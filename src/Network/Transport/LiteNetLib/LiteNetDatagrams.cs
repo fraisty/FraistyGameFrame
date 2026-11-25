@@ -201,7 +201,7 @@ namespace FRFrame.Network.Transport
             if (!_connections.TryGetValue(connection, out var target) ||
                 target.Outbound.Count >= QueueLimit || bytes.Length == 0 ||
                 (delivery == PacketDelivery.Unreliable && target.UnreliableOutbound >= QueueLimit - ControlReserve) ||
-                bytes.Length > Math.Min(ProbeEnvelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(method)))
+                bytes.Length > Math.Min(Envelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(method)))
             {
                 RejectedOutbound++;
                 if (target != null && target.Outbound.Count == QueueLimit && delivery == PacketDelivery.ReliableOrdered)
@@ -219,7 +219,7 @@ namespace FRFrame.Network.Transport
 
         public int GetUnreliableLimit(int connection) =>
             _connections.TryGetValue(connection, out var target)
-                ? Math.Min(ProbeEnvelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(DeliveryMethod.Unreliable))
+                ? Math.Min(Envelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(DeliveryMethod.Unreliable))
                 : 0;
 
         /// <summary>Coalesces requests into the next shared pump pass over all connections.</summary>
@@ -278,7 +278,7 @@ namespace FRFrame.Network.Transport
             var reliable = method == DeliveryMethod.ReliableOrdered;
             if (!_receiving.TryGetValue(peer.Id, out var target) || channel != 0 ||
                 (!reliable && method != DeliveryMethod.Unreliable) || reader.AvailableBytes == 0 ||
-                reader.AvailableBytes > ProbeEnvelope.MaxPacket ||
+                reader.AvailableBytes > Envelope.MaxPacket ||
                 target.Control.Count + target.Ingress.Count >= QueueLimit ||
                 (!reliable && target.Ingress.Count >= QueueLimit - ControlReserve))
             {

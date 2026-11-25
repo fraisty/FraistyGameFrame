@@ -1,0 +1,14 @@
+{
+  "name": "FRFrame.Network.Protocol",
+  "rootNamespace": "FRFrame.Network.Protocol",
+  "references": [
+    "FRFrame.Network.Shared"
+  ],
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Google.Protobuf.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll"
+  ],
+  "autoReferenced": false,
+  "noEngineReferences": true
+}

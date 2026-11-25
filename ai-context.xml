@@ -762,23 +762,13 @@ Network/
     Dependencies/
       Google.Protobuf-LICENSE.txt
       Google.Protobuf.dll
-      MessagePack-LICENSE.txt
-      MessagePack.dll
-      MessagePack.SourceGenerator.dll
-      Microsoft-LICENSE.txt
-      Microsoft-THIRD-PARTY-NOTICES.txt
-      Microsoft.Bcl.AsyncInterfaces.dll
-      SerializerFoundation-LICENSE.txt
-      SerializerFoundation.dll
-      System.Collections.Immutable.dll
-      System.IO.Pipelines.dll
       System.Runtime.CompilerServices.Unsafe.dll
-      System.Text.Encodings.Web.dll
-      System.Text.Json.dll
-    FRFrame.Network.Probe.asmdef
-    ProbeCodecs.cs
+    BoundedProtobuf.cs
+    FRFrame.Network.Protocol.asmdef
+    ProbeCodec.cs
     ProbeMessage.cs
     ProbeMessage.proto
+    ProtocolChecks.cs
     SliceCodec.cs
     SliceWire.cs
     SliceWire.proto
@@ -799,9 +789,9 @@ Network/
     SliceLifecycleSmoke.cs
     SliceSmoke.cs
   Shared/
+    Envelope.cs
     FRFrame.Network.Shared.asmdef
     PacketTransport.cs
-    ProbeEnvelope.cs
     ProtocolVersion.cs
     SliceMessage.cs
   Transport/
@@ -92926,1562 +92916,192 @@ standalone and requires a support library to be linked with it.  This
 support library is itself covered by the above license.
 </file>
 
-<file path="Network/Probe/Dependencies/MessagePack-LICENSE.txt">
-MessagePack for C#
-
-MIT License
-
-Copyright (c) 2017 Yoshifumi Kawai and contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-</file>
-
-<file path="Network/Probe/Dependencies/Microsoft-LICENSE.txt">
-The MIT License (MIT)
-
-Copyright (c) .NET Foundation and Contributors
-
-All rights reserved.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-</file>
-
-<file path="Network/Probe/Dependencies/Microsoft-THIRD-PARTY-NOTICES.txt">
-.NET Runtime uses third-party libraries or other resources that may be
-distributed under licenses different than the .NET Runtime software.
-
-In the event that we accidentally failed to list a required notice, please
-bring it to our attention. Post an issue or email us:
-
-           dotnet@microsoft.com
-
-The attached notices are provided for information only.
-
-License notice for ASP.NET
--------------------------------
-
-Copyright (c) .NET Foundation. All rights reserved.
-Licensed under the Apache License, Version 2.0.
-
-Available at
-https://github.com/dotnet/aspnetcore/blob/main/LICENSE.txt
-
-License notice for Slicing-by-8
--------------------------------
-
-http://sourceforge.net/projects/slicing-by-8/
-
-Copyright (c) 2004-2006 Intel Corporation - All Rights Reserved
-
-
-This software program is licensed subject to the BSD License,  available at
-http://www.opensource.org/licenses/bsd-license.html.
-
-
-License notice for Unicode data
--------------------------------
-
-https://www.unicode.org/license.html
-
-Copyright © 1991-2022 Unicode, Inc. All rights reserved.
-Distributed under the Terms of Use in https://www.unicode.org/copyright.html.
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of the Unicode data files and any associated documentation
-(the "Data Files") or Unicode software and any associated documentation
-(the "Software") to deal in the Data Files or Software
-without restriction, including without limitation the rights to use,
-copy, modify, merge, publish, distribute, and/or sell copies of
-the Data Files or Software, and to permit persons to whom the Data Files
-or Software are furnished to do so, provided that either
-(a) this copyright and permission notice appear with all copies
-of the Data Files or Software, or
-(b) this copyright and permission notice appear in associated
-Documentation.
-
-THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
-WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT OF THIRD PARTY RIGHTS.
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS
-NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL
-DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
-DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
-TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-PERFORMANCE OF THE DATA FILES OR SOFTWARE.
-
-Except as contained in this notice, the name of a copyright holder
-shall not be used in advertising or otherwise to promote the sale,
-use or other dealings in these Data Files or Software without prior
-written authorization of the copyright holder.
-
-License notice for Zlib
------------------------
-
-https://github.com/madler/zlib
-https://zlib.net/zlib_license.html
-
-/* zlib.h -- interface of the 'zlib' general purpose compression library
-  version 1.3.1, January 22nd, 2024
-
-  Copyright (C) 1995-2022 Jean-loup Gailly and Mark Adler
-
-  This software is provided 'as-is', without any express or implied
-  warranty.  In no event will the authors be held liable for any damages
-  arising from the use of this software.
-
-  Permission is granted to anyone to use this software for any purpose,
-  including commercial applications, and to alter it and redistribute it
-  freely, subject to the following restrictions:
-
-  1. The origin of this software must not be misrepresented; you must not
-     claim that you wrote the original software. If you use this software
-     in a product, an acknowledgment in the product documentation would be
-     appreciated but is not required.
-  2. Altered source versions must be plainly marked as such, and must not be
-     misrepresented as being the original software.
-  3. This notice may not be removed or altered from any source distribution.
-
-  Jean-loup Gailly        Mark Adler
-  jloup@gzip.org          madler@alumni.caltech.edu
-
-*/
-
-License notice for Mono
--------------------------------
-
-http://www.mono-project.com/docs/about-mono/
-
-Copyright (c) .NET Foundation Contributors
-
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software  and associated documentation files (the Software), to deal
-in the Software without restriction,  including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense,  and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so,  subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-License notice for International Organization for Standardization
------------------------------------------------------------------
-
-Portions (C) International Organization for Standardization 1986:
-     Permission to copy in any form is granted for use with
-     conforming SGML systems and applications as defined in
-     ISO 8879, provided this notice is included in all copies.
-
-License notice for Intel
-------------------------
-
-"Copyright (c) 2004-2006 Intel Corporation - All Rights Reserved
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-this list of conditions and the following disclaimer in the documentation
-and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for Xamarin and Novell
--------------------------------------
-
-Copyright (c) 2015 Xamarin, Inc (http://www.xamarin.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-Copyright (c) 2011 Novell, Inc (http://www.novell.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-Third party notice for W3C
---------------------------
-
-"W3C SOFTWARE AND DOCUMENT NOTICE AND LICENSE
-Status: This license takes effect 13 May, 2015.
-This work is being provided by the copyright holders under the following license.
-License
-By obtaining and/or copying this work, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions.
-Permission to copy, modify, and distribute this work, with or without modification, for any purpose and without fee or royalty is hereby granted, provided that you include the following on ALL copies of the work or portions thereof, including modifications:
-The full text of this NOTICE in a location viewable to users of the redistributed or derivative work.
-Any pre-existing intellectual property disclaimers, notices, or terms and conditions. If none exist, the W3C Software and Document Short Notice should be included.
-Notice of any changes or modifications, through a copyright statement on the new code or document such as "This software or document includes material copied from or derived from [title and URI of the W3C document]. Copyright © [YEAR] W3C® (MIT, ERCIM, Keio, Beihang)."
-Disclaimers
-THIS WORK IS PROVIDED "AS IS," AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY OR FITNESS FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE OR DOCUMENT WILL NOT INFRINGE ANY THIRD PARTY PATENTS, COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS.
-COPYRIGHT HOLDERS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF ANY USE OF THE SOFTWARE OR DOCUMENT.
-The name and trademarks of copyright holders may NOT be used in advertising or publicity pertaining to the work without specific, written prior permission. Title to copyright in this work will at all times remain with copyright holders."
-
-License notice for Bit Twiddling Hacks
---------------------------------------
-
-Bit Twiddling Hacks
-
-By Sean Eron Anderson
-seander@cs.stanford.edu
-
-Individually, the code snippets here are in the public domain (unless otherwise
-noted) — feel free to use them however you please. The aggregate collection and
-descriptions are © 1997-2005 Sean Eron Anderson. The code and descriptions are
-distributed in the hope that they will be useful, but WITHOUT ANY WARRANTY and
-without even the implied warranty of merchantability or fitness for a particular
-purpose.
-
-License notice for Brotli
---------------------------------------
-
-Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-compress_fragment.c:
-Copyright (c) 2011, Google Inc.
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-    * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-""AS IS"" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-decode_fuzzer.c:
-Copyright (c) 2015 The Chromium Authors. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-""AS IS"" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
-
-License notice for Json.NET
--------------------------------
-
-https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md
-
-The MIT License (MIT)
-
-Copyright (c) 2007 James Newton-King
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-License notice for vectorized base64 encoding / decoding
---------------------------------------------------------
-
-Copyright (c) 2005-2007, Nick Galbreath
-Copyright (c) 2013-2017, Alfred Klomp
-Copyright (c) 2015-2017, Wojciech Mula
-Copyright (c) 2016-2017, Matthieu Darbois
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-- Redistributions of source code must retain the above copyright notice,
-  this list of conditions and the following disclaimer.
-
-- Redistributions in binary form must reproduce the above copyright
-  notice, this list of conditions and the following disclaimer in the
-  documentation and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
-IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
-TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
-PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
-TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for vectorized hex parsing
---------------------------------------------------------
-
-Copyright (c) 2022, Geoff Langdale
-Copyright (c) 2022, Wojciech Mula
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-- Redistributions of source code must retain the above copyright notice,
-  this list of conditions and the following disclaimer.
-
-- Redistributions in binary form must reproduce the above copyright
-  notice, this list of conditions and the following disclaimer in the
-  documentation and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
-IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
-TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
-PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
-TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for RFC 3492
----------------------------
-
-The punycode implementation is based on the sample code in RFC 3492
-
-Copyright (C) The Internet Society (2003).  All Rights Reserved.
-
-This document and translations of it may be copied and furnished to
-others, and derivative works that comment on or otherwise explain it
-or assist in its implementation may be prepared, copied, published
-and distributed, in whole or in part, without restriction of any
-kind, provided that the above copyright notice and this paragraph are
-included on all such copies and derivative works.  However, this
-document itself may not be modified in any way, such as by removing
-the copyright notice or references to the Internet Society or other
-Internet organizations, except as needed for the purpose of
-developing Internet standards in which case the procedures for
-copyrights defined in the Internet Standards process must be
-followed, or as required to translate it into languages other than
-English.
-
-The limited permissions granted above are perpetual and will not be
-revoked by the Internet Society or its successors or assigns.
-
-This document and the information contained herein is provided on an
-"AS IS" basis and THE INTERNET SOCIETY AND THE INTERNET ENGINEERING
-TASK FORCE DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING
-BUT NOT LIMITED TO ANY WARRANTY THAT THE USE OF THE INFORMATION
-HEREIN WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF
-MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
-
-Copyright(C) The Internet Society 1997. All Rights Reserved.
-
-This document and translations of it may be copied and furnished to others,
-and derivative works that comment on or otherwise explain it or assist in
-its implementation may be prepared, copied, published and distributed, in
-whole or in part, without restriction of any kind, provided that the above
-copyright notice and this paragraph are included on all such copies and
-derivative works.However, this document itself may not be modified in any
-way, such as by removing the copyright notice or references to the Internet
-Society or other Internet organizations, except as needed for the purpose of
-developing Internet standards in which case the procedures for copyrights
-defined in the Internet Standards process must be followed, or as required
-to translate it into languages other than English.
-
-The limited permissions granted above are perpetual and will not be revoked
-by the Internet Society or its successors or assigns.
-
-This document and the information contained herein is provided on an "AS IS"
-basis and THE INTERNET SOCIETY AND THE INTERNET ENGINEERING TASK FORCE
-DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-ANY WARRANTY THAT THE USE OF THE INFORMATION HEREIN WILL NOT INFRINGE ANY
-RIGHTS OR ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A
-PARTICULAR PURPOSE.
-
-License notice for Algorithm from RFC 4122 -
-A Universally Unique IDentifier (UUID) URN Namespace
-----------------------------------------------------
-
-Copyright (c) 1990- 1993, 1996 Open Software Foundation, Inc.
-Copyright (c) 1989 by Hewlett-Packard Company, Palo Alto, Ca. &
-Digital Equipment Corporation, Maynard, Mass.
-Copyright (c) 1998 Microsoft.
-To anyone who acknowledges that this file is provided "AS IS"
-without any express or implied warranty: permission to use, copy,
-modify, and distribute this file for any purpose is hereby
-granted without fee, provided that the above copyright notices and
-this notice appears in all source code copies, and that none of
-the names of Open Software Foundation, Inc., Hewlett-Packard
-Company, Microsoft, or Digital Equipment Corporation be used in
-advertising or publicity pertaining to distribution of the software
-without specific, written prior permission. Neither Open Software
-Foundation, Inc., Hewlett-Packard Company, Microsoft, nor Digital
-Equipment Corporation makes any representations about the
-suitability of this software for any purpose."
-
-License notice for The LLVM Compiler Infrastructure (Legacy License)
---------------------------------------------------------------------
-
-Developed by:
-
-    LLVM Team
-
-    University of Illinois at Urbana-Champaign
-
-    http://llvm.org
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal with
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-of the Software, and to permit persons to whom the Software is furnished to do
-so, subject to the following conditions:
-
-    * Redistributions of source code must retain the above copyright notice,
-      this list of conditions and the following disclaimers.
-
-    * Redistributions in binary form must reproduce the above copyright notice,
-      this list of conditions and the following disclaimers in the
-      documentation and/or other materials provided with the distribution.
-
-    * Neither the names of the LLVM Team, University of Illinois at
-      Urbana-Champaign, nor the names of its contributors may be used to
-      endorse or promote products derived from this Software without specific
-      prior written permission.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE
-SOFTWARE.
-
-License notice for Bob Jenkins
-------------------------------
-
-By Bob Jenkins, 1996.  bob_jenkins@burtleburtle.net.  You may use this
-code any way you wish, private, educational, or commercial.  It's free.
-
-License notice for Greg Parker
-------------------------------
-
-Greg Parker     gparker@cs.stanford.edu     December 2000
-This code is in the public domain and may be copied or modified without
-permission.
-
-License notice for libunwind based code
-----------------------------------------
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-License notice for Printing Floating-Point Numbers (Dragon4)
-------------------------------------------------------------
-
-/******************************************************************************
-  Copyright (c) 2014 Ryan Juckett
-  http://www.ryanjuckett.com/
-
-  This software is provided 'as-is', without any express or implied
-  warranty. In no event will the authors be held liable for any damages
-  arising from the use of this software.
-
-  Permission is granted to anyone to use this software for any purpose,
-  including commercial applications, and to alter it and redistribute it
-  freely, subject to the following restrictions:
-
-  1. The origin of this software must not be misrepresented; you must not
-     claim that you wrote the original software. If you use this software
-     in a product, an acknowledgment in the product documentation would be
-     appreciated but is not required.
-
-  2. Altered source versions must be plainly marked as such, and must not be
-     misrepresented as being the original software.
-
-  3. This notice may not be removed or altered from any source
-     distribution.
-******************************************************************************/
-
-License notice for Printing Floating-point Numbers (Grisu3)
------------------------------------------------------------
-
-Copyright 2012 the V8 project authors. All rights reserved.
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above
-      copyright notice, this list of conditions and the following
-      disclaimer in the documentation and/or other materials provided
-      with the distribution.
-    * Neither the name of Google Inc. nor the names of its
-      contributors may be used to endorse or promote products derived
-      from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for xxHash
--------------------------
-
-xxHash - Extremely Fast Hash algorithm
-Header File
-Copyright (C) 2012-2021 Yann Collet
-
-BSD 2-Clause License (https://www.opensource.org/licenses/bsd-license.php)
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-     notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-     copyright notice, this list of conditions and the following disclaimer
-     in the documentation and/or other materials provided with the
-     distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-You can contact the author at:
-  - xxHash homepage: https://www.xxhash.com
-  - xxHash source repository: https://github.com/Cyan4973/xxHash
-
-License notice for Berkeley SoftFloat Release 3e
-------------------------------------------------
-
-https://github.com/ucb-bar/berkeley-softfloat-3
-https://github.com/ucb-bar/berkeley-softfloat-3/blob/master/COPYING.txt
-
-License for Berkeley SoftFloat Release 3e
-
-John R. Hauser
-2018 January 20
-
-The following applies to the whole of SoftFloat Release 3e as well as to
-each source file individually.
-
-Copyright 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018 The Regents of the
-University of California.  All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions, and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions, and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the University nor the names of its contributors
-    may be used to endorse or promote products derived from this software
-    without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS "AS IS", AND ANY
-EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, ARE
-DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE FOR ANY
-DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
-THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for xoshiro RNGs
---------------------------------
-
-Written in 2018 by David Blackman and Sebastiano Vigna (vigna@acm.org)
-
-To the extent possible under law, the author has dedicated all copyright
-and related and neighboring rights to this software to the public domain
-worldwide. This software is distributed without any warranty.
-
-See <http://creativecommons.org/publicdomain/zero/1.0/>.
-
-License for fastmod (https://github.com/lemire/fastmod), ibm-fpgen (https://github.com/nigeltao/parse-number-fxx-test-data) and fastrange (https://github.com/lemire/fastrange)
---------------------------------------
-
-   Copyright 2018 Daniel Lemire
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-
-License for sse4-strstr (https://github.com/WojciechMula/sse4-strstr)
---------------------------------------
-
-   Copyright (c) 2008-2016, Wojciech Mula
-   All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions are
-   met:
-
-   1. Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-
-   2. Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
-   IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
-   TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
-   PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
-   TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for The C++ REST SDK
------------------------------------
-
-C++ REST SDK
-
-The MIT License (MIT)
-
-Copyright (c) Microsoft Corporation
-
-All rights reserved.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-License notice for MessagePack-CSharp
--------------------------------------
-
-MessagePack for C#
-
-MIT License
-
-Copyright (c) 2017 Yoshifumi Kawai
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-License notice for lz4net
--------------------------------------
-
-lz4net
-
-Copyright (c) 2013-2017, Milosz Krajewski
-
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
-
-Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-
-Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for Nerdbank.Streams
------------------------------------
-
-The MIT License (MIT)
-
-Copyright (c) Andrew Arnott
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-License notice for RapidJSON
-----------------------------
-
-Tencent is pleased to support the open source community by making RapidJSON available.
-
-Copyright (C) 2015 THL A29 Limited, a Tencent company, and Milo Yip. All rights reserved.
-
-Licensed under the MIT License (the "License"); you may not use this file except
-in compliance with the License. You may obtain a copy of the License at
-
-http://opensource.org/licenses/MIT
-
-Unless required by applicable law or agreed to in writing, software distributed
-under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-CONDITIONS OF ANY KIND, either express or implied. See the License for the
-specific language governing permissions and limitations under the License.
-
-License notice for DirectX Math Library
----------------------------------------
-
-https://github.com/microsoft/DirectXMath/blob/master/LICENSE
-
-                               The MIT License (MIT)
-
-Copyright (c) 2011-2020 Microsoft Corp
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this
-software and associated documentation files (the "Software"), to deal in the Software
-without restriction, including without limitation the rights to use, copy, modify,
-merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice shall be included in all copies
-or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
-CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
-OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-License notice for ldap4net
----------------------------
-
-The MIT License (MIT)
-
-Copyright (c) 2018 Alexander Chermyanin
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-License notice for vectorized sorting code
-------------------------------------------
-
-MIT License
-
-Copyright (c) 2020 Dan Shechter
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-License notice for musl
------------------------
-
-musl as a whole is licensed under the following standard MIT license:
-
-Copyright © 2005-2020 Rich Felker, et al.
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-License notice for "Faster Unsigned Division by Constants"
-------------------------------
-
-Reference implementations of computing and using the "magic number" approach to dividing
-by constants, including codegen instructions. The unsigned division incorporates the
-"round down" optimization per ridiculous_fish.
-
-This is free and unencumbered software. Any copyright is dedicated to the Public Domain.
-
-
-License notice for mimalloc
------------------------------------
-
-MIT License
-
-Copyright (c) 2019 Microsoft Corporation, Daan Leijen
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-License notice for The LLVM Project
------------------------------------
-
-Copyright 2019 LLVM Project
-
-Licensed under the Apache License, Version 2.0 (the "License") with LLVM Exceptions;
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-https://llvm.org/LICENSE.txt
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-License notice for Apple header files
--------------------------------------
-
-Copyright (c) 1980, 1986, 1993
-   The Regents of the University of California.  All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions
-are met:
-1. Redistributions of source code must retain the above copyright
-   notice, this list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright
-   notice, this list of conditions and the following disclaimer in the
-   documentation and/or other materials provided with the distribution.
-3. All advertising materials mentioning features or use of this software
-   must display the following acknowledgement:
-   This product includes software developed by the University of
-   California, Berkeley and its contributors.
-4. Neither the name of the University nor the names of its contributors
-   may be used to endorse or promote products derived from this software
-   without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
-OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
-HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
-OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
-SUCH DAMAGE.
-
-License notice for JavaScript queues
--------------------------------------
-
-CREATIVE COMMONS CORPORATION IS NOT A LAW FIRM AND DOES NOT PROVIDE LEGAL SERVICES. DISTRIBUTION OF THIS DOCUMENT DOES NOT CREATE AN ATTORNEY-CLIENT RELATIONSHIP. CREATIVE COMMONS PROVIDES THIS INFORMATION ON AN "AS-IS" BASIS. CREATIVE COMMONS MAKES NO WARRANTIES REGARDING THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS PROVIDED HEREUNDER, AND DISCLAIMS LIABILITY FOR DAMAGES RESULTING FROM THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS PROVIDED HEREUNDER.
-
-Statement of Purpose
-The laws of most jurisdictions throughout the world automatically confer exclusive Copyright and Related Rights (defined below) upon the creator and subsequent owner(s) (each and all, an "owner") of an original work of authorship and/or a database (each, a "Work").
-Certain owners wish to permanently relinquish those rights to a Work for the purpose of contributing to a commons of creative, cultural and scientific works ("Commons") that the public can reliably and without fear of later claims of infringement build upon, modify, incorporate in other works, reuse and redistribute as freely as possible in any form whatsoever and for any purposes, including without limitation commercial purposes. These owners may contribute to the Commons to promote the ideal of a free culture and the further production of creative, cultural and scientific works, or to gain reputation or greater distribution for their Work in part through the use and efforts of others.
-For these and/or other purposes and motivations, and without any expectation of additional consideration or compensation, the person associating CC0 with a Work (the "Affirmer"), to the extent that he or she is an owner of Copyright and Related Rights in the Work, voluntarily elects to apply CC0 to the Work and publicly distribute the Work under its terms, with knowledge of his or her Copyright and Related Rights in the Work and the meaning and intended legal effect of CC0 on those rights.
-
-1. Copyright and Related Rights. A Work made available under CC0 may be protected by copyright and related or neighboring rights ("Copyright and Related Rights"). Copyright and Related Rights include, but are not limited to, the following:
-the right to reproduce, adapt, distribute, perform, display, communicate, and translate a Work;
-moral rights retained by the original author(s) and/or performer(s);
-publicity and privacy rights pertaining to a person's image or likeness depicted in a Work;
-rights protecting against unfair competition in regards to a Work, subject to the limitations in paragraph 4(a), below;
-rights protecting the extraction, dissemination, use and reuse of data in a Work;
-database rights (such as those arising under Directive 96/9/EC of the European Parliament and of the Council of 11 March 1996 on the legal protection of databases, and under any national implementation thereof, including any amended or successor version of such directive); and
-other similar, equivalent or corresponding rights throughout the world based on applicable law or treaty, and any national implementations thereof.
-2. Waiver. To the greatest extent permitted by, but not in contravention of, applicable law, Affirmer hereby overtly, fully, permanently, irrevocably and unconditionally waives, abandons, and surrenders all of Affirmer's Copyright and Related Rights and associated claims and causes of action, whether now known or unknown (including existing as well as future claims and causes of action), in the Work (i) in all territories worldwide, (ii) for the maximum duration provided by applicable law or treaty (including future time extensions), (iii) in any current or future medium and for any number of copies, and (iv) for any purpose whatsoever, including without limitation commercial, advertising or promotional purposes (the "Waiver"). Affirmer makes the Waiver for the benefit of each member of the public at large and to the detriment of Affirmer's heirs and successors, fully intending that such Waiver shall not be subject to revocation, rescission, cancellation, termination, or any other legal or equitable action to disrupt the quiet enjoyment of the Work by the public as contemplated by Affirmer's express Statement of Purpose.
-3. Public License Fallback. Should any part of the Waiver for any reason be judged legally invalid or ineffective under applicable law, then the Waiver shall be preserved to the maximum extent permitted taking into account Affirmer's express Statement of Purpose. In addition, to the extent the Waiver is so judged Affirmer hereby grants to each affected person a royalty-free, non transferable, non sublicensable, non exclusive, irrevocable and unconditional license to exercise Affirmer's Copyright and Related Rights in the Work (i) in all territories worldwide, (ii) for the maximum duration provided by applicable law or treaty (including future time extensions), (iii) in any current or future medium and for any number of copies, and (iv) for any purpose whatsoever, including without limitation commercial, advertising or promotional purposes (the "License"). The License shall be deemed effective as of the date CC0 was applied by Affirmer to the Work. Should any part of the License for any reason be judged legally invalid or ineffective under applicable law, such partial invalidity or ineffectiveness shall not invalidate the remainder of the License, and in such case Affirmer hereby affirms that he or she will not (i) exercise any of his or her remaining Copyright and Related Rights in the Work or (ii) assert any associated claims and causes of action with respect to the Work, in either case contrary to Affirmer's express Statement of Purpose.
-4. Limitations and Disclaimers.
-a. No trademark or patent rights held by Affirmer are waived, abandoned, surrendered, licensed or otherwise affected by this document.
-b. Affirmer offers the Work as-is and makes no representations or warranties of any kind concerning the Work, express, implied, statutory or otherwise, including without limitation warranties of title, merchantability, fitness for a particular purpose, non infringement, or the absence of latent or other defects, accuracy, or the present or absence of errors, whether or not discoverable, all to the greatest extent permissible under applicable law.
-c. Affirmer disclaims responsibility for clearing rights of other persons that may apply to the Work or any use thereof, including without limitation any person's Copyright and Related Rights in the Work. Further, Affirmer disclaims responsibility for obtaining any necessary consents, permissions or other rights required for any use of the Work.
-d. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
-
-
-License notice for FastFloat algorithm
--------------------------------------
-MIT License
-Copyright (c) 2021 csFastFloat authors
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-License notice for MsQuic
---------------------------------------
-
-Copyright (c) Microsoft Corporation.
-Licensed under the MIT License.
-
-Available at
-https://github.com/microsoft/msquic/blob/main/LICENSE
-
-License notice for m-ou-se/floatconv
--------------------------------
-
-Copyright (c) 2020 Mara Bos <m-ou.se@m-ou.se>
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
-ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License notice for code from The Practice of Programming
--------------------------------
-
-Copyright (C) 1999 Lucent Technologies
-
-Excerpted from 'The Practice of Programming
-by Brian W. Kernighan and Rob Pike
-
-You may use this code for any purpose, as long as you leave the copyright notice and book citation attached.
-
-Notice for Euclidean Affine Functions and Applications to Calendar
-Algorithms
--------------------------------
-
-Aspects of Date/Time processing based on algorithm described in "Euclidean Affine Functions and Applications to Calendar
-Algorithms", Cassio Neri and Lorenz Schneider. https://arxiv.org/pdf/2102.06959.pdf
-
-License notice for amd/aocl-libm-ose
--------------------------------
-
-Copyright (C) 2008-2020 Advanced Micro Devices, Inc. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without modification,
-are permitted provided that the following conditions are met:
-1. Redistributions of source code must retain the above copyright notice,
-   this list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-3. Neither the name of the copyright holder nor the names of its contributors
-   may be used to endorse or promote products derived from this software without
-   specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
-INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
-OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-License notice for fmtlib/fmt
--------------------------------
-
-Formatting library for C++
-
-Copyright (c) 2012 - present, Victor Zverovich
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-License for Jb Evain
----------------------
-
-Copyright (c) 2006 Jb Evain (jbevain@gmail.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included
-in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
---- Optional exception to the license ---
-
-As an exception, if, as a result of your compiling your source code, portions
-of this Software are embedded into a machine-executable object form of such
-source code, you may redistribute such embedded portions in such object form
-without including the above copyright and permission notices.
-
-
-License for MurmurHash3
---------------------------------------
-
-https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp
-
-MurmurHash3 was written by Austin Appleby, and is placed in the public
-domain. The author hereby disclaims copyright to this source
-
-License for Fast CRC Computation
---------------------------------------
-
-https://github.com/intel/isa-l/blob/33a2d9484595c2d6516c920ce39a694c144ddf69/crc/crc32_ieee_by4.asm
-https://github.com/intel/isa-l/blob/33a2d9484595c2d6516c920ce39a694c144ddf69/crc/crc64_ecma_norm_by8.asm
-
-Copyright(c) 2011-2015 Intel Corporation All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions
-are met:
-  * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-  * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-  * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-License for C# Implementation of Fast CRC Computation
------------------------------------------------------
-
-https://github.com/SixLabors/ImageSharp/blob/f4f689ce67ecbcc35cebddba5aacb603e6d1068a/src/ImageSharp/Formats/Png/Zlib/Crc32.cs
-
-Copyright (c) Six Labors.
-Licensed under the Apache License, Version 2.0.
-
-Available at
-https://github.com/SixLabors/ImageSharp/blob/f4f689ce67ecbcc35cebddba5aacb603e6d1068a/LICENSE
-</file>
-
-<file path="Network/Probe/Dependencies/SerializerFoundation-LICENSE.txt">
-MIT License
-
-Copyright (c) 2026 Cysharp, Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-</file>
-
-<file path="Network/Probe/FRFrame.Network.Probe.asmdef">
+<file path="Network/Probe/BoundedProtobuf.cs">
+#nullable enable
+using System;
+using System.IO;
+using System.Text;
+using Google.Protobuf;
+using FRFrame.Network.Shared;
+
+namespace FRFrame.Network.Protocol
 {
-  "name": "FRFrame.Network.Probe",
-  "rootNamespace": "FRFrame.Network.Probe",
+    internal static class BoundedProtobuf
+    {
+        internal const int MaxDepth = 4;
+
+        internal static bool TryParse<T>(MessageParser<T> parser, ReadOnlySpan<byte> payload,
+            int byteBudget, out T message, out ErrorCode error) where T : class, IMessage<T>
+        {
+            message = null!;
+            if (payload.Length > byteBudget)
+            {
+                error = ErrorCode.PayloadTooLarge;
+                return false;
+            }
+
+            // The protocol uses proto3 fields. Check their framing before the generated parser,
+            // which can interpret a literal zero tag as end of message when discarding unknown fields.
+            if (!HasValidFieldFraming(payload))
+            {
+                error = ErrorCode.MalformedMessage;
+                return false;
+            }
+
+            try
+            {
+                using var stream = new MemoryStream(payload.ToArray(), writable: false);
+                using var input = CodedInputStream.CreateWithLimits(stream, byteBudget, MaxDepth);
+                message = parser.ParseFrom(input);
+                error = ErrorCode.None;
+                return true;
+            }
+            catch (Exception exception) when (exception is InvalidProtocolBufferException or DecoderFallbackException)
+            {
+                error = ErrorCode.MalformedMessage;
+                return false;
+            }
+        }
+
+        private static bool HasValidFieldFraming(ReadOnlySpan<byte> payload)
+        {
+            while (!payload.IsEmpty)
+            {
+                if (!TryReadVarint(ref payload, out var tag) || tag < 8 || tag > uint.MaxValue)
+                    return false;
+                switch (tag & 7)
+                {
+                    case 0:
+                        if (!TryReadVarint(ref payload, out _))
+                            return false;
+                        continue;
+                    case 1:
+                        if (payload.Length < 8)
+                            return false;
+                        payload = payload.Slice(8);
+                        break;
+                    case 2:
+                        if (!TryReadVarint(ref payload, out var length) || length > (ulong)payload.Length)
+                            return false;
+                        payload = payload.Slice((int)length);
+                        break;
+                    case 5:
+                        if (payload.Length < 4)
+                            return false;
+                        payload = payload.Slice(4);
+                        break;
+                    default:
+                        return false; // Groups and the remaining wire types are outside this schema.
+                }
+            }
+            return true;
+        }
+
+        private static bool TryReadVarint(ref ReadOnlySpan<byte> bytes, out ulong value)
+        {
+            value = 0;
+            for (var index = 0; index < bytes.Length && index < 10; index++)
+            {
+                var current = bytes[index];
+                if (index == 9 && current > 1)
+                    return false;
+                value |= (ulong)(current & 0x7f) << (index * 7);
+                if (current < 0x80)
+                {
+                    bytes = bytes.Slice(index + 1);
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+}
+</file>
+
+<file path="Network/Probe/FRFrame.Network.Protocol.asmdef">
+{
+  "name": "FRFrame.Network.Protocol",
+  "rootNamespace": "FRFrame.Network.Protocol",
   "references": [
     "FRFrame.Network.Shared"
   ],
   "overrideReferences": true,
   "precompiledReferences": [
     "Google.Protobuf.dll",
-    "MessagePack.dll",
-    "SerializerFoundation.dll",
-    "System.Collections.Immutable.dll",
-    "System.IO.Pipelines.dll",
-    "System.Runtime.CompilerServices.Unsafe.dll",
-    "System.Text.Encodings.Web.dll",
-    "System.Text.Json.dll",
-    "Microsoft.Bcl.AsyncInterfaces.dll"
+    "System.Runtime.CompilerServices.Unsafe.dll"
   ],
   "autoReferenced": false,
   "noEngineReferences": true
 }
 </file>
 
-<file path="Network/Probe/ProbeCodecs.cs">
+<file path="Network/Probe/ProbeCodec.cs">
+#nullable enable
 using System;
-using System.Diagnostics;
-using System.IO;
 using System.Text;
 using FRFrame.Network.Shared;
+using FRFrame.Network.Protocol.Wire;
 using Google.Protobuf;
-using MessagePack;
 
-namespace FRFrame.Network.Probe
+namespace FRFrame.Network.Protocol
 {
-    /// <summary>The same business fields carried by both POC codecs.</summary>
-    [MessagePackObject]
-    public sealed partial class PackProbe
+    public sealed class ProbeSample
     {
-        [Key(0)] public int Sequence { get; set; }
-        [Key(1)] public string Text { get; set; } = string.Empty;
-        [Key(2)] public byte[] Samples { get; set; } = Array.Empty<byte>();
+        public int Sequence { get; set; }
+        public string Text { get; set; } = string.Empty;
+        public byte[] Samples { get; set; } = Array.Empty<byte>();
     }
 
-    /// <summary>POC-only codec comparison with bounded input and no polymorphic deserialization.</summary>
-    /// <summary>POC-only codec comparison with bounded input and no polymorphic deserialization.</summary>
-    public static class ProbeCodecs
+    /// <summary>Protobuf echo and acknowledgement used by the existing loopback validation entry.</summary>
+    public static class ProbeCodec
     {
-        private const int MaxTextBytes = 100;
-        private const int MaxSamples = 350;
-        private const int MaxDepth = 8;
-        private static readonly MessageParser<ProtoProbe> ProtoParser =
-            ProtoProbe.Parser.WithDiscardUnknownFields(true);
-        private static readonly MessagePackSerializerOptions PackOptions = new MessagePackSerializerOptions(
-            MessagePackFormatterFactory.DefaultAot)
-        {
-            MaxDepth = MaxDepth,
-            MaxBufferedMessageSize = ProbeEnvelope.MaxPayload
-        };
+        internal const int MaxTextBytes = 100;
+        internal const int MaxSamples = 350;
+        private static readonly MessageParser<ProtoProbe> ProbeParser = ProtoProbe.Parser.WithDiscardUnknownFields(true);
+        private static readonly MessageParser<StreamAcknowledgement> AckParser =
+            StreamAcknowledgement.Parser.WithDiscardUnknownFields(true);
 
-        public static PackProbe Sample() => new PackProbe
+        public static ProbeSample Sample() => new ProbeSample
         {
             Sequence = 123,
             Text = "网络 probe",
             Samples = new byte[] { 1, 2, 3, 5, 8, 13 }
         };
 
-        public static bool Matches(PackProbe left, PackProbe right) =>
+        public static bool Matches(ProbeSample left, ProbeSample right) =>
             left.Sequence == right.Sequence && left.Text == right.Text &&
             left.Samples.AsSpan().SequenceEqual(right.Samples);
 
-        public static byte[] Encode(ProbeOp op, PackProbe message)
+        public static byte[] Encode(ProbeSample message) => new ProtoProbe
         {
-            if (op == ProbeOp.MessagePack || op == ProbeOp.MessagePackEcho)
-                return MessagePackSerializer.Serialize(message, PackOptions);
+            Sequence = message.Sequence,
+            Text = message.Text,
+            Samples = ByteString.CopyFrom(message.Samples)
+        }.ToByteArray();
 
-            return new ProtoProbe
-            {
-                Sequence = message.Sequence,
-                Text = message.Text,
-                Samples = ByteString.CopyFrom(message.Samples)
-            }.ToByteArray();
-        }
-
-        public static bool TryDecode(ProbeOp op, ReadOnlySpan<byte> bytes, out PackProbe message)
+        public static bool TryDecode(ReadOnlySpan<byte> bytes, out ProbeSample message)
         {
             message = null!;
-            if (bytes.Length > ProbeEnvelope.MaxPayload)
+            if (!BoundedProtobuf.TryParse(ProbeParser, bytes, Envelope.MaxPayload, out var proto, out _) ||
+                proto.Samples.Length > MaxSamples || Encoding.UTF8.GetByteCount(proto.Text) > MaxTextBytes)
                 return false;
-
-            if (op == ProbeOp.MessagePack || op == ProbeOp.MessagePackEcho)
+            message = new ProbeSample
             {
-                try
-                {
-                    // This POC schema accepts scalar fields and scalar extensions in one short array.
-                    var reader = new MessagePackReader(bytes.ToArray());
-                    var fields = reader.ReadArrayHeader();
-                    if (fields > 8)
-                        return false;
-                    for (var index = 0; index < fields; index++)
-                    {
-                        if (reader.NextMessagePackType is MessagePackType.Array or MessagePackType.Map or MessagePackType.Extension)
-                            return false;
-                        reader.Skip();
-                    }
-                    if (!reader.End)
-                        return false;
-                    message = MessagePackSerializer.Deserialize<PackProbe>(bytes, PackOptions);
-                }
-                catch (MessagePackSerializationException)
-                {
-                    return false;
-                }
-
-                if (message == null)
-                    return false;
-
-                message.Text ??= string.Empty;
-                message.Samples ??= Array.Empty<byte>();
-            }
-            else
-            {
-                try
-                {
-                    using var stream = new MemoryStream(bytes.ToArray(), false);
-                    using var input = CodedInputStream.CreateWithLimits(stream, ProbeEnvelope.MaxPayload, MaxDepth);
-                    var proto = ProtoParser.ParseFrom(input);
-                    message = new PackProbe
-                    {
-                        Sequence = proto.Sequence,
-                        Text = proto.Text,
-                        Samples = proto.Samples.ToByteArray()
-                    };
-                }
-                catch (InvalidProtocolBufferException)
-                {
-                    return false;
-                }
-            }
-
-            return message.Samples.Length <= MaxSamples && Encoding.UTF8.GetByteCount(message.Text) <= MaxTextBytes;
+                Sequence = proto.Sequence, Text = proto.Text, Samples = proto.Samples.ToByteArray()
+            };
+            return true;
         }
 
-        /// <summary>Exercises schema evolution, bounded decoding and the same measurement loop on both runtimes.</summary>
-        public static void VerifyAndMeasure(Action<string> report)
+        public static byte[] EncodeAcknowledgement(byte stream) => new StreamAcknowledgement { Stream = stream }.ToByteArray();
+
+        public static bool TryDecodeAcknowledgement(ReadOnlySpan<byte> bytes, out byte stream)
         {
-            var nominal = Sample();
-            var large = new PackProbe { Sequence = int.MaxValue, Text = new string('x', MaxTextBytes), Samples = new byte[MaxSamples] };
-            foreach (var op in new[] { ProbeOp.Protobuf, ProbeOp.MessagePack })
-            {
-                var defaults = new PackProbe();
-                var empty = Encode(op, defaults);
-                var encoded = Encode(op, nominal);
-                var maximal = Encode(op, large);
-                var evolved = new byte[encoded.Length + (op == ProbeOp.Protobuf ? 2 : 1)];
-                encoded.CopyTo(evolved, 0);
-                if (op == ProbeOp.Protobuf)
-                    evolved[evolved.Length - 2] = 0x20; // New scalar field 4.
-                else
-                    evolved[0] = 0x94; // Same three fields plus a fourth scalar.
-                evolved[evolved.Length - 1] = 1;
-
-                var oversizedCollection = Encode(op, new PackProbe { Samples = new byte[MaxSamples + 1] });
-                var nested = op == ProbeOp.Protobuf
-                    ? new byte[] { 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24, 0x24 }
-                    : new byte[] { 0x94, 1, 0xa0, 0xc4, 0, 0x91, 0x91, 0x91, 0x91, 0x91, 0x91, 0x91, 0x91, 0x91, 0 };
-                if (!TryDecode(op, empty, out var defaultRoundtrip) || !Matches(defaults, defaultRoundtrip) ||
-                    !TryDecode(op, evolved, out var evolvedRoundtrip) || !Matches(nominal, evolvedRoundtrip) ||
-                    !TryDecode(op, maximal, out var maxRoundtrip) || !Matches(large, maxRoundtrip) ||
-                    TryDecode(op, encoded.AsSpan(0, encoded.Length - 1), out _) ||
-                    TryDecode(op, oversizedCollection, out _) ||
-                    TryDecode(op, new byte[ProbeEnvelope.MaxPayload + 1], out _) ||
-                    TryDecode(op, nested, out _))
-                    throw new InvalidOperationException($"POC codec boundary failed for {op}.");
-
-                report($"{op} size bytes default/nominal/max={empty.Length}/{encoded.Length}/{maximal.Length}");
-                Measure($"{op} encode nominal", () => Encode(op, nominal), report);
-                Measure($"{op} decode nominal", () => TryDecode(op, encoded, out var decoded)
-                    ? decoded : throw new InvalidOperationException($"Could not decode {op}."), report);
-            }
-        }
-
-        private static void Measure(string label, Func<object> work, Action<string> report)
-        {
-            const int iterations = 2048;
-            var ticks = new long[iterations];
-            object last = work();
-            for (var i = 0; i < 64; i++)
-                last = work();
-
-            var allocated = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < ticks.Length; i++)
-            {
-                var start = Stopwatch.GetTimestamp();
-                last = work();
-                ticks[i] = Stopwatch.GetTimestamp() - start;
-            }
-
-            allocated = GC.GetAllocatedBytesForCurrentThread() - allocated;
-            GC.KeepAlive(last);
-            Array.Sort(ticks);
-            var nanos = 1e9 / Stopwatch.Frequency;
-            var allocation = allocated == 0 ? "unreported" : $"{(double)allocated / iterations:F1} B/op";
-            report($"{label}: p50={ticks[1023] * nanos:F0} ns p95={ticks[1945] * nanos:F0} ns " +
-                $"p99={ticks[2027] * nanos:F0} ns, {allocation}, n={iterations}");
+            stream = 0;
+            if (!BoundedProtobuf.TryParse(AckParser, bytes, 8, out var acknowledgement, out _) ||
+                acknowledgement.Stream is < 1 or > 2)
+                return false;
+            stream = (byte)acknowledgement.Stream;
+            return true;
         }
     }
 }
@@ -94499,7 +93119,7 @@ using pb = global::Google.Protobuf;
 using pbc = global::Google.Protobuf.Collections;
 using pbr = global::Google.Protobuf.Reflection;
 using scg = global::System.Collections.Generic;
-namespace FRFrame.Network.Probe {
+namespace FRFrame.Network.Protocol.Wire {
 
   /// <summary>Holder for reflection information generated from ProbeMessage.proto</summary>
   public static partial class ProbeMessageReflection {
@@ -94514,14 +93134,16 @@ namespace FRFrame.Network.Probe {
     static ProbeMessageReflection() {
       byte[] descriptorData = global::System.Convert.FromBase64String(
           string.Concat(
-            "ChJQcm9iZU1lc3NhZ2UucHJvdG8SE2ZyZnJhbWUubmV0d29yay5wb2MiPQoK",
-            "UHJvdG9Qcm9iZRIQCghzZXF1ZW5jZRgBIAEoBRIMCgR0ZXh0GAIgASgJEg8K",
-            "B3NhbXBsZXMYAyABKAxCGKoCFUZSRnJhbWUuTmV0d29yay5Qcm9iZWIGcHJv",
-            "dG8z"));
+            "ChJQcm9iZU1lc3NhZ2UucHJvdG8SEmZyZnJhbWUubmV0d29yay52MSI9CgpQ",
+            "cm90b1Byb2JlEhAKCHNlcXVlbmNlGAEgASgFEgwKBHRleHQYAiABKAkSDwoH",
+            "c2FtcGxlcxgDIAEoDCInChVTdHJlYW1BY2tub3dsZWRnZW1lbnQSDgoGc3Ry",
+            "ZWFtGAEgASgNQiCqAh1GUkZyYW1lLk5ldHdvcmsuUHJvdG9jb2wuV2lyZWIG",
+            "cHJvdG8z"));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { },
           new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
-            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Probe.ProtoProbe), global::FRFrame.Network.Probe.ProtoProbe.Parser, new[]{ "Sequence", "Text", "Samples" }, null, null, null, null)
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.ProtoProbe), global::FRFrame.Network.Protocol.Wire.ProtoProbe.Parser, new[]{ "Sequence", "Text", "Samples" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.StreamAcknowledgement), global::FRFrame.Network.Protocol.Wire.StreamAcknowledgement.Parser, new[]{ "Stream" }, null, null, null, null)
           }));
     }
     #endregion
@@ -94543,7 +93165,7 @@ namespace FRFrame.Network.Probe {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::FRFrame.Network.Probe.ProbeMessageReflection.Descriptor.MessageTypes[0]; }
+      get { return global::FRFrame.Network.Protocol.Wire.ProbeMessageReflection.Descriptor.MessageTypes[0]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -94800,6 +93422,207 @@ namespace FRFrame.Network.Probe {
 
   }
 
+  /// <summary>
+  /// Diagnostic acknowledgement for the existing loopback probe.
+  /// </summary>
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class StreamAcknowledgement : pb::IMessage<StreamAcknowledgement>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<StreamAcknowledgement> _parser = new pb::MessageParser<StreamAcknowledgement>(() => new StreamAcknowledgement());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<StreamAcknowledgement> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::FRFrame.Network.Protocol.Wire.ProbeMessageReflection.Descriptor.MessageTypes[1]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public StreamAcknowledgement() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public StreamAcknowledgement(StreamAcknowledgement other) : this() {
+      stream_ = other.stream_;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public StreamAcknowledgement Clone() {
+      return new StreamAcknowledgement(this);
+    }
+
+    /// <summary>Field number for the "stream" field.</summary>
+    public const int StreamFieldNumber = 1;
+    private uint stream_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint Stream {
+      get { return stream_; }
+      set {
+        stream_ = value;
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as StreamAcknowledgement);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(StreamAcknowledgement other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if (Stream != other.Stream) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      if (Stream != 0) hash ^= Stream.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      if (Stream != 0) {
+        output.WriteRawTag(8);
+        output.WriteUInt32(Stream);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      if (Stream != 0) {
+        output.WriteRawTag(8);
+        output.WriteUInt32(Stream);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      if (Stream != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Stream);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(StreamAcknowledgement other) {
+      if (other == null) {
+        return;
+      }
+      if (other.Stream != 0) {
+        Stream = other.Stream;
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 8: {
+            Stream = input.ReadUInt32();
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 8: {
+            Stream = input.ReadUInt32();
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
   #endregion
 
 }
@@ -94810,8 +93633,8 @@ namespace FRFrame.Network.Probe {
 <file path="Network/Probe/ProbeMessage.proto">
 syntax = "proto3";
 
-package frframe.network.poc;
-option csharp_namespace = "FRFrame.Network.Probe";
+package frframe.network.v1;
+option csharp_namespace = "FRFrame.Network.Protocol.Wire";
 
 message ProtoProbe
 {
@@ -94819,27 +93642,154 @@ message ProtoProbe
     string text = 2;
     bytes samples = 3;
 }
+
+// Diagnostic acknowledgement for the existing loopback probe.
+message StreamAcknowledgement {
+    uint32 stream = 1;
+}
 </file>
 
-<file path="Network/Probe/SliceCodec.cs">
+<file path="Network/Probe/ProtocolChecks.cs">
+#nullable enable
 using System;
-using System.IO;
-using System.Linq;
+using FRFrame.Network.Protocol.Wire;
 using FRFrame.Network.Shared;
 using Google.Protobuf;
 
-namespace FRFrame.Network.Probe
+namespace FRFrame.Network.Protocol
 {
-    /// <summary>Single Protobuf codec for POC-2 application opcodes.</summary>
+    /// <summary>Runs identical wire fixtures in the .NET Host, Unity Editor and Player.</summary>
+    public static class ProtocolChecks
+    {
+        public static void Run(Action<string> log)
+        {
+            const uint correlation = 0x12345678;
+            var packet = SliceCodec.Write(OpCode.RoomMessage, new SliceMessage
+            {
+                RequestId = correlation, Room = 1, Text = "ok"
+            });
+            var golden = new byte[] { 0, 2, 9, 6, 0, 0x78, 0x56, 0x34, 0x12, 0x20, 1, 0x3A, 2, 0x6F, 0x6B };
+            Require(packet.AsSpan().SequenceEqual(golden), "stable envelope and Protobuf field numbers");
+            Require(SliceCodec.TryReadPacket(golden, MessageDirection.ClientToServer, PacketDelivery.ReliableOrdered,
+                out var header, out var request, out _) && header.RequestId.Value == correlation &&
+                header.Descriptor.Response == OpCode.Response && header.Descriptor.RequiresSession &&
+                request.RequestId == correlation && request.Room == 1 && request.Text == "ok", "request fixture");
+
+            var reply = SliceCodec.Write(OpCode.Response, new SliceMessage
+            {
+                RequestId = request.RequestId, ReplyTo = header.Op, Error = ErrorCode.Overloaded
+            });
+            Require(SliceCodec.TryReadPacket(reply, MessageDirection.ServerToClient, PacketDelivery.ReliableOrdered,
+                out _, out var response, out _) && response.RequestId == correlation &&
+                response.ReplyTo == OpCode.RoomMessage && response.Error == ErrorCode.Overloaded, "response correlation");
+
+            Reject(golden.AsSpan(0, golden.Length - 1), ErrorCode.MalformedMessage);
+            Reject(golden, ErrorCode.WrongDirection, MessageDirection.ServerToClient);
+            Reject(golden, ErrorCode.WrongDelivery, delivery: PacketDelivery.Unreliable);
+            packet[1] = 1;
+            Reject(packet, ErrorCode.UnsupportedProtocolVersion);
+            packet[1] = 2;
+            foreach (var op in new byte[] { 2, 4, 255 })
+            {
+                packet[2] = op;
+                Reject(packet, ErrorCode.UnknownOpCode);
+            }
+            packet[2] = (byte)OpCode.RoomMessage;
+            packet.AsSpan(5, 4).Clear();
+            Reject(packet, ErrorCode.MalformedMessage);
+            packet[2] = (byte)OpCode.RoomBroadcast;
+            packet[5] = 1;
+            Reject(packet, ErrorCode.MalformedMessage, MessageDirection.ServerToClient);
+            Reject(new byte[Envelope.MaxPacket + 1], ErrorCode.PayloadTooLarge);
+            var oversizedMarker = Envelope.Write(OpCode.RoomMessage, new byte[65], new RequestId(correlation));
+            oversizedMarker[2] = (byte)OpCode.SetMarker;
+            Reject(oversizedMarker, ErrorCode.PayloadTooLarge);
+
+            var unknown = new byte[] { 0x20, 1, 0x3A, 2, 0x6F, 0x6B, 0xF8, 0x01, 1 };
+            var extension = Envelope.Write(OpCode.RoomMessage, unknown, new RequestId(correlation));
+            Require(SliceCodec.TryReadPacket(extension, MessageDirection.ClientToServer, PacketDelivery.ReliableOrdered,
+                out _, out var decoded, out _) && SliceCodec.Write(OpCode.RoomMessage, decoded).AsSpan().SequenceEqual(golden),
+                "known fields survive a valid unknown field");
+
+            foreach (var malformed in new[]
+            {
+                new byte[] { 0 }, new byte[] { 0x0F }, new byte[] { 0x3A, 9, 0x61 },
+                new byte[] { 0x20, 0x80 }, new byte[] { 0x3A, 1, 0xFF }
+            })
+                Reject(Envelope.Write(OpCode.RoomMessage, malformed, new RequestId(correlation)), ErrorCode.MalformedMessage);
+            var nested = new byte[(BoundedProtobuf.MaxDepth + 1) * 4];
+            for (var index = 0; index < nested.Length; index += 2)
+            {
+                nested[index] = index < nested.Length / 2 ? (byte)0xFB : (byte)0xFC;
+                nested[index + 1] = 1;
+            }
+            Reject(Envelope.Write(OpCode.RoomMessage, nested, new RequestId(correlation)), ErrorCode.MalformedMessage);
+
+            var memberWire = new SliceWire();
+            memberWire.MemberIds.AddRange(new[] { 1, 2, 3, 4 });
+            var members = Envelope.Write(OpCode.Members, memberWire.ToByteArray());
+            Require(SliceCodec.TryReadPacket(members, MessageDirection.ServerToClient, PacketDelivery.ReliableOrdered,
+                out _, out var roster, out _) && roster.MemberIds.Length == 4, "max roster");
+            memberWire.MemberIds.Add(5);
+            Reject(Envelope.Write(OpCode.Members, memberWire.ToByteArray()), ErrorCode.PayloadTooLarge, MessageDirection.ServerToClient);
+            request.Text = new string('网', 80);
+            Require(SliceCodec.TryReadPacket(SliceCodec.Write(OpCode.RoomMessage, request),
+                MessageDirection.ClientToServer, PacketDelivery.ReliableOrdered, out _, out _, out _), "max multibyte text");
+            request.Text += "x";
+            Reject(SliceCodec.Write(OpCode.RoomMessage, request), ErrorCode.PayloadTooLarge);
+            var recover = new SliceMessage { RequestId = correlation, Token = new string('x', SliceCodec.MaxTicketBytes) };
+            Require(SliceCodec.TryReadPacket(SliceCodec.Write(OpCode.Recover, recover),
+                MessageDirection.ClientToServer, PacketDelivery.ReliableOrdered, out _, out _, out _), "max ticket bytes");
+            recover.Token += "x";
+            Reject(SliceCodec.Write(OpCode.Recover, recover), ErrorCode.PayloadTooLarge);
+            var probe = new ProbeSample { Text = new string('x', ProbeCodec.MaxTextBytes), Samples = new byte[ProbeCodec.MaxSamples] };
+            Require(ProbeCodec.TryDecode(ProbeCodec.Encode(probe), out var decodedProbe) && ProbeCodec.Matches(probe, decodedProbe),
+                "max probe text and samples");
+            probe.Samples = new byte[ProbeCodec.MaxSamples + 1];
+            Require(!ProbeCodec.TryDecode(ProbeCodec.Encode(probe), out _), "probe sample limit");
+
+            log("P1 protocol checks PASS: golden wire, request correlation, compatibility and decode limits.");
+        }
+
+        private static void Reject(ReadOnlySpan<byte> packet, ErrorCode expected,
+            MessageDirection direction = MessageDirection.ClientToServer, PacketDelivery delivery = PacketDelivery.ReliableOrdered)
+        {
+            Require(!SliceCodec.TryReadPacket(packet, direction, delivery, out _, out _, out var error) && error == expected,
+                $"expected {expected}, got {error}");
+        }
+
+        private static void Require(bool passed, string name)
+        {
+            if (!passed)
+                throw new InvalidOperationException($"P1 protocol check failed: {name}.");
+        }
+    }
+}
+</file>
+
+<file path="Network/Probe/SliceCodec.cs">
+#nullable enable
+using System;
+using System.Linq;
+using System.Text;
+using FRFrame.Network.Shared;
+using FRFrame.Network.Protocol.Wire;
+using Google.Protobuf;
+
+namespace FRFrame.Network.Protocol
+{
+    /// <summary>Serializes the shared control DTO on both the client and server.</summary>
     public static class SliceCodec
     {
+        public const int MaxTextBytes = 240;
+        public const int MaxTicketBytes = 44;
         private static readonly MessageParser<SliceWire> Parser = SliceWire.Parser.WithDiscardUnknownFields(true);
 
-        public static byte[] Write(ProbeOp op, SliceMessage message)
+        public static byte[] Write(OpCode op, SliceMessage message)
         {
             var wire = new SliceWire
             {
-                RequestId = message.RequestId, Error = (uint)message.Error, ReplyTo = (uint)message.ReplyTo,
+                Error = (uint)message.Error, ReplyTo = (uint)message.ReplyTo,
                 Room = message.Room, Player = message.Player, Session = message.Session, Text = message.Text,
                 Stream = message.Stream, Generation = message.Generation, Header = message.Header,
                 Schema = message.Schema, Hash = message.Hash, Marker = message.Marker, Online = message.Online,
@@ -94847,37 +93797,53 @@ namespace FRFrame.Network.Probe
                 Token = message.Token, Target = message.Target, DelayMs = message.DelayMs
             };
             wire.MemberIds.AddRange(message.MemberIds);
-            return ProbeEnvelope.Write(op, wire.ToByteArray());
+            return Envelope.Write(op, wire.ToByteArray(), new RequestId(message.RequestId));
         }
 
-        public static bool TryRead(ReadOnlySpan<byte> payload, out SliceMessage message)
+        public static bool TryReadPacket(ReadOnlySpan<byte> packet, MessageDirection direction, PacketDelivery delivery,
+            out EnvelopeHeader header, out SliceMessage message, out ErrorCode error)
         {
             message = null!;
-            try
-            {
-                using var stream = new MemoryStream(payload.ToArray(), false);
-                using var input = CodedInputStream.CreateWithLimits(stream, ProbeEnvelope.MaxPayload, 4);
-                var wire = Parser.ParseFrom(input);
-                if (wire.Error > (uint)SliceError.CallbackTimeout ||
-                    (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((ProbeOp)wire.ReplyTo))) ||
-                    wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 || wire.Token.Length > 44)
-                    return false;
+            return Envelope.TryRead(packet, out header, out var payload, out error, direction, delivery) &&
+                TryRead(header, payload, out message, out error);
+        }
 
-                message = new SliceMessage
-                {
-                    RequestId = wire.RequestId, Error = (SliceError)wire.Error, ReplyTo = (ProbeOp)wire.ReplyTo,
-                    Room = wire.Room, Player = wire.Player, Session = wire.Session, Text = wire.Text,
-                    Stream = wire.Stream, Generation = wire.Generation, Header = wire.Header, Schema = wire.Schema,
-                    Hash = wire.Hash, Marker = wire.Marker, MemberIds = wire.MemberIds.ToArray(), Online = wire.Online,
-                    Capacity = wire.Capacity, Epoch = wire.Epoch, ConnectionGeneration = wire.ConnectionGeneration,
-                    Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs
-                };
-                return true;
-            }
-            catch (InvalidProtocolBufferException)
+        private static bool TryRead(EnvelopeHeader header, ReadOnlySpan<byte> payload,
+            out SliceMessage message, out ErrorCode error)
+        {
+            message = null!;
+            if (header.Descriptor.Payload != PayloadKind.Slice)
             {
+                error = ErrorCode.UnknownOpCode;
                 return false;
             }
+            if (!BoundedProtobuf.TryParse(Parser, payload, header.Descriptor.MaxPayload, out var wire, out error))
+                return false;
+            if (wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 ||
+                Encoding.UTF8.GetByteCount(wire.Text) > MaxTextBytes ||
+                Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes)
+            {
+                error = ErrorCode.PayloadTooLarge;
+                return false;
+            }
+            if (wire.Error > (uint)ErrorCode.InternalError ||
+                (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((OpCode)wire.ReplyTo))) ||
+                (header.Descriptor.Kind == MessageKind.Response && wire.ReplyTo == 0))
+            {
+                error = ErrorCode.MalformedMessage;
+                return false;
+            }
+
+            message = new SliceMessage
+            {
+                RequestId = header.RequestId.Value, Error = (ErrorCode)wire.Error, ReplyTo = (OpCode)wire.ReplyTo,
+                Room = wire.Room, Player = wire.Player, Session = wire.Session, Text = wire.Text,
+                Stream = wire.Stream, Generation = wire.Generation, Header = wire.Header, Schema = wire.Schema,
+                Hash = wire.Hash, Marker = wire.Marker, MemberIds = wire.MemberIds.ToArray(), Online = wire.Online,
+                Capacity = wire.Capacity, Epoch = wire.Epoch, ConnectionGeneration = wire.ConnectionGeneration,
+                Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs
+            };
+            return true;
         }
     }
 }
@@ -94895,7 +93861,7 @@ using pb = global::Google.Protobuf;
 using pbc = global::Google.Protobuf.Collections;
 using pbr = global::Google.Protobuf.Reflection;
 using scg = global::System.Collections.Generic;
-namespace FRFrame.Network.Probe {
+namespace FRFrame.Network.Protocol.Wire {
 
   /// <summary>Holder for reflection information generated from SliceWire.proto</summary>
   public static partial class SliceWireReflection {
@@ -94910,20 +93876,21 @@ namespace FRFrame.Network.Probe {
     static SliceWireReflection() {
       byte[] descriptorData = global::System.Convert.FromBase64String(
           string.Concat(
-            "Cg9TbGljZVdpcmUucHJvdG8i9AIKCVNsaWNlV2lyZRISCgpyZXF1ZXN0X2lk",
-            "GAEgASgNEg0KBWVycm9yGAIgASgNEhAKCHJlcGx5X3RvGAMgASgNEgwKBHJv",
+            "Cg9TbGljZVdpcmUucHJvdG8SEmZyZnJhbWUubmV0d29yay52MSL4AgoJU2xp",
+            "Y2VXaXJlEg0KBWVycm9yGAIgASgNEhAKCHJlcGx5X3RvGAMgASgNEgwKBHJv",
             "b20YBCABKAUSDgoGcGxheWVyGAUgASgFEg8KB3Nlc3Npb24YBiABKAUSDAoE",
             "dGV4dBgHIAEoCRIOCgZzdHJlYW0YCCABKA0SEgoKZ2VuZXJhdGlvbhgJIAEo",
             "DRIOCgZoZWFkZXIYCiABKAUSDgoGc2NoZW1hGAsgASgFEgwKBGhhc2gYDCAB",
             "KAYSDgoGbWFya2VyGA0gASgFEhIKCm1lbWJlcl9pZHMYDiADKAUSDgoGb25s",
             "aW5lGA8gASgFEhAKCGNhcGFjaXR5GBAgASgFEg0KBWVwb2NoGBIgASgFEh0K",
             "FWNvbm5lY3Rpb25fZ2VuZXJhdGlvbhgTIAEoBRINCgV0b2tlbhgUIAEoCRIO",
-            "CgZ0YXJnZXQYFSABKAUSEAoIZGVsYXlfbXMYFiABKAVCGKoCFUZSRnJhbWUu",
-            "TmV0d29yay5Qcm9iZWIGcHJvdG8z"));
+            "CgZ0YXJnZXQYFSABKAUSEAoIZGVsYXlfbXMYFiABKAVKBAgBEAJKBAgREBJS",
+            "CnJlcXVlc3RfaWRCIKoCHUZSRnJhbWUuTmV0d29yay5Qcm90b2NvbC5XaXJl",
+            "YgZwcm90bzM="));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { },
           new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
-            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Probe.SliceWire), global::FRFrame.Network.Probe.SliceWire.Parser, new[]{ "RequestId", "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity", "Epoch", "ConnectionGeneration", "Token", "Target", "DelayMs" }, null, null, null, null)
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.SliceWire), global::FRFrame.Network.Protocol.Wire.SliceWire.Parser, new[]{ "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity", "Epoch", "ConnectionGeneration", "Token", "Target", "DelayMs" }, null, null, null, null)
           }));
     }
     #endregion
@@ -94931,7 +93898,8 @@ namespace FRFrame.Network.Probe {
   }
   #region Messages
   /// <summary>
-  /// The surrounding FRFrame envelope supplies the opcode. Keep fields flat and bounded.
+  /// The surrounding FRFrame envelope supplies the OpCode and RequestId.
+  /// The shared control DTO is validated against its request shape at the application boundary.
   /// </summary>
   [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
   public sealed partial class SliceWire : pb::IMessage<SliceWire>
@@ -94948,7 +93916,7 @@ namespace FRFrame.Network.Probe {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::FRFrame.Network.Probe.SliceWireReflection.Descriptor.MessageTypes[0]; }
+      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[0]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -94968,7 +93936,6 @@ namespace FRFrame.Network.Probe {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public SliceWire(SliceWire other) : this() {
-      requestId_ = other.requestId_;
       error_ = other.error_;
       replyTo_ = other.replyTo_;
       room_ = other.room_;
@@ -94996,18 +93963,6 @@ namespace FRFrame.Network.Probe {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public SliceWire Clone() {
       return new SliceWire(this);
-    }
-
-    /// <summary>Field number for the "request_id" field.</summary>
-    public const int RequestIdFieldNumber = 1;
-    private uint requestId_;
-    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
-    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
-    public uint RequestId {
-      get { return requestId_; }
-      set {
-        requestId_ = value;
-      }
     }
 
     /// <summary>Field number for the "error" field.</summary>
@@ -95264,7 +94219,6 @@ namespace FRFrame.Network.Probe {
       if (ReferenceEquals(other, this)) {
         return true;
       }
-      if (RequestId != other.RequestId) return false;
       if (Error != other.Error) return false;
       if (ReplyTo != other.ReplyTo) return false;
       if (Room != other.Room) return false;
@@ -95292,7 +94246,6 @@ namespace FRFrame.Network.Probe {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override int GetHashCode() {
       int hash = 1;
-      if (RequestId != 0) hash ^= RequestId.GetHashCode();
       if (Error != 0) hash ^= Error.GetHashCode();
       if (ReplyTo != 0) hash ^= ReplyTo.GetHashCode();
       if (Room != 0) hash ^= Room.GetHashCode();
@@ -95331,10 +94284,6 @@ namespace FRFrame.Network.Probe {
     #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
       output.WriteRawMessage(this);
     #else
-      if (RequestId != 0) {
-        output.WriteRawTag(8);
-        output.WriteUInt32(RequestId);
-      }
       if (Error != 0) {
         output.WriteRawTag(16);
         output.WriteUInt32(Error);
@@ -95422,10 +94371,6 @@ namespace FRFrame.Network.Probe {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
-      if (RequestId != 0) {
-        output.WriteRawTag(8);
-        output.WriteUInt32(RequestId);
-      }
       if (Error != 0) {
         output.WriteRawTag(16);
         output.WriteUInt32(Error);
@@ -95513,9 +94458,6 @@ namespace FRFrame.Network.Probe {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public int CalculateSize() {
       int size = 0;
-      if (RequestId != 0) {
-        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(RequestId);
-      }
       if (Error != 0) {
         size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Error);
       }
@@ -95585,9 +94527,6 @@ namespace FRFrame.Network.Probe {
     public void MergeFrom(SliceWire other) {
       if (other == null) {
         return;
-      }
-      if (other.RequestId != 0) {
-        RequestId = other.RequestId;
       }
       if (other.Error != 0) {
         Error = other.Error;
@@ -95666,10 +94605,6 @@ namespace FRFrame.Network.Probe {
           default:
             _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
             break;
-          case 8: {
-            RequestId = input.ReadUInt32();
-            break;
-          }
           case 16: {
             Error = input.ReadUInt32();
             break;
@@ -95770,10 +94705,6 @@ namespace FRFrame.Network.Probe {
           default:
             _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
             break;
-          case 8: {
-            RequestId = input.ReadUInt32();
-            break;
-          }
           case 16: {
             Error = input.ReadUInt32();
             break;
@@ -95871,11 +94802,14 @@ namespace FRFrame.Network.Probe {
 
 <file path="Network/Probe/SliceWire.proto">
 syntax = "proto3";
-option csharp_namespace = "FRFrame.Network.Probe";
+package frframe.network.v1;
+option csharp_namespace = "FRFrame.Network.Protocol.Wire";
 
-// The surrounding FRFrame envelope supplies the opcode. Keep fields flat and bounded.
+// The surrounding FRFrame envelope supplies the OpCode and RequestId.
+// The shared control DTO is validated against its request shape at the application boundary.
 message SliceWire {
-  uint32 request_id = 1;
+  reserved 1, 17;
+  reserved "request_id";
   uint32 error = 2;
   uint32 reply_to = 3;
   int32 room = 4;
@@ -96133,7 +95067,7 @@ Apache License
     "rootNamespace": "FRFrame.Network.Replication",
     "references": [
         "FRFrame.Network.Shared",
-        "FRFrame.Network.Probe",
+        "FRFrame.Network.Protocol",
         "FRFrame.Network.Transport.LiteNetLib"
     ],
     "overrideReferences": true,
@@ -96267,7 +95201,7 @@ namespace FRFrame.Network.Replication
 <file path="Network/Replication/NetworkProbeClient.cs">
 using System;
 using System.Buffers.Binary;
-using FRFrame.Network.Probe;
+using FRFrame.Network.Protocol;
 using FRFrame.Network.Shared;
 using FRFrame.Network.Transport;
 using LiteEntitySystem;
@@ -96294,8 +95228,8 @@ namespace FRFrame.Network.Replication
         private readonly LesProbePeer[] _peers = new LesProbePeer[2];
         private readonly bool[] _baselines = new bool[2];
         private readonly bool[] _ackedStreams = new bool[2];
-        private readonly int[] _reliableReplies = new int[2];
-        private readonly bool[] _unreliableReplies = new bool[2];
+        private int _reliableReplies;
+        private bool _unreliableReply;
         private readonly Action<string> _log;
         private int _connection = -1;
 
@@ -96323,22 +95257,19 @@ namespace FRFrame.Network.Replication
                     _managers[i] = new ClientEntityManager(ProbeMarker.CreateTypes(), _peers[i], route.ManagerHeader);
                 }
 
-                foreach (var op in new[] { ProbeOp.Protobuf, ProbeOp.MessagePack })
+                for (var sequence = 1; sequence <= 3; sequence++)
                 {
-                    for (var sequence = 1; sequence <= 3; sequence++)
-                    {
-                        var message = ProbeCodecs.Sample();
-                        message.Sequence = sequence;
-                        var delivery = sequence == 3 ? PacketDelivery.Unreliable : PacketDelivery.ReliableOrdered;
-                        if (!_transport.TrySend(_connection, delivery, ProbeEnvelope.Write(op, ProbeCodecs.Encode(op, message))))
-                            throw new InvalidOperationException($"Probe {op} enqueue failed.");
-                    }
+                    var message = ProbeCodec.Sample();
+                    message.Sequence = sequence;
+                    var delivery = sequence == 3 ? PacketDelivery.Unreliable : PacketDelivery.ReliableOrdered;
+                    if (!_transport.TrySend(_connection, delivery, Envelope.Write(OpCode.Protobuf, ProbeCodec.Encode(message))))
+                        throw new InvalidOperationException("Protobuf probe enqueue failed.");
                 }
             }
 
             while (_transport.TryReceive(out var received))
             {
-                if (received.Bytes[0] == ProbeEnvelope.Header)
+                if (received.Bytes[0] == Envelope.Header)
                     ReadControl(received);
                 else
                     ReadBaseline(received.Bytes);
@@ -96346,11 +95277,10 @@ namespace FRFrame.Network.Replication
 
             _transport.CompleteTick(elapsedMilliseconds);
             if (!Passed && _baselines[0] && _baselines[1] && _ackedStreams[0] && _ackedStreams[1] &&
-                _reliableReplies[0] == 2 && _reliableReplies[1] == 2 &&
-                _unreliableReplies[0] && _unreliableReplies[1])
+                _reliableReplies == 2 && _unreliableReply)
             {
                 Passed = true;
-                _log("POC-1 PASS: Protobuf and MessagePack echoed in both delivery classes; two LES streams on one connection.");
+                _log("P1 PASS: Protobuf echoed in both delivery classes; two LES streams on one connection.");
             }
         }
 
@@ -96358,29 +95288,30 @@ namespace FRFrame.Network.Replication
 
         private void ReadControl(ReceivedPacket received)
         {
-            if (!ProbeEnvelope.TryRead(received.Bytes, out var op, out var payload))
-                throw new InvalidOperationException("Invalid server envelope.");
+            if (!Envelope.TryRead(received.Bytes, out var header, out var payload, out var error,
+                    MessageDirection.ServerToClient, received.Delivery))
+                throw new InvalidOperationException($"Invalid server envelope: {error}.");
+            var op = header.Op;
 
-            if (op == ProbeOp.LesAcknowledged && payload.Length == 1 && payload[0] is 1 or 2)
+            if (op == OpCode.LesAcknowledged && ProbeCodec.TryDecodeAcknowledgement(payload, out var stream))
             {
-                _ackedStreams[payload[0] - 1] = true;
-                _log($"LES stream {payload[0]} reverse translation acknowledged.");
+                _ackedStreams[stream - 1] = true;
+                _log($"LES stream {stream} reverse translation acknowledged.");
                 return;
             }
 
-            var index = op == ProbeOp.ProtobufEcho ? 0 : op == ProbeOp.MessagePackEcho ? 1 : -1;
-            if (index < 0 || !ProbeCodecs.TryDecode(op, payload, out var message))
+            if (op != OpCode.ProtobufEcho || !ProbeCodec.TryDecode(payload, out var message))
                 throw new InvalidOperationException($"Invalid {op} echo.");
 
-            var expected = ProbeCodecs.Sample();
+            var expected = ProbeCodec.Sample();
             expected.Sequence = received.Delivery == PacketDelivery.ReliableOrdered
-                ? ++_reliableReplies[index]
+                ? ++_reliableReplies
                 : 3;
-            if (!ProbeCodecs.Matches(expected, message))
+            if (!ProbeCodec.Matches(expected, message))
                 throw new InvalidOperationException($"Out-of-order or changed {op} echo.");
 
             if (received.Delivery == PacketDelivery.Unreliable)
-                _unreliableReplies[index] = true;
+                _unreliableReply = true;
             _log($"{op} {received.Delivery} #{message.Sequence}");
         }
 
@@ -96505,7 +95436,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
-using FRFrame.Network.Probe;
+using FRFrame.Network.Protocol;
 using FRFrame.Network.Shared;
 using FRFrame.Network.Transport;
 using LiteEntitySystem;
@@ -96540,7 +95471,7 @@ namespace FRFrame.Network.Replication
         public int OnlineMask { get; internal set; }
         public int Marker { get; internal set; }
         public SliceStreamState State { get; internal set; }
-        public SliceError Error { get; internal set; }
+        public ErrorCode Error { get; internal set; }
         public int Baselines { get; internal set; }
         public int Diffs { get; internal set; }
         public uint StreamId { get; internal set; }
@@ -96573,7 +95504,7 @@ namespace FRFrame.Network.Replication
         public bool Disconnected => _transport.ConnectionsClosed != 0 || (_connection >= 0 && !Connected);
         public bool Authenticated => Connected && _authenticated;
         public bool CanRecover => _token.Length != 0;
-        public SliceError AuthenticationError { get; private set; }
+        public ErrorCode AuthenticationError { get; private set; }
         private bool _authenticated;
         public int Player { get; private set; }
         public int Session { get; private set; }
@@ -96588,11 +95519,11 @@ namespace FRFrame.Network.Replication
         public int OnlineMask => Selected?.OnlineMask ?? 0;
         public int Marker => Selected?.Marker ?? 0;
         public SliceStreamState StreamState => Selected?.State ?? SliceStreamState.Idle;
-        public SliceError StreamError => Selected?.Error ?? SliceError.None;
+        public ErrorCode StreamError => Selected?.Error ?? ErrorCode.None;
         public bool Ready => StreamState == SliceStreamState.Ready;
         public int Baselines => Selected?.Baselines ?? 0;
         public int Diffs => Selected?.Diffs ?? 0;
-        public event Action<ProbeOp, SliceMessage>? Received;
+        public event Action<OpCode, SliceMessage>? Received;
 
         public static void SetReplicationLog(Action<string> info, Action<string> warning, Action<string> error) =>
             LiteEntitySystem.Logger.LoggerImpl = new SliceLesLog(info, warning, error);
@@ -96616,7 +95547,7 @@ namespace FRFrame.Network.Replication
             if (Connected)
                 _transport.Disconnect(_connection);
             foreach (var room in _rooms.Values)
-                EndStream(room, SliceStreamState.Closed, SliceError.StreamUnavailable, cancel: false);
+                EndStream(room, SliceStreamState.Closed, ErrorCode.StreamUnavailable, cancel: false);
         }
 
         public bool Reconnect(bool recover)
@@ -96629,7 +95560,7 @@ namespace FRFrame.Network.Replication
             _connection = -1;
             _recover = recover;
             Replaced = false;
-            AuthenticationError = SliceError.None;
+            AuthenticationError = ErrorCode.None;
             return _transport.Connect(_host, _port);
         }
 
@@ -96642,21 +95573,21 @@ namespace FRFrame.Network.Replication
         }
 
         public uint CreateRoom(string definition = SliceMessage.DefinitionId) =>
-            Send(ProbeOp.CreateRoom, new SliceMessage { Text = definition });
-        public uint JoinRoom(int room) => Send(ProbeOp.JoinRoom, new SliceMessage { Room = room });
+            Send(OpCode.CreateRoom, new SliceMessage { Text = definition });
+        public uint JoinRoom(int room) => Send(OpCode.JoinRoom, new SliceMessage { Room = room });
         public uint LeaveRoom(int room, int successor = 0) =>
-            Send(ProbeOp.LeaveRoom, new SliceMessage { Room = room, Target = successor });
-        public uint Kick(int room, int player) => Send(ProbeOp.Kick, new SliceMessage { Room = room, Target = player });
+            Send(OpCode.LeaveRoom, new SliceMessage { Room = room, Target = successor });
+        public uint Kick(int room, int player) => Send(OpCode.Kick, new SliceMessage { Room = room, Target = player });
         public uint TransferOwner(int room, int player) =>
-            Send(ProbeOp.TransferOwner, new SliceMessage { Room = room, Target = player });
+            Send(OpCode.TransferOwner, new SliceMessage { Room = room, Target = player });
         public uint CloseRoom(int room, uint requestId = 0) =>
-            Send(ProbeOp.CloseRoom, new SliceMessage { Room = room, RequestId = requestId });
+            Send(OpCode.CloseRoom, new SliceMessage { Room = room, RequestId = requestId });
         public uint SetMarker(int marker) => SetMarker(Room, marker);
         public uint SetMarker(int room, int marker, int delayMs = 0, uint requestId = 0) =>
-            Send(ProbeOp.SetMarker, new SliceMessage { Room = room, Marker = marker, DelayMs = delayMs, RequestId = requestId });
+            Send(OpCode.SetMarker, new SliceMessage { Room = room, Marker = marker, DelayMs = delayMs, RequestId = requestId });
         public uint SendText(string text, uint requestId = 0) => SendText(Room, text, requestId);
         public uint SendText(int room, string text, uint requestId = 0) =>
-            Send(ProbeOp.RoomMessage, new SliceMessage { Room = room, Text = text, RequestId = requestId });
+            Send(OpCode.RoomMessage, new SliceMessage { Room = room, Text = text, RequestId = requestId });
 
         public void Tick(float elapsedMilliseconds, sbyte x, sbyte y, Action<PawnSample> sample)
         {
@@ -96665,13 +95596,13 @@ namespace FRFrame.Network.Replication
             {
                 _connection = _transport.ClientConnection;
                 _authRequest = _recover
-                    ? Send(ProbeOp.Recover, new SliceMessage { Token = _token })
-                    : Send(ProbeOp.Login, new SliceMessage { Text = _identity });
+                    ? Send(OpCode.Recover, new SliceMessage { Token = _token })
+                    : Send(OpCode.Login, new SliceMessage { Text = _identity });
             }
 
             while (_transport.TryReceive(out var packet) && Connected)
             {
-                if (packet.Bytes[0] == ProbeEnvelope.Header)
+                if (packet.Bytes[0] == Envelope.Header)
                     ReadControl(packet);
                 else
                     ReadStream(packet);
@@ -96680,9 +95611,9 @@ namespace FRFrame.Network.Replication
             foreach (var room in _rooms.Values)
             {
                 if (Disconnected && room.State is SliceStreamState.Pending or SliceStreamState.Ready)
-                    EndStream(room, SliceStreamState.Closed, SliceError.StreamUnavailable, cancel: false);
+                    EndStream(room, SliceStreamState.Closed, ErrorCode.StreamUnavailable, cancel: false);
                 if (room.State == SliceStreamState.Pending && (room.Remaining -= elapsedMilliseconds) <= 0)
-                    EndStream(room, SliceStreamState.Failed, SliceError.StreamUnavailable, cancel: true);
+                    EndStream(room, SliceStreamState.Failed, ErrorCode.StreamUnavailable, cancel: true);
                 if (room.State != SliceStreamState.Ready || room.Baselines == 0 || room.Manager == null)
                     continue;
                 room.Manager.GetPlayerController<PocPlayerController>()?.SetInput(room.Id == Room ? x : (sbyte)0, room.Id == Room ? y : (sbyte)0);
@@ -96698,7 +95629,7 @@ namespace FRFrame.Network.Replication
             try
             {
                 foreach (var room in _rooms.Values)
-                    EndStream(room, SliceStreamState.Closed, SliceError.None, cancel: false);
+                    EndStream(room, SliceStreamState.Closed, ErrorCode.None, cancel: false);
                 _rooms.Clear();
                 _token = "";
             }
@@ -96708,7 +95639,7 @@ namespace FRFrame.Network.Replication
             }
         }
 
-        internal uint Send(ProbeOp op, SliceMessage request)
+        internal uint Send(OpCode op, SliceMessage request)
         {
             if (!Connected)
                 return 0;
@@ -96724,14 +95655,14 @@ namespace FRFrame.Network.Replication
 
         private void ReadControl(ReceivedPacket received)
         {
-            if (received.Delivery != PacketDelivery.ReliableOrdered ||
-                !ProbeEnvelope.TryRead(received.Bytes, out var op, out var payload) ||
-                op < ProbeOp.Response || SliceMessage.IsClientRequest(op) || !SliceCodec.TryRead(payload, out var message))
+            if (!SliceCodec.TryReadPacket(received.Bytes, MessageDirection.ServerToClient, received.Delivery,
+                    out var header, out var message, out _))
                 return;
+            var op = header.Op;
 
-            if (op == ProbeOp.Response)
+            if (op == OpCode.Response)
                 ApplyReply(message);
-            else if (op == ProbeOp.Members && Authenticated && message.MemberIds.Contains(Player))
+            else if (op == OpCode.Members && Authenticated && message.MemberIds.Contains(Player))
             {
                 var room = GetRoom(message.Room, message.Text);
                 room.Owner = message.Player;
@@ -96741,9 +95672,9 @@ namespace FRFrame.Network.Replication
                 if (room.State == SliceStreamState.Idle)
                     Open(room);
             }
-            else if (op is ProbeOp.RoomClosed or ProbeOp.RoomLeft)
+            else if (op is OpCode.RoomClosed or OpCode.RoomLeft)
                 RemoveRoom(message.Room);
-            else if (op == ProbeOp.SessionReplaced && message.Session == Session)
+            else if (op == OpCode.SessionReplaced && message.Session == Session)
             {
                 Replaced = true;
                 _token = "";
@@ -96752,9 +95683,9 @@ namespace FRFrame.Network.Replication
             }
             else if (_rooms.TryGetValue(message.Room, out var room))
             {
-                if (op == ProbeOp.MarkerChanged)
+                if (op == OpCode.MarkerChanged)
                     room.Marker = message.Marker;
-                if (op == ProbeOp.StreamClosed && message.Error != SliceError.None && MatchesStream(room, message))
+                if (op == OpCode.StreamClosed && message.Error != ErrorCode.None && MatchesStream(room, message))
                     EndStream(room, SliceStreamState.Closed, message.Error, cancel: false);
             }
             Received?.Invoke(op, message);
@@ -96762,16 +95693,16 @@ namespace FRFrame.Network.Replication
 
         private void ApplyReply(SliceMessage message)
         {
-            if (message.ReplyTo is ProbeOp.Login or ProbeOp.Recover)
+            if (message.ReplyTo is OpCode.Login or OpCode.Recover)
             {
                 if (_authRequest == 0 || message.RequestId != _authRequest)
                     return;
                 _authRequest = 0;
                 AuthenticationError = message.Error;
-                if (AuthenticationError != SliceError.None)
+                if (AuthenticationError != ErrorCode.None)
                 {
                     _authenticated = false;
-                    if (AuthenticationError != SliceError.Overloaded)
+                    if (AuthenticationError != ErrorCode.Overloaded)
                     {
                         _token = "";
                         Session = Player = Epoch = ConnectionGeneration = 0;
@@ -96799,22 +95730,22 @@ namespace FRFrame.Network.Replication
             // Create/Join responses may be historical replays. Members owns the room projection.
             if (!_rooms.TryGetValue(message.Room, out var current) || current.State != SliceStreamState.Pending)
                 return;
-            if (message.ReplyTo == ProbeOp.StreamOpen && message.RequestId == current.OpenRequest && current.Route == null)
+            if (message.ReplyTo == OpCode.StreamOpen && message.RequestId == current.OpenRequest && current.Route == null)
             {
-                if (message.Error != SliceError.None)
+                if (message.Error != ErrorCode.None)
                     EndStream(current, SliceStreamState.Failed, message.Error, cancel: false);
                 else if (message.Text == current.Definition && message.Stream != 0 &&
                          message.Schema == SliceMessage.SchemaVersion && message.Header is > 0 and <= byte.MaxValue)
                     AcceptOffer(current, message);
                 else
-                    EndStream(current, SliceStreamState.Failed, SliceError.SchemaMismatch, cancel: false);
+                    EndStream(current, SliceStreamState.Failed, ErrorCode.SchemaMismatch, cancel: false);
             }
-            else if (message.ReplyTo == ProbeOp.StreamReady && message.RequestId == current.ReadyRequest && MatchesStream(current, message))
+            else if (message.ReplyTo == OpCode.StreamReady && message.RequestId == current.ReadyRequest && MatchesStream(current, message))
             {
-                if (message.Error == SliceError.None)
+                if (message.Error == ErrorCode.None)
                 {
                     current.State = SliceStreamState.Ready;
-                    Send(ProbeOp.StreamConfirm, new SliceMessage { Room = current.Id, Stream = current.StreamId, Generation = current.Generation });
+                    Send(OpCode.StreamConfirm, new SliceMessage { Room = current.Id, Stream = current.StreamId, Generation = current.Generation });
                     _log($"POC-2 stream Ready room={current.Id} id={current.StreamId} generation={current.Generation} header={current.WireHeader}");
                 }
                 else
@@ -96843,9 +95774,9 @@ namespace FRFrame.Network.Replication
             if (room.Definition == SliceMessage.PlainRoom)
                 return;
             room.State = SliceStreamState.Pending;
-            room.Error = SliceError.None;
+            room.Error = ErrorCode.None;
             room.Remaining = 10_000;
-            room.OpenRequest = Send(ProbeOp.StreamOpen, new SliceMessage { Room = room.Id });
+            room.OpenRequest = Send(OpCode.StreamOpen, new SliceMessage { Room = room.Id });
         }
 
         private void AcceptOffer(SliceClientRoom room, SliceMessage offer)
@@ -96853,7 +95784,7 @@ namespace FRFrame.Network.Replication
             room.Route = _routes.Accept((byte)offer.Header, offer.Generation, 1);
             if (room.Route == null)
             {
-                EndStream(room, SliceStreamState.Failed, SliceError.StreamUnavailable, cancel: false);
+                EndStream(room, SliceStreamState.Failed, ErrorCode.StreamUnavailable, cancel: false);
                 return;
             }
             room.StreamId = offer.Stream;
@@ -96862,11 +95793,11 @@ namespace FRFrame.Network.Replication
             if (room.Manager.ClassDataHash != offer.Hash)
             {
                 _log($"POC-2 rejected stream hash. server={offer.Hash} local={room.Manager.ClassDataHash}; {DescribeLayout()}");
-                EndStream(room, SliceStreamState.Failed, SliceError.SchemaMismatch, cancel: true);
+                EndStream(room, SliceStreamState.Failed, ErrorCode.SchemaMismatch, cancel: true);
                 return;
             }
             room.Remaining = 10_000;
-            room.ReadyRequest = Send(ProbeOp.StreamReady, new SliceMessage
+            room.ReadyRequest = Send(OpCode.StreamReady, new SliceMessage
             {
                 Room = room.Id, Text = room.Definition, Stream = offer.Stream, Generation = offer.Generation,
                 Schema = offer.Schema, Hash = room.Manager.ClassDataHash
@@ -96914,17 +95845,17 @@ namespace FRFrame.Network.Replication
         private void RemoveRoom(int id)
         {
             if (_rooms.Remove(id, out var room))
-                EndStream(room, SliceStreamState.Closed, SliceError.None, cancel: false);
+                EndStream(room, SliceStreamState.Closed, ErrorCode.None, cancel: false);
             if (id == Room)
                 Room = _rooms.Keys.FirstOrDefault();
         }
 
-        private void EndStream(SliceClientRoom room, SliceStreamState state, SliceError reason, bool cancel)
+        private void EndStream(SliceClientRoom room, SliceStreamState state, ErrorCode reason, bool cancel)
         {
             if (room.Route != null)
             {
                 if (cancel)
-                    Send(ProbeOp.StreamCancel, new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = room.Generation });
+                    Send(OpCode.StreamCancel, new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = room.Generation });
                 _routes.Close(room.Route);
             }
             room.Route = null;
@@ -96935,7 +95866,7 @@ namespace FRFrame.Network.Replication
             room.State = state;
             room.Error = reason;
             manager?.Reset();
-            if (reason != SliceError.None)
+            if (reason != ErrorCode.None)
                 _log($"POC-2 stream {state} reason={reason} room={room.Id}");
         }
     }
@@ -97223,28 +96154,28 @@ namespace FRFrame.Network.Replication
             }
         }
 
-        private void OnMessage(ProbeOp op, SliceMessage message)
+        private void OnMessage(OpCode op, SliceMessage message)
         {
-            if (op == ProbeOp.Response && message.ReplyTo is ProbeOp.Login or ProbeOp.Recover &&
-                message.Error != SliceError.None)
+            if (op == OpCode.Response && message.ReplyTo is OpCode.Login or OpCode.Recover &&
+                message.Error != ErrorCode.None)
             {
                 Failure = $"{message.ReplyTo} returned {message.Error}.";
                 return;
             }
-            if (op == ProbeOp.Response && message.Error == SliceError.None)
+            if (op == OpCode.Response && message.Error == ErrorCode.None)
             {
-                if (message.ReplyTo == ProbeOp.Login && !_started)
+                if (message.ReplyTo == OpCode.Login && !_started)
                 {
                     _started = true;
                     if (_client.Player == 1)
                         _client.CreateRoom(SliceMessage.SharedDefinitionId);
                 }
-                else if (message.ReplyTo == ProbeOp.CreateRoom && !_secondCreated)
+                else if (message.ReplyTo == OpCode.CreateRoom && !_secondCreated)
                 {
                     _secondCreated = true;
                     _client.CreateRoom(SliceMessage.SharedDefinitionId);
                 }
-                else if (message.ReplyTo == ProbeOp.Recover || (message.ReplyTo == ProbeOp.Login && _recovering))
+                else if (message.ReplyTo == OpCode.Recover || (message.ReplyTo == OpCode.Login && _recovering))
                 {
                     var same = _client.Session == _oldSession && _client.Epoch == _oldEpoch;
                     if ((_client.Player == 1 ? !same : _client.Session == _oldSession || _client.Epoch <= _oldEpoch) ||
@@ -97254,20 +96185,20 @@ namespace FRFrame.Network.Replication
                     if (_client.Player == 1)
                         _client.SetMarker(1, 8, 2200, _delayed);
                 }
-                else if (message.ReplyTo == ProbeOp.SetMarker && message.RequestId == _delayed && _rejoined)
+                else if (message.ReplyTo == OpCode.SetMarker && message.RequestId == _delayed && _rejoined)
                     _markerComplete = message.Marker == 8;
-                else if (message.ReplyTo == ProbeOp.TransferOwner && _handoff)
+                else if (message.ReplyTo == OpCode.TransferOwner && _handoff)
                     _client.LeaveRoom(2);
             }
-            else if (op == ProbeOp.Members && message.Room == 1 && _client.Player == 3)
+            else if (op == OpCode.Members && message.Room == 1 && _client.Player == 3)
             {
                 for (var i = 0; i < message.MemberIds.Length; i++)
                     if (message.MemberIds[i] != 3 && (message.Online & (1 << i)) == 0)
                         _observedOffline.Add(message.MemberIds[i]);
             }
-            else if (op == ProbeOp.MarkerChanged && message.Room == 2 && message.Marker == 4)
+            else if (op == OpCode.MarkerChanged && message.Room == 2 && message.Marker == 4)
                 _secondMarker = true;
-            else if (op == ProbeOp.RoomBroadcast)
+            else if (op == OpCode.RoomBroadcast)
             {
                 if (message.Room == 2 && message.Text == "poc3-room-two")
                     _secondMessage = true;
@@ -97291,7 +96222,7 @@ namespace FRFrame.Network.Replication
                 if (message.Room == 1 && message.Text == "poc3-room-two-closed")
                     _finalSignal = true;
             }
-            else if (op == ProbeOp.RoomClosed && message.Room == 2 && _client.Player == 2)
+            else if (op == OpCode.RoomClosed && message.Room == 2 && _client.Player == 2)
                 _client.SendText(1, "poc3-room-two-closed");
         }
 
@@ -97356,9 +96287,9 @@ namespace FRFrame.Network.Replication
             _request = _client.SendText("poc4-rt");
         }
 
-        private void Result(ProbeOp op, SliceMessage message)
+        private void Result(OpCode op, SliceMessage message)
         {
-            if (op != ProbeOp.Response || message.ReplyTo != ProbeOp.RoomMessage || _request == 0 || message.RequestId != _request)
+            if (op != OpCode.Response || message.ReplyTo != OpCode.RoomMessage || _request == 0 || message.RequestId != _request)
                 return;
             _log($"POC-4 RTT player={_client.Player} ms={_clock.ElapsedMilliseconds - _sent} result={message.Error}");
             _request = 0;
@@ -97467,32 +96398,250 @@ namespace FRFrame.Network.Replication
             }
         }
 
-        private void OnMessage(ProbeOp op, SliceMessage message)
+        private void OnMessage(OpCode op, SliceMessage message)
         {
-            if (op == ProbeOp.Response)
+            if (op == OpCode.Response)
             {
-                if (message.ReplyTo == ProbeOp.Login && message.Error == SliceError.None)
+                if (message.ReplyTo == OpCode.Login && message.Error == ErrorCode.None)
                 {
                     if (_create)
                         _client.CreateRoom();
                     else
                         _joinAt = _elapsed;
                 }
-                if (message.ReplyTo == ProbeOp.JoinRoom && message.Error == SliceError.RoomUnavailable && _joinAttempts < 24)
+                if (message.ReplyTo == OpCode.JoinRoom && message.Error == ErrorCode.RoomUnavailable && _joinAttempts < 24)
                     _joinAt = _elapsed + 0.5f;
-                if (message.ReplyTo == ProbeOp.RoomMessage && message.RequestId == _message)
+                if (message.ReplyTo == OpCode.RoomMessage && message.RequestId == _message)
                 {
-                    if (message.Error == SliceError.None)
+                    if (message.Error == ErrorCode.None)
                         _replies++;
-                    else if (message.Error == SliceError.RequestIdConflict)
+                    else if (message.Error == ErrorCode.RequestIdConflict)
                         _conflicts++;
                 }
             }
-            else if (op == ProbeOp.RoomBroadcast && message.Player is >= 1 and <= 3 &&
+            else if (op == OpCode.RoomBroadcast && message.Player is >= 1 and <= 3 &&
                      message.Text == $"poc2-hello-{message.Player}")
                 _messages[message.Player - 1]++;
-            else if (op == ProbeOp.MarkerChanged && message.Player == _client.Owner && message.Marker == 7)
+            else if (op == OpCode.MarkerChanged && message.Player == _client.Owner && message.Marker == 7)
                 _markers++;
+        }
+    }
+}
+</file>
+
+<file path="Network/Shared/Envelope.cs">
+using System;
+using System.Buffers.Binary;
+
+namespace FRFrame.Network.Shared
+{
+    /// <summary>Stable wire identifiers. Values 2 and 4 belonged to the retired POC codec.</summary>
+    public enum OpCode : byte
+    {
+        None = 0,
+        Protobuf = 1,
+        ProtobufEcho = 3,
+        LesAcknowledged = 5,
+        Login = 6,
+        CreateRoom = 7,
+        JoinRoom = 8,
+        RoomMessage = 9,
+        SetMarker = 10,
+        StreamOpen = 11,
+        StreamReady = 12,
+        Response = 13,
+        Members = 14,
+        RoomBroadcast = 15,
+        MarkerChanged = 16,
+        StreamClosed = 17,
+        Recover = 18,
+        LeaveRoom = 19,
+        Kick = 20,
+        TransferOwner = 21,
+        CloseRoom = 22,
+        StreamCancel = 23,
+        StreamConfirm = 24,
+        RoomClosed = 25,
+        RoomLeft = 26,
+        SessionReplaced = 27
+    }
+
+    /// <summary>Correlates a request and its response within the server-selected Session.</summary>
+    public readonly struct RequestId
+    {
+        public RequestId(uint value) => Value = value;
+        public uint Value { get; }
+        public bool IsPresent => Value != 0;
+    }
+
+    public enum MessageDirection : byte { ClientToServer, ServerToClient }
+    public enum MessageKind : byte { Control, Request, Response, Push }
+    public enum PayloadKind : byte { Slice, Probe, StreamAcknowledgement }
+    public enum MessageRateClass : byte { Control, Room, Game, Stream }
+
+    /// <summary>The explicit protocol contract. Session and rate policy are consumed by subsequent runtime stages.</summary>
+    public readonly struct MessageDescriptor
+    {
+        internal MessageDescriptor(OpCode op, MessageDirection direction, MessageKind kind, PayloadKind payload,
+            int maxPayload, MessageRateClass rateClass, bool requiresSession = false, bool replayResult = false,
+            PacketDelivery? delivery = PacketDelivery.ReliableOrdered)
+        {
+            Op = op;
+            Direction = direction;
+            Kind = kind;
+            Payload = payload;
+            MaxPayload = maxPayload;
+            RateClass = rateClass;
+            RequiresSession = requiresSession;
+            ReplayResult = replayResult;
+            Delivery = delivery;
+        }
+
+        public OpCode Op { get; }
+        public MessageDirection Direction { get; }
+        public MessageKind Kind { get; }
+        public PayloadKind Payload { get; }
+        public int MaxPayload { get; }
+        public MessageRateClass RateClass { get; }
+        public bool RequiresSession { get; }
+        public bool ReplayResult { get; }
+        public OpCode Response => Kind == MessageKind.Request ? OpCode.Response : OpCode.None;
+        public bool HasRequestId => Kind == MessageKind.Request || Kind == MessageKind.Response;
+        /// <summary>Null permits both delivery classes for the diagnostic echo.</summary>
+        public PacketDelivery? Delivery { get; }
+    }
+
+    public static class ProtocolMessages
+    {
+        public static bool TryGet(OpCode op, out MessageDescriptor descriptor)
+        {
+            descriptor = op switch
+            {
+                OpCode.Protobuf => new MessageDescriptor(op, MessageDirection.ClientToServer, MessageKind.Control,
+                    PayloadKind.Probe, Envelope.MaxPayload, MessageRateClass.Control, delivery: null),
+                OpCode.ProtobufEcho => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Control,
+                    PayloadKind.Probe, Envelope.MaxPayload, MessageRateClass.Control, delivery: null),
+                OpCode.LesAcknowledged => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Control,
+                    PayloadKind.StreamAcknowledgement, 8, MessageRateClass.Stream),
+                OpCode.Login or OpCode.Recover => Request(op, 64, MessageRateClass.Control, false),
+                OpCode.CreateRoom or OpCode.JoinRoom or OpCode.LeaveRoom or OpCode.TransferOwner or OpCode.CloseRoom or OpCode.Kick =>
+                    Request(op, 64, MessageRateClass.Room),
+                OpCode.RoomMessage => Request(op, 256, MessageRateClass.Room),
+                OpCode.SetMarker => Request(op, 64, MessageRateClass.Game),
+                OpCode.StreamOpen or OpCode.StreamReady or OpCode.StreamCancel or OpCode.StreamConfirm =>
+                    Request(op, 96, MessageRateClass.Stream),
+                OpCode.Response => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Response,
+                    PayloadKind.Slice, Envelope.MaxPayload, MessageRateClass.Control),
+                OpCode.Members => Push(op, 128, MessageRateClass.Room),
+                OpCode.RoomBroadcast => Push(op, 256, MessageRateClass.Room),
+                OpCode.MarkerChanged => Push(op, 64, MessageRateClass.Game),
+                OpCode.StreamClosed => Push(op, 64, MessageRateClass.Stream),
+                OpCode.RoomClosed or OpCode.RoomLeft => Push(op, 64, MessageRateClass.Room),
+                OpCode.SessionReplaced => Push(op, 64, MessageRateClass.Control),
+                _ => default
+            };
+            return descriptor.Op != OpCode.None;
+        }
+
+        private static MessageDescriptor Request(OpCode op, int max, MessageRateClass rate, bool session = true) =>
+            new MessageDescriptor(op, MessageDirection.ClientToServer, MessageKind.Request, PayloadKind.Slice,
+                max, rate, requiresSession: session, replayResult: session);
+
+        private static MessageDescriptor Push(OpCode op, int max, MessageRateClass rate) =>
+            new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Push, PayloadKind.Slice, max, rate);
+    }
+
+    public readonly struct EnvelopeHeader
+    {
+        internal EnvelopeHeader(MessageDescriptor descriptor, RequestId requestId)
+        {
+            Descriptor = descriptor;
+            RequestId = requestId;
+        }
+
+        public MessageDescriptor Descriptor { get; }
+        public OpCode Op => Descriptor.Op;
+        public RequestId RequestId { get; }
+    }
+
+    /// <summary>One datagram contains one header and one Protobuf payload, with no transport or identity fields.</summary>
+    public static class Envelope
+    {
+        public const byte Header = 0;
+        public const int HeaderSize = 9;
+        public const int MaxPacket = 480;
+        public const int MaxPayload = MaxPacket - HeaderSize;
+
+        public static byte[] Write(OpCode op, ReadOnlySpan<byte> payload, RequestId requestId = default)
+        {
+            if (!ProtocolMessages.TryGet(op, out var descriptor))
+                throw new ArgumentOutOfRangeException(nameof(op));
+            if (descriptor.HasRequestId != requestId.IsPresent)
+                throw new ArgumentException("RequestId must be nonzero for a request or response and zero for other messages.", nameof(requestId));
+            if (payload.Length > descriptor.MaxPayload)
+                throw new ArgumentOutOfRangeException(nameof(payload));
+
+            var packet = new byte[HeaderSize + payload.Length];
+            packet[0] = Header;
+            packet[1] = (byte)ProtocolVersion.Current.Value;
+            packet[2] = (byte)op;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(3), (ushort)payload.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(5), requestId.Value);
+            payload.CopyTo(packet.AsSpan(HeaderSize));
+            return packet;
+        }
+
+        public static bool TryRead(ReadOnlySpan<byte> packet, out EnvelopeHeader header,
+            out ReadOnlySpan<byte> payload, out ErrorCode error, MessageDirection? direction = null,
+            PacketDelivery? delivery = null)
+        {
+            header = default;
+            payload = default;
+            error = ErrorCode.MalformedMessage;
+            if (packet.Length > MaxPacket)
+            {
+                error = ErrorCode.PayloadTooLarge;
+                return false;
+            }
+            if (packet.Length < 2 || packet[0] != Header)
+                return false;
+            if (packet[1] != ProtocolVersion.Current.Value)
+            {
+                error = ErrorCode.UnsupportedProtocolVersion;
+                return false;
+            }
+            if (packet.Length < HeaderSize ||
+                BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(3)) != packet.Length - HeaderSize)
+                return false;
+            if (!ProtocolMessages.TryGet((OpCode)packet[2], out var descriptor))
+            {
+                error = ErrorCode.UnknownOpCode;
+                return false;
+            }
+            if (direction.HasValue && descriptor.Direction != direction.Value)
+            {
+                error = ErrorCode.WrongDirection;
+                return false;
+            }
+            if (delivery.HasValue && descriptor.Delivery.HasValue && delivery.Value != descriptor.Delivery.Value)
+            {
+                error = ErrorCode.WrongDelivery;
+                return false;
+            }
+
+            var requestId = new RequestId(BinaryPrimitives.ReadUInt32LittleEndian(packet.Slice(5)));
+            if (descriptor.HasRequestId != requestId.IsPresent)
+                return false;
+            if (packet.Length - HeaderSize > descriptor.MaxPayload)
+            {
+                error = ErrorCode.PayloadTooLarge;
+                return false;
+            }
+
+            header = new EnvelopeHeader(descriptor, requestId);
+            payload = packet.Slice(HeaderSize);
+            error = ErrorCode.None;
+            return true;
         }
     }
 }
@@ -97548,84 +96697,6 @@ namespace FRFrame.Network.Shared
 }
 </file>
 
-<file path="Network/Shared/ProbeEnvelope.cs">
-using System;
-using System.Buffers.Binary;
-
-namespace FRFrame.Network.Shared
-{
-    /// <summary>Temporary POC opcodes carried in one reliable or unreliable UDP packet.</summary>
-    public enum ProbeOp : byte
-    {
-        Protobuf = 1,
-        MessagePack = 2,
-        ProtobufEcho = 3,
-        MessagePackEcho = 4,
-        LesAcknowledged = 5,
-        Login = 6,
-        CreateRoom = 7,
-        JoinRoom = 8,
-        RoomMessage = 9,
-        SetMarker = 10,
-        StreamOpen = 11,
-        StreamReady = 12,
-        Response = 13,
-        Members = 14,
-        RoomBroadcast = 15,
-        MarkerChanged = 16,
-        StreamClosed = 17,
-        Recover = 18,
-        LeaveRoom = 19,
-        Kick = 20,
-        TransferOwner = 21,
-        CloseRoom = 22,
-        StreamCancel = 23,
-        StreamConfirm = 24,
-        RoomClosed = 25,
-        RoomLeft = 26,
-        SessionReplaced = 27
-    }
-
-    /// <summary>POC-only wire envelope: reserved header, version, opcode, LE length and payload.</summary>
-    public static class ProbeEnvelope
-    {
-        public const byte Header = 0;
-        public const int HeaderSize = 5;
-        public const int MaxPacket = 480;
-        public const int MaxPayload = MaxPacket - HeaderSize;
-
-        public static byte[] Write(ProbeOp op, ReadOnlySpan<byte> payload)
-        {
-            if (payload.Length > MaxPayload)
-                throw new ArgumentOutOfRangeException(nameof(payload));
-
-            var packet = new byte[HeaderSize + payload.Length];
-            packet[0] = Header;
-            packet[1] = (byte)ProtocolVersion.Current.Value;
-            packet[2] = (byte)op;
-            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(3), (ushort)payload.Length);
-            payload.CopyTo(packet.AsSpan(HeaderSize));
-            return packet;
-        }
-
-        public static bool TryRead(ReadOnlySpan<byte> packet, out ProbeOp op, out ReadOnlySpan<byte> payload)
-        {
-            op = default;
-            payload = default;
-            if (packet.Length < HeaderSize || packet.Length > MaxPacket || packet[0] != Header ||
-                packet[1] != ProtocolVersion.Current.Value || packet[2] < (byte)ProbeOp.Protobuf ||
-                packet[2] > (byte)ProbeOp.SessionReplaced ||
-                BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(3)) != packet.Length - HeaderSize)
-                return false;
-
-            op = (ProbeOp)packet[2];
-            payload = packet.Slice(HeaderSize);
-            return true;
-        }
-    }
-}
-</file>
-
 <file path="Network/Shared/ProtocolVersion.cs">
 namespace FRFrame.Network.Shared
 {
@@ -97641,7 +96712,7 @@ namespace FRFrame.Network.Shared
         public int Value { get; }
 
         /// <summary>Gets the protocol revision implemented by this build.</summary>
-        public static ProtocolVersion Current => new ProtocolVersion(1);
+        public static ProtocolVersion Current => new ProtocolVersion(2);
     }
 }
 </file>
@@ -97651,11 +96722,40 @@ using System;
 
 namespace FRFrame.Network.Shared
 {
-    public enum SliceError : byte
+    public enum ErrorCode : byte
     {
-        None, Invalid, Unauthenticated, AlreadyLoggedIn, RoomUnavailable, RoomFull, NotMember,
-        RequestIdConflict, Overloaded, SchemaMismatch, StreamUnavailable, GameFaulted, RecoveryDeferred,
-        NotOwner, RoomClosing, Cancelled, CleanupFaulted, NoGame, InvalidRecovery, CallbackTimeout
+        None = 0,
+        Invalid = 1,
+        Unauthenticated = 2,
+        AlreadyLoggedIn = 3,
+        RoomUnavailable = 4,
+        RoomFull = 5,
+        NotMember = 6,
+        RequestIdConflict = 7,
+        Overloaded = 8,
+        SchemaMismatch = 9,
+        StreamUnavailable = 10,
+        GameFaulted = 11,
+        RecoveryDeferred = 12,
+        NotOwner = 13,
+        RoomClosing = 14,
+        Cancelled = 15,
+        CleanupFaulted = 16,
+        NoGame = 17,
+        InvalidRecovery = 18,
+        CallbackTimeout = 19,
+        MalformedMessage = 20,
+        UnsupportedProtocolVersion = 21,
+        UnknownOpCode = 22,
+        WrongDirection = 23,
+        WrongDelivery = 24,
+        PayloadTooLarge = 25,
+        RateLimited = 26,
+        SessionExpired = 27,
+        Forbidden = 28,
+        InvalidState = 29,
+        ServerDraining = 30,
+        InternalError = 31
     }
 
     /// <summary>Transport-neutral data for the POC-2 control channel. Direction and field use follow the opcode.</summary>
@@ -97669,8 +96769,8 @@ namespace FRFrame.Network.Shared
         public const string PlainRoom = "plain";
 
         public uint RequestId;
-        public SliceError Error;
-        public ProbeOp ReplyTo;
+        public ErrorCode Error;
+        public OpCode ReplyTo;
         public int Room;
         public int Player;
         public int Session;
@@ -97690,39 +96790,38 @@ namespace FRFrame.Network.Shared
         public int Target;
         public int DelayMs;
 
-        public static bool IsClientRequest(ProbeOp op) =>
-            (op >= ProbeOp.Login && op <= ProbeOp.StreamReady) ||
-            (op >= ProbeOp.Recover && op <= ProbeOp.StreamConfirm);
+        public static bool IsClientRequest(OpCode op) =>
+            ProtocolMessages.TryGet(op, out var descriptor) && descriptor.Kind == MessageKind.Request;
 
         /// <summary>Validates the fields consumed by the server. Server-owned fields cannot appear in a request.</summary>
-        public bool IsRequest(ProbeOp op) =>
+        public bool IsRequest(OpCode op) =>
             RequestId != 0 && Error == 0 && ReplyTo == 0 && Player == 0 && Session == 0 &&
             Header == 0 && MemberIds.Length == 0 && Online == 0 && Capacity == 0 &&
             Epoch == 0 && ConnectionGeneration == 0 &&
-            (op == ProbeOp.Recover || Token.Length == 0) &&
-            (op == ProbeOp.StreamReady || (Schema == 0 && Hash == 0)) &&
-            (op == ProbeOp.StreamReady || op == ProbeOp.StreamCancel || op == ProbeOp.StreamConfirm ||
+            (op == OpCode.Recover || Token.Length == 0) &&
+            (op == OpCode.StreamReady || (Schema == 0 && Hash == 0)) &&
+            (op == OpCode.StreamReady || op == OpCode.StreamCancel || op == OpCode.StreamConfirm ||
                 (Stream == 0 && Generation == 0)) &&
-            (op == ProbeOp.Kick || op == ProbeOp.TransferOwner || op == ProbeOp.LeaveRoom || Target == 0) &&
-            (op == ProbeOp.SetMarker || DelayMs == 0) &&
-            (op == ProbeOp.SetMarker || Marker == 0) &&
+            (op == OpCode.Kick || op == OpCode.TransferOwner || op == OpCode.LeaveRoom || Target == 0) &&
+            (op == OpCode.SetMarker || DelayMs == 0) &&
+            (op == OpCode.SetMarker || Marker == 0) &&
             (op switch
             {
-                ProbeOp.Login => Room == 0 && Text.Length == 1 && Text[0] >= 'A' && Text[0] <= 'H',
-                ProbeOp.Recover => Room == 0 && Text.Length == 0 && Token.Length == 44,
-                ProbeOp.CreateRoom => Room == 0 && IsDefinition(Text),
-                ProbeOp.JoinRoom => Room > 0 && Text.Length == 0,
-                ProbeOp.StreamOpen => Room > 0 && Text.Length == 0,
-                ProbeOp.RoomMessage => Room > 0 && !string.IsNullOrWhiteSpace(Text) && Text.Length <= 80,
-                ProbeOp.SetMarker => Room > 0 && Text.Length == 0 && Marker >= 0 && Marker <= 9 &&
+                OpCode.Login => Room == 0 && Text.Length == 1 && Text[0] >= 'A' && Text[0] <= 'H',
+                OpCode.Recover => Room == 0 && Text.Length == 0 && Token.Length == 44,
+                OpCode.CreateRoom => Room == 0 && IsDefinition(Text),
+                OpCode.JoinRoom => Room > 0 && Text.Length == 0,
+                OpCode.StreamOpen => Room > 0 && Text.Length == 0,
+                OpCode.RoomMessage => Room > 0 && !string.IsNullOrWhiteSpace(Text) && Text.Length <= 80,
+                OpCode.SetMarker => Room > 0 && Text.Length == 0 && Marker >= 0 && Marker <= 9 &&
                     DelayMs >= 0 && DelayMs <= 12_000,
-                ProbeOp.StreamReady => Room > 0 && IsDefinition(Text) && Stream != 0 && Generation != 0,
-                ProbeOp.StreamCancel => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
-                ProbeOp.StreamConfirm => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
-                ProbeOp.LeaveRoom => Room > 0 && Text.Length == 0 && Target >= 0 && Target <= 8,
-                ProbeOp.Kick => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
-                ProbeOp.TransferOwner => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
-                ProbeOp.CloseRoom => Room > 0 && Text.Length == 0,
+                OpCode.StreamReady => Room > 0 && IsDefinition(Text) && Stream != 0 && Generation != 0,
+                OpCode.StreamCancel => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
+                OpCode.StreamConfirm => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
+                OpCode.LeaveRoom => Room > 0 && Text.Length == 0 && Target >= 0 && Target <= 8,
+                OpCode.Kick => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
+                OpCode.TransferOwner => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
+                OpCode.CloseRoom => Room > 0 && Text.Length == 0,
                 _ => false
             });
 
@@ -109829,7 +108928,7 @@ namespace FRFrame.Network.Transport
             if (!_connections.TryGetValue(connection, out var target) ||
                 target.Outbound.Count >= QueueLimit || bytes.Length == 0 ||
                 (delivery == PacketDelivery.Unreliable && target.UnreliableOutbound >= QueueLimit - ControlReserve) ||
-                bytes.Length > Math.Min(ProbeEnvelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(method)))
+                bytes.Length > Math.Min(Envelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(method)))
             {
                 RejectedOutbound++;
                 if (target != null && target.Outbound.Count == QueueLimit && delivery == PacketDelivery.ReliableOrdered)
@@ -109847,7 +108946,7 @@ namespace FRFrame.Network.Transport
 
         public int GetUnreliableLimit(int connection) =>
             _connections.TryGetValue(connection, out var target)
-                ? Math.Min(ProbeEnvelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(DeliveryMethod.Unreliable))
+                ? Math.Min(Envelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(DeliveryMethod.Unreliable))
                 : 0;
 
         /// <summary>Coalesces requests into the next shared pump pass over all connections.</summary>
@@ -109906,7 +109005,7 @@ namespace FRFrame.Network.Transport
             var reliable = method == DeliveryMethod.ReliableOrdered;
             if (!_receiving.TryGetValue(peer.Id, out var target) || channel != 0 ||
                 (!reliable && method != DeliveryMethod.Unreliable) || reader.AvailableBytes == 0 ||
-                reader.AvailableBytes > ProbeEnvelope.MaxPacket ||
+                reader.AvailableBytes > Envelope.MaxPacket ||
                 target.Control.Count + target.Ingress.Count >= QueueLimit ||
                 (!reliable && target.Ingress.Count >= QueueLimit - ControlReserve))
             {
@@ -109932,7 +109031,7 @@ namespace FRFrame.Network.Transport
     "references": [
         "FRFrame.Network.Client",
         "FRFrame.Network.Shared",
-        "FRFrame.Network.Probe",
+        "FRFrame.Network.Protocol",
         "FRFrame.Network.Replication",
         "Unity.InputSystem"
     ],
@@ -109943,7 +109042,7 @@ namespace FRFrame.Network.Transport
 
 <file path="Network/Unity/NetworkLocalProbe.cs">
 using System;
-using FRFrame.Network.Probe;
+using FRFrame.Network.Protocol;
 using FRFrame.Network.Replication;
 using UnityEngine;
 
@@ -109964,7 +109063,7 @@ namespace FRFrame.Network.Unity
         }
 
 #if UNITY_EDITOR
-        [UnityEditor.MenuItem("FRFrame/Network/Run Local POC-1 Probe")]
+        [UnityEditor.MenuItem("FRFrame/Network/Run Local P1 Protocol Probe")]
         private static void RunEditorProbe()
         {
             if (Application.isPlaying)
@@ -109977,9 +109076,9 @@ namespace FRFrame.Network.Unity
         private static void Run(string host, int port)
         {
             void Log(string value) => Debug.Log($"[FRFrame.Network] {value}");
-            ProbeCodecs.VerifyAndMeasure(Log);
+            ProtocolChecks.Run(Log);
             var probe = new NetworkProbeClient(host, port, Log);
-            var owner = new GameObject("FRFrame Network POC-1 Probe");
+            var owner = new GameObject("FRFrame Network P1 Protocol Probe");
             DontDestroyOnLoad(owner);
             owner.AddComponent<NetworkLocalProbe>()._probe = probe;
         }
@@ -109993,7 +109092,7 @@ namespace FRFrame.Network.Unity
                 if (_probe.Passed)
                     Destroy(gameObject);
                 else if (_seconds >= 15)
-                    throw new TimeoutException("POC-1 probe timed out after 15 seconds.");
+                    throw new TimeoutException("P1 protocol probe timed out after 15 seconds.");
             }
             catch (Exception error)
             {
@@ -110178,12 +109277,12 @@ namespace FRFrame.Network.Unity
             }
         }
 
-        private void OnMessage(ProbeOp op, SliceMessage message)
+        private void OnMessage(OpCode op, SliceMessage message)
         {
-            if (op == ProbeOp.Response)
+            if (op == OpCode.Response)
             {
                 Log($"POC-2 reply {message.ReplyTo} request={message.RequestId} result={message.Error} room={message.Room} player={message.Player}");
-                if (message.ReplyTo == ProbeOp.Login && message.Error == SliceError.None)
+                if (message.ReplyTo == OpCode.Login && message.Error == ErrorCode.None)
                 {
                     if (_createOnLogin)
                         _client.CreateRoom();
@@ -110193,11 +109292,11 @@ namespace FRFrame.Network.Unity
                     _joinOnLogin = 0;
                 }
             }
-            else if (op == ProbeOp.RoomBroadcast)
+            else if (op == OpCode.RoomBroadcast)
                 Log($"POC-2 room={message.Room} from={message.Player} {message.Text}");
-            else if (op == ProbeOp.MarkerChanged)
+            else if (op == OpCode.MarkerChanged)
                 Log($"POC-2 marker={message.Marker} from={message.Player}");
-            else if (op == ProbeOp.Members)
+            else if (op == OpCode.Members)
                 Log($"POC-2 members={string.Join(",", message.MemberIds)} online-mask={message.Online} owner={message.Player} room={message.Room}");
         }
 
@@ -110254,7 +109353,7 @@ namespace FRFrame.Network.Unity
             }
             else
             {
-                GUILayout.Label(client.AuthenticationError != SliceError.None ? $"Authentication failed: {client.AuthenticationError}" :
+                GUILayout.Label(client.AuthenticationError != ErrorCode.None ? $"Authentication failed: {client.AuthenticationError}" :
                     client.Replaced ? "Session replaced" : client.Disconnected ? "Disconnected" :
                     client.Authenticated ? "Connected" : "Connecting…");
                 if (client.Authenticated)
@@ -110314,7 +109413,7 @@ namespace FRFrame.Network.Unity
                 {
                     if (GUILayout.Button("Disconnect")) client.Disconnect();
                 }
-                else if (client.Session != 0 || client.AuthenticationError != SliceError.None)
+                else if (client.Session != 0 || client.AuthenticationError != ErrorCode.None)
                 {
                     if (client.CanRecover && GUILayout.Button("Recover session")) client.Reconnect(true);
                     if (GUILayout.Button("New login")) client.Reconnect(false);

@@ -1,11 +1,16 @@
 syntax = "proto3";
 
-package frframe.network.poc;
-option csharp_namespace = "FRFrame.Network.Probe";
+package frframe.network.v1;
+option csharp_namespace = "FRFrame.Network.Protocol.Wire";
 
 message ProtoProbe
 {
     int32 sequence = 1;
     string text = 2;
     bytes samples = 3;
+}
+
+// Diagnostic acknowledgement for the existing loopback probe.
+message StreamAcknowledgement {
+    uint32 stream = 1;
 }

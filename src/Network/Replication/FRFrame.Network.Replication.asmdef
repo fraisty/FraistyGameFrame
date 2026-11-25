@@ -3,7 +3,7 @@
     "rootNamespace": "FRFrame.Network.Replication",
     "references": [
         "FRFrame.Network.Shared",
-        "FRFrame.Network.Probe",
+        "FRFrame.Network.Protocol",
         "FRFrame.Network.Transport.LiteNetLib"
     ],
     "overrideReferences": true,

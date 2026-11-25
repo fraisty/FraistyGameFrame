@@ -168,12 +168,12 @@ namespace FRFrame.Network.Unity
             }
         }
 
-        private void OnMessage(ProbeOp op, SliceMessage message)
+        private void OnMessage(OpCode op, SliceMessage message)
         {
-            if (op == ProbeOp.Response)
+            if (op == OpCode.Response)
             {
                 Log($"POC-2 reply {message.ReplyTo} request={message.RequestId} result={message.Error} room={message.Room} player={message.Player}");
-                if (message.ReplyTo == ProbeOp.Login && message.Error == SliceError.None)
+                if (message.ReplyTo == OpCode.Login && message.Error == ErrorCode.None)
                 {
                     if (_createOnLogin)
                         _client.CreateRoom();
@@ -183,11 +183,11 @@ namespace FRFrame.Network.Unity
                     _joinOnLogin = 0;
                 }
             }
-            else if (op == ProbeOp.RoomBroadcast)
+            else if (op == OpCode.RoomBroadcast)
                 Log($"POC-2 room={message.Room} from={message.Player} {message.Text}");
-            else if (op == ProbeOp.MarkerChanged)
+            else if (op == OpCode.MarkerChanged)
                 Log($"POC-2 marker={message.Marker} from={message.Player}");
-            else if (op == ProbeOp.Members)
+            else if (op == OpCode.Members)
                 Log($"POC-2 members={string.Join(",", message.MemberIds)} online-mask={message.Online} owner={message.Player} room={message.Room}");
         }
 
@@ -244,7 +244,7 @@ namespace FRFrame.Network.Unity
             }
             else
             {
-                GUILayout.Label(client.AuthenticationError != SliceError.None ? $"Authentication failed: {client.AuthenticationError}" :
+                GUILayout.Label(client.AuthenticationError != ErrorCode.None ? $"Authentication failed: {client.AuthenticationError}" :
                     client.Replaced ? "Session replaced" : client.Disconnected ? "Disconnected" :
                     client.Authenticated ? "Connected" : "Connecting…");
                 if (client.Authenticated)
@@ -304,7 +304,7 @@ namespace FRFrame.Network.Unity
                 {
                     if (GUILayout.Button("Disconnect")) client.Disconnect();
                 }
-                else if (client.Session != 0 || client.AuthenticationError != SliceError.None)
+                else if (client.Session != 0 || client.AuthenticationError != ErrorCode.None)
                 {
                     if (client.CanRecover && GUILayout.Button("Recover session")) client.Reconnect(true);
                     if (GUILayout.Button("New login")) client.Reconnect(false);

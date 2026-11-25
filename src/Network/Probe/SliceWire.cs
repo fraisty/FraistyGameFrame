@@ -9,7 +9,7 @@ using pb = global::Google.Protobuf;
 using pbc = global::Google.Protobuf.Collections;
 using pbr = global::Google.Protobuf.Reflection;
 using scg = global::System.Collections.Generic;
-namespace FRFrame.Network.Probe {
+namespace FRFrame.Network.Protocol.Wire {
 
   /// <summary>Holder for reflection information generated from SliceWire.proto</summary>
   public static partial class SliceWireReflection {
@@ -24,20 +24,21 @@ namespace FRFrame.Network.Probe {
     static SliceWireReflection() {
       byte[] descriptorData = global::System.Convert.FromBase64String(
           string.Concat(
-            "Cg9TbGljZVdpcmUucHJvdG8i9AIKCVNsaWNlV2lyZRISCgpyZXF1ZXN0X2lk",
-            "GAEgASgNEg0KBWVycm9yGAIgASgNEhAKCHJlcGx5X3RvGAMgASgNEgwKBHJv",
+            "Cg9TbGljZVdpcmUucHJvdG8SEmZyZnJhbWUubmV0d29yay52MSL4AgoJU2xp",
+            "Y2VXaXJlEg0KBWVycm9yGAIgASgNEhAKCHJlcGx5X3RvGAMgASgNEgwKBHJv",
             "b20YBCABKAUSDgoGcGxheWVyGAUgASgFEg8KB3Nlc3Npb24YBiABKAUSDAoE",
             "dGV4dBgHIAEoCRIOCgZzdHJlYW0YCCABKA0SEgoKZ2VuZXJhdGlvbhgJIAEo",
             "DRIOCgZoZWFkZXIYCiABKAUSDgoGc2NoZW1hGAsgASgFEgwKBGhhc2gYDCAB",
             "KAYSDgoGbWFya2VyGA0gASgFEhIKCm1lbWJlcl9pZHMYDiADKAUSDgoGb25s",
             "aW5lGA8gASgFEhAKCGNhcGFjaXR5GBAgASgFEg0KBWVwb2NoGBIgASgFEh0K",
             "FWNvbm5lY3Rpb25fZ2VuZXJhdGlvbhgTIAEoBRINCgV0b2tlbhgUIAEoCRIO",
-            "CgZ0YXJnZXQYFSABKAUSEAoIZGVsYXlfbXMYFiABKAVCGKoCFUZSRnJhbWUu",
-            "TmV0d29yay5Qcm9iZWIGcHJvdG8z"));
+            "CgZ0YXJnZXQYFSABKAUSEAoIZGVsYXlfbXMYFiABKAVKBAgBEAJKBAgREBJS",
+            "CnJlcXVlc3RfaWRCIKoCHUZSRnJhbWUuTmV0d29yay5Qcm90b2NvbC5XaXJl",
+            "YgZwcm90bzM="));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { },
           new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
-            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Probe.SliceWire), global::FRFrame.Network.Probe.SliceWire.Parser, new[]{ "RequestId", "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity", "Epoch", "ConnectionGeneration", "Token", "Target", "DelayMs" }, null, null, null, null)
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.SliceWire), global::FRFrame.Network.Protocol.Wire.SliceWire.Parser, new[]{ "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity", "Epoch", "ConnectionGeneration", "Token", "Target", "DelayMs" }, null, null, null, null)
           }));
     }
     #endregion
@@ -45,7 +46,8 @@ namespace FRFrame.Network.Probe {
   }
   #region Messages
   /// <summary>
-  /// The surrounding FRFrame envelope supplies the opcode. Keep fields flat and bounded.
+  /// The surrounding FRFrame envelope supplies the OpCode and RequestId.
+  /// The shared control DTO is validated against its request shape at the application boundary.
   /// </summary>
   [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
   public sealed partial class SliceWire : pb::IMessage<SliceWire>
@@ -62,7 +64,7 @@ namespace FRFrame.Network.Probe {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::FRFrame.Network.Probe.SliceWireReflection.Descriptor.MessageTypes[0]; }
+      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[0]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -82,7 +84,6 @@ namespace FRFrame.Network.Probe {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public SliceWire(SliceWire other) : this() {
-      requestId_ = other.requestId_;
       error_ = other.error_;
       replyTo_ = other.replyTo_;
       room_ = other.room_;
@@ -110,18 +111,6 @@ namespace FRFrame.Network.Probe {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public SliceWire Clone() {
       return new SliceWire(this);
-    }
-
-    /// <summary>Field number for the "request_id" field.</summary>
-    public const int RequestIdFieldNumber = 1;
-    private uint requestId_;
-    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
-    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
-    public uint RequestId {
-      get { return requestId_; }
-      set {
-        requestId_ = value;
-      }
     }
 
     /// <summary>Field number for the "error" field.</summary>
@@ -378,7 +367,6 @@ namespace FRFrame.Network.Probe {
       if (ReferenceEquals(other, this)) {
         return true;
       }
-      if (RequestId != other.RequestId) return false;
       if (Error != other.Error) return false;
       if (ReplyTo != other.ReplyTo) return false;
       if (Room != other.Room) return false;
@@ -406,7 +394,6 @@ namespace FRFrame.Network.Probe {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override int GetHashCode() {
       int hash = 1;
-      if (RequestId != 0) hash ^= RequestId.GetHashCode();
       if (Error != 0) hash ^= Error.GetHashCode();
       if (ReplyTo != 0) hash ^= ReplyTo.GetHashCode();
       if (Room != 0) hash ^= Room.GetHashCode();
@@ -445,10 +432,6 @@ namespace FRFrame.Network.Probe {
     #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
       output.WriteRawMessage(this);
     #else
-      if (RequestId != 0) {
-        output.WriteRawTag(8);
-        output.WriteUInt32(RequestId);
-      }
       if (Error != 0) {
         output.WriteRawTag(16);
         output.WriteUInt32(Error);
@@ -536,10 +519,6 @@ namespace FRFrame.Network.Probe {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
-      if (RequestId != 0) {
-        output.WriteRawTag(8);
-        output.WriteUInt32(RequestId);
-      }
       if (Error != 0) {
         output.WriteRawTag(16);
         output.WriteUInt32(Error);
@@ -627,9 +606,6 @@ namespace FRFrame.Network.Probe {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public int CalculateSize() {
       int size = 0;
-      if (RequestId != 0) {
-        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(RequestId);
-      }
       if (Error != 0) {
         size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Error);
       }
@@ -699,9 +675,6 @@ namespace FRFrame.Network.Probe {
     public void MergeFrom(SliceWire other) {
       if (other == null) {
         return;
-      }
-      if (other.RequestId != 0) {
-        RequestId = other.RequestId;
       }
       if (other.Error != 0) {
         Error = other.Error;
@@ -780,10 +753,6 @@ namespace FRFrame.Network.Probe {
           default:
             _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
             break;
-          case 8: {
-            RequestId = input.ReadUInt32();
-            break;
-          }
           case 16: {
             Error = input.ReadUInt32();
             break;
@@ -884,10 +853,6 @@ namespace FRFrame.Network.Probe {
           default:
             _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
             break;
-          case 8: {
-            RequestId = input.ReadUInt32();
-            break;
-          }
           case 16: {
             Error = input.ReadUInt32();
             break;
