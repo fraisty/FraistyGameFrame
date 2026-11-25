@@ -5,7 +5,8 @@
         "FRFrame.Network.Client",
         "FRFrame.Network.Shared",
         "FRFrame.Network.Probe",
-        "FRFrame.Network.Replication"
+        "FRFrame.Network.Replication",
+        "Unity.InputSystem"
     ],
     "overrideReferences": true,
     "autoReferenced": false

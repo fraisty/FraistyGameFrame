@@ -1,0 +1,22 @@
+syntax = "proto3";
+option csharp_namespace = "FRFrame.Network.Probe";
+
+// The surrounding FRFrame envelope supplies the opcode. Keep fields flat and bounded.
+message SliceWire {
+  uint32 request_id = 1;
+  uint32 error = 2;
+  uint32 reply_to = 3;
+  int32 room = 4;
+  int32 player = 5;
+  int32 session = 6;
+  string text = 7;
+  uint32 stream = 8;
+  uint32 generation = 9;
+  int32 header = 10;
+  int32 schema = 11;
+  fixed64 hash = 12;
+  int32 marker = 13;
+  repeated int32 member_ids = 14;
+  int32 online = 15;
+  int32 capacity = 16;
+}
