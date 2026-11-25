@@ -255,7 +255,7 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
         [Test]
         public void PreviewSpeedUsesCapturedInputsAndSamplesActualAnimatorTime()
         {
-            var original=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayUnityAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/Resources/FRFrameSkillLab/AnimationAnimator.asset");
+            var original=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayUnityAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/ValidationAssets/FRFrameSkillLab/AnimationAnimator.asset");
             var source=UnityEngine.Object.Instantiate(original);
             try
             {
@@ -270,7 +270,7 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
                 }
             }
             finally{UnityEngine.Object.DestroyImmediate(source);}
-            var weighted=UnityEngine.Object.Instantiate(UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayUnityAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/Resources/FRFrameSkillLab/AnimationAnimatorWeighted.asset"));
+            var weighted=UnityEngine.Object.Instantiate(UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayUnityAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/ValidationAssets/FRFrameSkillLab/AnimationAnimatorWeighted.asset"));
             try
             {
                 foreach(var variant in weighted.Variants)variant.MinimumLevel=1;
@@ -290,7 +290,7 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
         [Test]
         public void CubismPreviewUsesSupportedCameraAndKeepsSubjectInDepthRange()
         {
-            var source=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/Resources/FRFrameSkillLab/AnimationLive2D.asset");
+            var source=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/ValidationAssets/FRFrameSkillLab/AnimationLive2D.asset");
             using(var preview=new FRFrame.Gameplay.Unity.Editor.GameplayAnimationPreviewSession())
             {
                 preview.UpdateContext(new FRFrame.Gameplay.Editor.SkillAuthoring.GameplaySkillPreviewContext(null,null,null,presentationSource:source));
@@ -306,7 +306,7 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
         [Test]
         public void PlayablesSamplesRealControllerSubjectAndReleasesItsGraph()
         {
-            var source=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayUnityAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/Resources/FRFrameSkillLab/AnimationPlayables.asset");
+            var source=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayUnityAnimationAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/ValidationAssets/FRFrameSkillLab/AnimationPlayables.asset");
             Assert.That(source,Is.Not.Null,"Permanent animation Lab content is required.");
             var subject=source.CreatePreviewSubject();IGameplayAnimationPlayer player=null;
             try

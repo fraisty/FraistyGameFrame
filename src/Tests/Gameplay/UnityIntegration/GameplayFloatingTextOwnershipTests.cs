@@ -87,7 +87,7 @@ namespace FRFrame.Gameplay.Tests.UnityIntegration
                 using(var world=new GameplayStandardWorld())
                 {
                     var actor=world.CreateActor(default);var controller=new GameplayUnityAnimationController(actor,subject);actor.Presentation=controller;
-                    var source=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayFloatingTextAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/Resources/FRFrameSkillLab/CombatFloatingText.asset");
+                    var source=UnityEditor.AssetDatabase.LoadAssetAtPath<GameplayFloatingTextAsset>("Assets/GameRes/GameplayValidation/FRFrameSkillLab/ValidationAssets/FRFrameSkillLab/CombatFloatingText.asset");
                     var definition=source.Build(new GameplayAuthoringBuildContext());
                     var context=new GameplayContext(actor.Id,new GameplayTargetData(actor.Id));
                     var outcome=new GameplayCombatOutcome(context,GameplayCombatOutcomeKind.Heal,default,25,0,50,75);
