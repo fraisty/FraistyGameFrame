@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -15,12 +16,14 @@ namespace FRFrame.Network.Transport
         private const string ProbeKey = "frframe-poc-1";
         private const int ConnectionLimit = 8;
         private const int SendBudget = 8;
+        private const int ControlReserve = 8;
         private readonly Dictionary<int, Connection> _connections = new Dictionary<int, Connection>();
         private readonly Dictionary<int, Connection> _receiving = new Dictionary<int, Connection>();
         private readonly ProbeNetManager _manager;
         private int _connectionSerial;
         private bool _accepting;
         private bool _flushRequested;
+        private int _controlCursor, _inputCursor, _controlBurst;
 
         private sealed class ProbeNetManager : NetManager
         {
@@ -59,8 +62,10 @@ namespace FRFrame.Network.Transport
             public readonly NetPeer Peer;
             public readonly int Id;
             public readonly Queue<ReceivedPacket> Ingress = new Queue<ReceivedPacket>();
+            public readonly Queue<ReceivedPacket> Control = new Queue<ReceivedPacket>();
             public readonly Queue<(PacketDelivery Delivery, byte[] Bytes)> Outbound =
                 new Queue<(PacketDelivery, byte[])>();
+            public int UnreliableOutbound;
 
             public Connection(NetPeer peer, int id)
             {
@@ -78,7 +83,8 @@ namespace FRFrame.Network.Transport
                 ChannelsCount = 1,
                 MtuDiscovery = false,
                 MaxFragmentsCount = 0,
-                MaxPacketPerManualReceive = 64
+                MaxPacketPerManualReceive = 64,
+                EnableStatistics = true
             };
             events.ConnectionRequestEvent += request =>
             {
@@ -113,6 +119,12 @@ namespace FRFrame.Network.Transport
         public int ConnectionsClosed { get; private set; }
         public int RejectedIngress { get; private set; }
         public int RejectedOutbound { get; private set; }
+        public int IngressHighWater { get; private set; }
+        public int OutboundHighWater { get; private set; }
+        public int ReliableHighWater { get; private set; }
+        public int ReliableOverflows { get; private set; }
+        public int ActiveConnections => _connections.Count;
+        public NetStatistics Statistics => _manager.Statistics;
         public int LocalPort => _manager.LocalPort;
 
         public bool Listen(IPAddress ipv4, bool ipv6Loopback, int port)
@@ -143,18 +155,42 @@ namespace FRFrame.Network.Transport
         public bool IsConnected(int connection) => _connections.ContainsKey(connection);
 
         public void PollIncoming() => _manager.PollEvents();
+        public void StopAccepting() => _accepting = false;
 
         public bool TryReceive(out ReceivedPacket packet)
         {
+            if (_controlBurst < 4 && TryReceiveLane(true, ref _controlCursor, out packet))
+            {
+                _controlBurst++;
+                return true;
+            }
+            if (TryReceiveLane(false, ref _inputCursor, out packet))
+            {
+                _controlBurst = 0;
+                return true;
+            }
+            return TryReceiveLane(true, ref _controlCursor, out packet);
+        }
+
+        private bool TryReceiveLane(bool control, ref int cursor, out ReceivedPacket packet)
+        {
+            Connection? next = null, first = null;
             foreach (var connection in _connections.Values)
             {
-                if (connection.Ingress.Count != 0)
-                {
-                    packet = connection.Ingress.Dequeue();
-                    return true;
-                }
+                if ((control ? connection.Control : connection.Ingress).Count == 0)
+                    continue;
+                if (first == null || connection.Id < first.Id)
+                    first = connection;
+                if (connection.Id > cursor && (next == null || connection.Id < next.Id))
+                    next = connection;
             }
-
+            next ??= first;
+            if (next != null)
+            {
+                cursor = next.Id;
+                packet = (control ? next.Control : next.Ingress).Dequeue();
+                return true;
+            }
             packet = default;
             return false;
         }
@@ -164,13 +200,19 @@ namespace FRFrame.Network.Transport
             var method = delivery == PacketDelivery.ReliableOrdered ? DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable;
             if (!_connections.TryGetValue(connection, out var target) ||
                 target.Outbound.Count >= QueueLimit || bytes.Length == 0 ||
+                (delivery == PacketDelivery.Unreliable && target.UnreliableOutbound >= QueueLimit - ControlReserve) ||
                 bytes.Length > Math.Min(ProbeEnvelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(method)))
             {
                 RejectedOutbound++;
+                if (target != null && target.Outbound.Count == QueueLimit && delivery == PacketDelivery.ReliableOrdered)
+                    ReliableOverflows++;
                 return false;
             }
 
             target.Outbound.Enqueue((delivery, bytes.ToArray()));
+            if (delivery == PacketDelivery.Unreliable)
+                target.UnreliableOutbound++;
+            OutboundHighWater = Math.Max(OutboundHighWater, target.Outbound.Count);
             RequestFlush();
             return true;
         }
@@ -194,12 +236,18 @@ namespace FRFrame.Network.Transport
                     {
                         var packet = connection.Outbound.Peek();
                         var reliable = packet.Delivery == PacketDelivery.ReliableOrdered;
-                        if (reliable && connection.Peer.GetPacketsCountInReliableQueue(0, true) >= QueueLimit)
+                        var pending = connection.Peer.GetPacketsCountInReliableQueue(0, true);
+                        ReliableHighWater = Math.Max(ReliableHighWater, pending);
+                        if (reliable && pending >= QueueLimit)
                             break;
 
                         connection.Outbound.Dequeue();
+                        if (!reliable)
+                            connection.UnreliableOutbound--;
                         connection.Peer.Send(packet.Bytes, 0,
                             reliable ? DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable);
+                        if (reliable)
+                            ReliableHighWater = Math.Max(ReliableHighWater, pending + 1);
                     }
 
                     _flushRequested |= connection.Outbound.Count != 0;
@@ -230,7 +278,9 @@ namespace FRFrame.Network.Transport
             var reliable = method == DeliveryMethod.ReliableOrdered;
             if (!_receiving.TryGetValue(peer.Id, out var target) || channel != 0 ||
                 (!reliable && method != DeliveryMethod.Unreliable) || reader.AvailableBytes == 0 ||
-                reader.AvailableBytes > ProbeEnvelope.MaxPacket || target.Ingress.Count >= QueueLimit)
+                reader.AvailableBytes > ProbeEnvelope.MaxPacket ||
+                target.Control.Count + target.Ingress.Count >= QueueLimit ||
+                (!reliable && target.Ingress.Count >= QueueLimit - ControlReserve))
             {
                 RejectedIngress++;
                 if (reliable)
@@ -239,7 +289,9 @@ namespace FRFrame.Network.Transport
             }
 
             var delivery = reliable ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable;
-            target.Ingress.Enqueue(new ReceivedPacket(target.Id, delivery, reader.GetRemainingBytesSpan().ToArray()));
+            (reliable ? target.Control : target.Ingress)
+                .Enqueue(new ReceivedPacket(target.Id, delivery, reader.GetRemainingBytesSpan().ToArray()));
+            IngressHighWater = Math.Max(IngressHighWater, target.Control.Count + target.Ingress.Count);
         }
     }
 }

@@ -18,6 +18,8 @@ namespace FRFrame.Network.Unity
         private SliceClient _client;
         private SliceSmoke _smoke;
         private SliceLifecycleSmoke _lifecycle;
+        private SliceObservation _observation;
+        private bool _observe;
         private string _host = "127.0.0.1";
         private string _port = "9050";
         private string _identity = "A";
@@ -53,6 +55,7 @@ namespace FRFrame.Network.Unity
             }
 
             var arguments = Environment.GetCommandLineArgs();
+            _observe = Array.IndexOf(arguments, "-frNetworkObserve") >= 0;
             if (Array.IndexOf(arguments, "-frNetworkLayoutCheck") >= 0)
             {
                 SliceLayoutCheck.Run(Debug.Log);
@@ -99,6 +102,11 @@ namespace FRFrame.Network.Unity
             if (_lifecycle != null)
             {
                 _lifecycle.Tick(Time.unscaledDeltaTime * 1000, UpdateView);
+                if (_observe && _lifecycle.Passed)
+                {
+                    _observation ??= new SliceObservation(_lifecycle.CurrentClient, Log);
+                    _observation.Tick();
+                }
                 if (!_reportedTimeout && (_lifecycle.TimedOut || _lifecycle.Failure.Length != 0))
                 {
                     _reportedTimeout = true;
@@ -320,6 +328,8 @@ namespace FRFrame.Network.Unity
 
         private void Disconnect()
         {
+            _observation?.Dispose();
+            _observation = null;
             _lifecycle?.Dispose();
             _client?.Dispose();
             _client = null;

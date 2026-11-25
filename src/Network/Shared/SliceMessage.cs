@@ -6,7 +6,7 @@ namespace FRFrame.Network.Shared
     {
         None, Invalid, Unauthenticated, AlreadyLoggedIn, RoomUnavailable, RoomFull, NotMember,
         RequestIdConflict, Overloaded, SchemaMismatch, StreamUnavailable, GameFaulted, RecoveryDeferred,
-        NotOwner, RoomClosing, Cancelled, CleanupFaulted, NoGame, InvalidRecovery
+        NotOwner, RoomClosing, Cancelled, CleanupFaulted, NoGame, InvalidRecovery, CallbackTimeout
     }
 
     /// <summary>Transport-neutral data for the POC-2 control channel. Direction and field use follow the opcode.</summary>

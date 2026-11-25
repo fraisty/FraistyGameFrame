@@ -19,7 +19,7 @@ namespace FRFrame.Network.Replication
         private readonly uint[] _stream = new uint[3];
         private readonly HashSet<int> _observedOffline = new();
         private readonly bool _short;
-        private float _time, _moveAt = -1, _nextJoin, _resumeAt;
+        private float _time, _moveAt = -1, _nextJoin, _resumeAt, _rebindStarted;
         private bool _started, _secondCreated, _secondMessage, _secondMarker, _sentSecond;
         private bool _recovering, _rejoined, _markerComplete, _recoveryPublished, _replacementPublished;
         private bool _handoff, _closing, _finalSignal;
@@ -118,13 +118,13 @@ namespace FRFrame.Network.Replication
                 {
                     _recoveryPublished = true;
                     _client.SendText(1, "poc3-recovered");
-                    _log($"POC-3 recovery replay and rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]}");
+                    _log($"POC-3 recovery replay and rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]} elapsedMs={(_time - _rebindStarted) * 1000:F0}");
                 }
                 if (_client.Player == 2 && _onlineReplacementObserved && !_replacementPublished)
                 {
                     _replacementPublished = true;
                     _client.SendText(1, "poc3-replaced");
-                    _log($"POC-3 replacement rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]}");
+                    _log($"POC-3 replacement rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]} elapsedMs={(_time - _rebindStarted) * 1000:F0}");
                 }
             }
             if (_client.Player == 2 && _replacementPublished && !_closing &&
@@ -208,6 +208,7 @@ namespace FRFrame.Network.Replication
                     _secondMessage = true;
                 if (_client.Player == 1 && message.Text == "poc3-accepted-before-loss" && !_rejoined)
                 {
+                    _rebindStarted = _time;
                     _client.Disconnect();
                     _resumeAt = _time + 0.35f;
                 }
@@ -238,6 +239,7 @@ namespace FRFrame.Network.Replication
             }
             try
             {
+                _rebindStarted = _time;
                 var replacement = _client.StartOnlineReplacement(_replacementPort);
                 _retiring = _client;
                 _retiring.Received -= OnMessage;
@@ -256,5 +258,47 @@ namespace FRFrame.Network.Replication
             if (_client != _initial)
                 _client.Dispose();
         }
+    }
+
+    /// <summary>One sampled control round trip at a time, shared by the optional POC observers.</summary>
+    public sealed class SliceObservation : IDisposable
+    {
+        private readonly SliceClient _client;
+        private readonly Action<string> _log;
+        private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+        private long _next, _sent;
+        private uint _request;
+
+        public SliceObservation(SliceClient client, Action<string> log)
+        {
+            _client = client;
+            _log = log;
+            _client.Received += Result;
+        }
+
+        public void Tick()
+        {
+            var now = _clock.ElapsedMilliseconds;
+            if (_request != 0 && now - _sent >= 4000)
+            {
+                _log($"POC-4 RTT timeout player={_client.Player}");
+                _request = 0;
+            }
+            if (_request != 0 || now < _next || !_client.Authenticated || !_client.Ready)
+                return;
+            _sent = now;
+            _next = now + 1000;
+            _request = _client.SendText("poc4-rt");
+        }
+
+        private void Result(ProbeOp op, SliceMessage message)
+        {
+            if (op != ProbeOp.Response || message.ReplyTo != ProbeOp.RoomMessage || _request == 0 || message.RequestId != _request)
+                return;
+            _log($"POC-4 RTT player={_client.Player} ms={_clock.ElapsedMilliseconds - _sent} result={message.Error}");
+            _request = 0;
+        }
+
+        public void Dispose() => _client.Received -= Result;
     }
 }

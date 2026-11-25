@@ -34,7 +34,7 @@ namespace FRFrame.Network.Probe
                 using var stream = new MemoryStream(payload.ToArray(), false);
                 using var input = CodedInputStream.CreateWithLimits(stream, ProbeEnvelope.MaxPayload, 4);
                 var wire = Parser.ParseFrom(input);
-                if (wire.Error > (uint)SliceError.InvalidRecovery ||
+                if (wire.Error > (uint)SliceError.CallbackTimeout ||
                     (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((ProbeOp)wire.ReplyTo))) ||
                     wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 || wire.Token.Length > 44)
                     return false;

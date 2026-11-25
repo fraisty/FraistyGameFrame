@@ -94858,7 +94858,7 @@ namespace FRFrame.Network.Probe
                 using var stream = new MemoryStream(payload.ToArray(), false);
                 using var input = CodedInputStream.CreateWithLimits(stream, ProbeEnvelope.MaxPayload, 4);
                 var wire = Parser.ParseFrom(input);
-                if (wire.Error > (uint)SliceError.InvalidRecovery ||
+                if (wire.Error > (uint)SliceError.CallbackTimeout ||
                     (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((ProbeOp)wire.ReplyTo))) ||
                     wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 || wire.Token.Length > 44)
                     return false;
@@ -96435,6 +96435,9 @@ namespace FRFrame.Network.Replication
         [SyncVarFlags(SyncFlags.Interpolated)] private SyncVar<float> _y;
         private float _moveX;
         private float _moveY;
+#if !UNITY_5_3_OR_NEWER
+        internal Action? BeforeTestUpdate;
+#endif
 
         public PocPlayerPawn(EntityParams parameters) : base(parameters) { }
 
@@ -96469,6 +96472,9 @@ namespace FRFrame.Network.Replication
 
         protected override void Update()
         {
+#if !UNITY_5_3_OR_NEWER
+            BeforeTestUpdate?.Invoke();
+#endif
             base.Update();
             var step = 4 * EntityManager.DeltaTimeF;
             _x.Value = Math.Clamp(_x.Value + _moveX * step, -12, 12);
@@ -97078,7 +97084,7 @@ namespace FRFrame.Network.Replication
         private readonly uint[] _stream = new uint[3];
         private readonly HashSet<int> _observedOffline = new();
         private readonly bool _short;
-        private float _time, _moveAt = -1, _nextJoin, _resumeAt;
+        private float _time, _moveAt = -1, _nextJoin, _resumeAt, _rebindStarted;
         private bool _started, _secondCreated, _secondMessage, _secondMarker, _sentSecond;
         private bool _recovering, _rejoined, _markerComplete, _recoveryPublished, _replacementPublished;
         private bool _handoff, _closing, _finalSignal;
@@ -97177,13 +97183,13 @@ namespace FRFrame.Network.Replication
                 {
                     _recoveryPublished = true;
                     _client.SendText(1, "poc3-recovered");
-                    _log($"POC-3 recovery replay and rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]}");
+                    _log($"POC-3 recovery replay and rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]} elapsedMs={(_time - _rebindStarted) * 1000:F0}");
                 }
                 if (_client.Player == 2 && _onlineReplacementObserved && !_replacementPublished)
                 {
                     _replacementPublished = true;
                     _client.SendText(1, "poc3-replaced");
-                    _log($"POC-3 replacement rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]}");
+                    _log($"POC-3 replacement rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]} elapsedMs={(_time - _rebindStarted) * 1000:F0}");
                 }
             }
             if (_client.Player == 2 && _replacementPublished && !_closing &&
@@ -97267,6 +97273,7 @@ namespace FRFrame.Network.Replication
                     _secondMessage = true;
                 if (_client.Player == 1 && message.Text == "poc3-accepted-before-loss" && !_rejoined)
                 {
+                    _rebindStarted = _time;
                     _client.Disconnect();
                     _resumeAt = _time + 0.35f;
                 }
@@ -97297,6 +97304,7 @@ namespace FRFrame.Network.Replication
             }
             try
             {
+                _rebindStarted = _time;
                 var replacement = _client.StartOnlineReplacement(_replacementPort);
                 _retiring = _client;
                 _retiring.Received -= OnMessage;
@@ -97315,6 +97323,48 @@ namespace FRFrame.Network.Replication
             if (_client != _initial)
                 _client.Dispose();
         }
+    }
+
+    /// <summary>One sampled control round trip at a time, shared by the optional POC observers.</summary>
+    public sealed class SliceObservation : IDisposable
+    {
+        private readonly SliceClient _client;
+        private readonly Action<string> _log;
+        private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+        private long _next, _sent;
+        private uint _request;
+
+        public SliceObservation(SliceClient client, Action<string> log)
+        {
+            _client = client;
+            _log = log;
+            _client.Received += Result;
+        }
+
+        public void Tick()
+        {
+            var now = _clock.ElapsedMilliseconds;
+            if (_request != 0 && now - _sent >= 4000)
+            {
+                _log($"POC-4 RTT timeout player={_client.Player}");
+                _request = 0;
+            }
+            if (_request != 0 || now < _next || !_client.Authenticated || !_client.Ready)
+                return;
+            _sent = now;
+            _next = now + 1000;
+            _request = _client.SendText("poc4-rt");
+        }
+
+        private void Result(ProbeOp op, SliceMessage message)
+        {
+            if (op != ProbeOp.Response || message.ReplyTo != ProbeOp.RoomMessage || _request == 0 || message.RequestId != _request)
+                return;
+            _log($"POC-4 RTT player={_client.Player} ms={_clock.ElapsedMilliseconds - _sent} result={message.Error}");
+            _request = 0;
+        }
+
+        public void Dispose() => _client.Received -= Result;
     }
 }
 </file>
@@ -97605,7 +97655,7 @@ namespace FRFrame.Network.Shared
     {
         None, Invalid, Unauthenticated, AlreadyLoggedIn, RoomUnavailable, RoomFull, NotMember,
         RequestIdConflict, Overloaded, SchemaMismatch, StreamUnavailable, GameFaulted, RecoveryDeferred,
-        NotOwner, RoomClosing, Cancelled, CleanupFaulted, NoGame, InvalidRecovery
+        NotOwner, RoomClosing, Cancelled, CleanupFaulted, NoGame, InvalidRecovery, CallbackTimeout
     }
 
     /// <summary>Transport-neutral data for the POC-2 control channel. Direction and field use follow the opcode.</summary>
@@ -109576,6 +109626,7 @@ namespace LiteNetLib
 </file>
 
 <file path="Network/Transport/LiteNetLib/LiteNetDatagrams.cs">
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -109593,12 +109644,14 @@ namespace FRFrame.Network.Transport
         private const string ProbeKey = "frframe-poc-1";
         private const int ConnectionLimit = 8;
         private const int SendBudget = 8;
+        private const int ControlReserve = 8;
         private readonly Dictionary<int, Connection> _connections = new Dictionary<int, Connection>();
         private readonly Dictionary<int, Connection> _receiving = new Dictionary<int, Connection>();
         private readonly ProbeNetManager _manager;
         private int _connectionSerial;
         private bool _accepting;
         private bool _flushRequested;
+        private int _controlCursor, _inputCursor, _controlBurst;
 
         private sealed class ProbeNetManager : NetManager
         {
@@ -109637,8 +109690,10 @@ namespace FRFrame.Network.Transport
             public readonly NetPeer Peer;
             public readonly int Id;
             public readonly Queue<ReceivedPacket> Ingress = new Queue<ReceivedPacket>();
+            public readonly Queue<ReceivedPacket> Control = new Queue<ReceivedPacket>();
             public readonly Queue<(PacketDelivery Delivery, byte[] Bytes)> Outbound =
                 new Queue<(PacketDelivery, byte[])>();
+            public int UnreliableOutbound;
 
             public Connection(NetPeer peer, int id)
             {
@@ -109656,7 +109711,8 @@ namespace FRFrame.Network.Transport
                 ChannelsCount = 1,
                 MtuDiscovery = false,
                 MaxFragmentsCount = 0,
-                MaxPacketPerManualReceive = 64
+                MaxPacketPerManualReceive = 64,
+                EnableStatistics = true
             };
             events.ConnectionRequestEvent += request =>
             {
@@ -109691,6 +109747,12 @@ namespace FRFrame.Network.Transport
         public int ConnectionsClosed { get; private set; }
         public int RejectedIngress { get; private set; }
         public int RejectedOutbound { get; private set; }
+        public int IngressHighWater { get; private set; }
+        public int OutboundHighWater { get; private set; }
+        public int ReliableHighWater { get; private set; }
+        public int ReliableOverflows { get; private set; }
+        public int ActiveConnections => _connections.Count;
+        public NetStatistics Statistics => _manager.Statistics;
         public int LocalPort => _manager.LocalPort;
 
         public bool Listen(IPAddress ipv4, bool ipv6Loopback, int port)
@@ -109721,18 +109783,42 @@ namespace FRFrame.Network.Transport
         public bool IsConnected(int connection) => _connections.ContainsKey(connection);
 
         public void PollIncoming() => _manager.PollEvents();
+        public void StopAccepting() => _accepting = false;
 
         public bool TryReceive(out ReceivedPacket packet)
         {
+            if (_controlBurst < 4 && TryReceiveLane(true, ref _controlCursor, out packet))
+            {
+                _controlBurst++;
+                return true;
+            }
+            if (TryReceiveLane(false, ref _inputCursor, out packet))
+            {
+                _controlBurst = 0;
+                return true;
+            }
+            return TryReceiveLane(true, ref _controlCursor, out packet);
+        }
+
+        private bool TryReceiveLane(bool control, ref int cursor, out ReceivedPacket packet)
+        {
+            Connection? next = null, first = null;
             foreach (var connection in _connections.Values)
             {
-                if (connection.Ingress.Count != 0)
-                {
-                    packet = connection.Ingress.Dequeue();
-                    return true;
-                }
+                if ((control ? connection.Control : connection.Ingress).Count == 0)
+                    continue;
+                if (first == null || connection.Id < first.Id)
+                    first = connection;
+                if (connection.Id > cursor && (next == null || connection.Id < next.Id))
+                    next = connection;
             }
-
+            next ??= first;
+            if (next != null)
+            {
+                cursor = next.Id;
+                packet = (control ? next.Control : next.Ingress).Dequeue();
+                return true;
+            }
             packet = default;
             return false;
         }
@@ -109742,13 +109828,19 @@ namespace FRFrame.Network.Transport
             var method = delivery == PacketDelivery.ReliableOrdered ? DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable;
             if (!_connections.TryGetValue(connection, out var target) ||
                 target.Outbound.Count >= QueueLimit || bytes.Length == 0 ||
+                (delivery == PacketDelivery.Unreliable && target.UnreliableOutbound >= QueueLimit - ControlReserve) ||
                 bytes.Length > Math.Min(ProbeEnvelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(method)))
             {
                 RejectedOutbound++;
+                if (target != null && target.Outbound.Count == QueueLimit && delivery == PacketDelivery.ReliableOrdered)
+                    ReliableOverflows++;
                 return false;
             }
 
             target.Outbound.Enqueue((delivery, bytes.ToArray()));
+            if (delivery == PacketDelivery.Unreliable)
+                target.UnreliableOutbound++;
+            OutboundHighWater = Math.Max(OutboundHighWater, target.Outbound.Count);
             RequestFlush();
             return true;
         }
@@ -109772,12 +109864,18 @@ namespace FRFrame.Network.Transport
                     {
                         var packet = connection.Outbound.Peek();
                         var reliable = packet.Delivery == PacketDelivery.ReliableOrdered;
-                        if (reliable && connection.Peer.GetPacketsCountInReliableQueue(0, true) >= QueueLimit)
+                        var pending = connection.Peer.GetPacketsCountInReliableQueue(0, true);
+                        ReliableHighWater = Math.Max(ReliableHighWater, pending);
+                        if (reliable && pending >= QueueLimit)
                             break;
 
                         connection.Outbound.Dequeue();
+                        if (!reliable)
+                            connection.UnreliableOutbound--;
                         connection.Peer.Send(packet.Bytes, 0,
                             reliable ? DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable);
+                        if (reliable)
+                            ReliableHighWater = Math.Max(ReliableHighWater, pending + 1);
                     }
 
                     _flushRequested |= connection.Outbound.Count != 0;
@@ -109808,7 +109906,9 @@ namespace FRFrame.Network.Transport
             var reliable = method == DeliveryMethod.ReliableOrdered;
             if (!_receiving.TryGetValue(peer.Id, out var target) || channel != 0 ||
                 (!reliable && method != DeliveryMethod.Unreliable) || reader.AvailableBytes == 0 ||
-                reader.AvailableBytes > ProbeEnvelope.MaxPacket || target.Ingress.Count >= QueueLimit)
+                reader.AvailableBytes > ProbeEnvelope.MaxPacket ||
+                target.Control.Count + target.Ingress.Count >= QueueLimit ||
+                (!reliable && target.Ingress.Count >= QueueLimit - ControlReserve))
             {
                 RejectedIngress++;
                 if (reliable)
@@ -109817,7 +109917,9 @@ namespace FRFrame.Network.Transport
             }
 
             var delivery = reliable ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable;
-            target.Ingress.Enqueue(new ReceivedPacket(target.Id, delivery, reader.GetRemainingBytesSpan().ToArray()));
+            (reliable ? target.Control : target.Ingress)
+                .Enqueue(new ReceivedPacket(target.Id, delivery, reader.GetRemainingBytesSpan().ToArray()));
+            IngressHighWater = Math.Max(IngressHighWater, target.Control.Count + target.Ingress.Count);
         }
     }
 }
@@ -109926,6 +110028,8 @@ namespace FRFrame.Network.Unity
         private SliceClient _client;
         private SliceSmoke _smoke;
         private SliceLifecycleSmoke _lifecycle;
+        private SliceObservation _observation;
+        private bool _observe;
         private string _host = "127.0.0.1";
         private string _port = "9050";
         private string _identity = "A";
@@ -109961,6 +110065,7 @@ namespace FRFrame.Network.Unity
             }
 
             var arguments = Environment.GetCommandLineArgs();
+            _observe = Array.IndexOf(arguments, "-frNetworkObserve") >= 0;
             if (Array.IndexOf(arguments, "-frNetworkLayoutCheck") >= 0)
             {
                 SliceLayoutCheck.Run(Debug.Log);
@@ -110007,6 +110112,11 @@ namespace FRFrame.Network.Unity
             if (_lifecycle != null)
             {
                 _lifecycle.Tick(Time.unscaledDeltaTime * 1000, UpdateView);
+                if (_observe && _lifecycle.Passed)
+                {
+                    _observation ??= new SliceObservation(_lifecycle.CurrentClient, Log);
+                    _observation.Tick();
+                }
                 if (!_reportedTimeout && (_lifecycle.TimedOut || _lifecycle.Failure.Length != 0))
                 {
                     _reportedTimeout = true;
@@ -110228,6 +110338,8 @@ namespace FRFrame.Network.Unity
 
         private void Disconnect()
         {
+            _observation?.Dispose();
+            _observation = null;
             _lifecycle?.Dispose();
             _client?.Dispose();
             _client = null;

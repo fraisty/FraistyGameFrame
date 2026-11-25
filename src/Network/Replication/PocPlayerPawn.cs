@@ -17,6 +17,9 @@ namespace FRFrame.Network.Replication
         [SyncVarFlags(SyncFlags.Interpolated)] private SyncVar<float> _y;
         private float _moveX;
         private float _moveY;
+#if !UNITY_5_3_OR_NEWER
+        internal Action? BeforeTestUpdate;
+#endif
 
         public PocPlayerPawn(EntityParams parameters) : base(parameters) { }
 
@@ -51,6 +54,9 @@ namespace FRFrame.Network.Replication
 
         protected override void Update()
         {
+#if !UNITY_5_3_OR_NEWER
+            BeforeTestUpdate?.Invoke();
+#endif
             base.Update();
             var step = 4 * EntityManager.DeltaTimeF;
             _x.Value = Math.Clamp(_x.Value + _moveX * step, -12, 12);
