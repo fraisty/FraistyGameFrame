@@ -8,7 +8,11 @@ namespace FRFrame.Network.Replication
     // Both builds register these exact constructors in the same order.
     internal sealed class PocPlayerPawn : PawnLogic
     {
+#if FRFRAME_POC2_LAYOUT_NEGATIVE
+        private SyncVar<short> _player;
+#else
         private SyncVar<int> _player;
+#endif
         [SyncVarFlags(SyncFlags.Interpolated)] private SyncVar<float> _x;
         [SyncVarFlags(SyncFlags.Interpolated)] private SyncVar<float> _y;
         private float _moveX;
@@ -28,7 +32,11 @@ namespace FRFrame.Network.Replication
 
         public void Spawn(int player)
         {
+#if FRFRAME_POC2_LAYOUT_NEGATIVE
+            _player.Value = (short)player;
+#else
             _player.Value = player;
+#endif
             _x.Value = player * 2;
         }
 

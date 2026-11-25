@@ -11,7 +11,7 @@ namespace FRFrame.Network.Unity
     public sealed class NetworkMultiplayerDemo : MonoBehaviour
     {
         private static readonly Color[] PawnColors = { Color.cyan, new Color(1, 0.65f, 0.25f), new Color(0.83f, 0.60f, 1) };
-        private readonly Dictionary<int, GameObject> _views = new();
+        private readonly Dictionary<int, (GameObject Object, Material Material)> _views = new();
         private readonly Queue<string> _events = new(8);
         private SliceClient _client;
         private SliceSmoke _smoke;
@@ -39,6 +39,7 @@ namespace FRFrame.Network.Unity
             {
                 var floor = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 floor.name = "Movement bounds";
+                floor.transform.SetParent(transform);
                 floor.transform.SetPositionAndRotation(new Vector3(0, -0.2f, 0), Quaternion.identity);
                 floor.transform.localScale = new Vector3(24, 0.1f, 16);
                 _floorMaterial = floor.GetComponent<Renderer>().material;
@@ -46,6 +47,12 @@ namespace FRFrame.Network.Unity
             }
 
             var arguments = Environment.GetCommandLineArgs();
+            if (Array.IndexOf(arguments, "-frNetworkLayoutCheck") >= 0)
+            {
+                SliceLayoutCheck.Run(Debug.Log);
+                Application.Quit();
+                return;
+            }
             var start = Array.IndexOf(arguments, "-frNetworkDemo");
             if (start >= 0 && start + 4 < arguments.Length)
             {
@@ -95,7 +102,7 @@ namespace FRFrame.Network.Unity
                 }
                 _client.Tick(Time.unscaledDeltaTime * 1000, (sbyte)x, (sbyte)y, UpdateView);
             }
-            if (_client.Disconnected && _views.Count != 0)
+            if (!_client.Ready && _views.Count != 0)
                 ClearViews();
         }
 
@@ -147,13 +154,16 @@ namespace FRFrame.Network.Unity
                 return;
             if (!_views.TryGetValue(sample.Player, out var view))
             {
-                view = GameObject.CreatePrimitive(sample.Owned ? PrimitiveType.Capsule : PrimitiveType.Sphere);
-                view.name = $"Network player {sample.Player}";
-                view.transform.localScale = Vector3.one * 0.8f;
-                view.GetComponent<Renderer>().material.color = PawnColors[(sample.Player - 1) % PawnColors.Length];
+                var pawn = GameObject.CreatePrimitive(sample.Owned ? PrimitiveType.Capsule : PrimitiveType.Sphere);
+                pawn.name = $"Network player {sample.Player}";
+                pawn.transform.SetParent(transform);
+                pawn.transform.localScale = Vector3.one * 0.8f;
+                var material = pawn.GetComponent<Renderer>().material;
+                material.color = PawnColors[(sample.Player - 1) % PawnColors.Length];
+                view = (pawn, material);
                 _views.Add(sample.Player, view);
             }
-            view.transform.position = new Vector3(sample.X, 0.65f, sample.Y);
+            view.Object.transform.position = new Vector3(sample.X, 0.65f, sample.Y);
         }
 
         private void OnGUI()
@@ -164,7 +174,7 @@ namespace FRFrame.Network.Unity
             {
                 foreach (var view in _views)
                 {
-                    var position = _camera.WorldToScreenPoint(view.Value.transform.position);
+                    var position = _camera.WorldToScreenPoint(view.Value.Object.transform.position);
                     GUI.Label(new Rect(position.x - 10, Screen.height - position.y - 31, 40, 21), $"P{view.Key}");
                 }
             }
@@ -201,7 +211,12 @@ namespace FRFrame.Network.Unity
                     for (var i = 0; i < _client.Members.Length; i++)
                         members += $"  P{_client.Members[i]}:{((_client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
                     GUILayout.Label(members);
-                    GUILayout.Label(_client.Ready ? "LES ready. Click Move, then use WASD." : "Negotiating LES stream…");
+                    GUILayout.Label(_client.StreamState switch
+                    {
+                        SliceStreamState.Ready => "LES ready. Click Move, then use WASD.",
+                        SliceStreamState.Pending => "Negotiating LES stream…",
+                        _ => $"LES {_client.StreamState}: {_client.StreamError}"
+                    });
                     GUILayout.BeginHorizontal();
                     GUI.SetNextControlName("room message");
                     _message = GUILayout.TextField(_message, 80);
@@ -247,8 +262,8 @@ namespace FRFrame.Network.Unity
         {
             foreach (var view in _views.Values)
             {
-                Destroy(view.GetComponent<Renderer>().material);
-                Destroy(view);
+                Destroy(view.Material);
+                Destroy(view.Object);
             }
             _views.Clear();
         }

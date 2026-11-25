@@ -8,6 +8,8 @@ using LiteEntitySystem;
 
 namespace FRFrame.Network.Replication
 {
+    public enum SliceStreamState { Idle, Pending, Ready, Failed, Closed }
+
     /// <summary>A local render sample from the LES manager, with its actual ownership.</summary>
     public readonly struct PawnSample
     {
@@ -38,6 +40,8 @@ namespace FRFrame.Network.Replication
         private uint _nextRequest;
         private uint _opening;
         private uint _readying;
+        private uint _streamId;
+        private float _streamRemaining;
 
         public bool Connected => _connection >= 0 && _transport.IsConnected(_connection);
         public bool Disconnected => _transport.ConnectionsClosed != 0;
@@ -48,7 +52,9 @@ namespace FRFrame.Network.Replication
         public int[] Members { get; private set; } = Array.Empty<int>();
         public int OnlineMask { get; private set; }
         public int Marker { get; private set; }
-        public bool Ready { get; private set; }
+        public SliceStreamState StreamState { get; private set; }
+        public SliceError StreamError { get; private set; }
+        public bool Ready => StreamState == SliceStreamState.Ready;
         public int Baselines { get; private set; }
         public int Diffs { get; private set; }
         public event Action<ProbeOp, SliceMessage>? Received;
@@ -83,8 +89,6 @@ namespace FRFrame.Network.Replication
                 Send(ProbeOp.Login, new SliceMessage { Text = _identity });
             }
 
-            if (Disconnected)
-                ResetStream();
             while (_transport.TryReceive(out var received) && Connected)
             {
                 if (received.Bytes[0] == ProbeEnvelope.Header)
@@ -92,6 +96,11 @@ namespace FRFrame.Network.Replication
                 else
                     ReadStream(received);
             }
+
+            if (Disconnected && StreamState is SliceStreamState.Pending or SliceStreamState.Ready)
+                EndStream(SliceStreamState.Closed, SliceError.StreamUnavailable);
+            if (StreamState == SliceStreamState.Pending && (_streamRemaining -= elapsedMilliseconds) <= 0)
+                EndStream(SliceStreamState.Failed, SliceError.StreamUnavailable);
 
             if (Ready && Baselines != 0 && _manager != null)
             {
@@ -105,8 +114,14 @@ namespace FRFrame.Network.Replication
 
         public void Dispose()
         {
-            ResetStream();
-            _transport.Dispose();
+            try
+            {
+                EndStream(SliceStreamState.Closed, SliceError.None);
+            }
+            finally
+            {
+                _transport.Dispose();
+            }
         }
 
         internal uint Send(ProbeOp op, SliceMessage request)
@@ -127,32 +142,46 @@ namespace FRFrame.Network.Replication
         {
             if (received.Delivery != PacketDelivery.ReliableOrdered ||
                 !ProbeEnvelope.TryRead(received.Bytes, out var op, out var payload) ||
-                op is < ProbeOp.Response or > ProbeOp.MarkerChanged || !SliceCodec.TryRead(payload, out var message))
+                op is < ProbeOp.Response or > ProbeOp.StreamClosed || !SliceCodec.TryRead(payload, out var message))
                 return;
 
-            if (op == ProbeOp.Response && message.Error == SliceError.None)
+            if (op == ProbeOp.Response)
             {
-                if (message.ReplyTo == ProbeOp.Login)
+                if (message.ReplyTo == ProbeOp.Login && message.Error == SliceError.None)
                 {
                     Player = message.Player;
                     Session = message.Session;
                 }
-                else if (Room == 0 && message.Room > 0 &&
+                else if (message.Error == SliceError.None && Room == 0 && message.Room > 0 &&
                          (message.ReplyTo == ProbeOp.CreateRoom || message.ReplyTo == ProbeOp.JoinRoom))
                 {
                     Room = message.Room;
+                    StreamState = SliceStreamState.Pending;
+                    _streamRemaining = 10_000;
                     _opening = Send(ProbeOp.StreamOpen, new SliceMessage { Room = Room });
                 }
-                else if (message.ReplyTo == ProbeOp.StreamOpen && message.RequestId == _opening && _manager == null)
+                else if (StreamState == SliceStreamState.Pending && message.ReplyTo == ProbeOp.StreamOpen &&
+                         message.RequestId == _opening && _route == null)
                 {
-                    if (message.Room == Room && message.Text == SliceMessage.DefinitionId && message.Stream != 0 &&
-                        message.Schema == SliceMessage.SchemaVersion && message.Header is > 0 and <= byte.MaxValue)
+                    if (message.Error != SliceError.None)
+                        EndStream(SliceStreamState.Failed, message.Error);
+                    else if (message.Room == Room && message.Text == SliceMessage.DefinitionId && message.Stream != 0 &&
+                             message.Schema == SliceMessage.SchemaVersion && message.Header is > 0 and <= byte.MaxValue)
                         AcceptOffer(message);
                     else
-                        _log("POC-2 rejected incompatible stream offer.");
+                        EndStream(SliceStreamState.Failed, SliceError.SchemaMismatch);
                 }
-                else if (message.ReplyTo == ProbeOp.StreamReady && message.RequestId == _readying && _manager != null)
-                    Ready = true;
+                else if (StreamState == SliceStreamState.Pending && message.ReplyTo == ProbeOp.StreamReady &&
+                         message.RequestId == _readying && MatchesStream(message))
+                {
+                    if (message.Error == SliceError.None)
+                    {
+                        StreamState = SliceStreamState.Ready;
+                        _log($"POC-2 stream Ready id={_streamId} generation={_route!.Generation}");
+                    }
+                    else
+                        EndStream(SliceStreamState.Failed, message.Error);
+                }
             }
             else if (message.Room == Room && Room != 0)
             {
@@ -164,6 +193,8 @@ namespace FRFrame.Network.Replication
                 }
                 else if (op == ProbeOp.MarkerChanged)
                     Marker = message.Marker;
+                else if (op == ProbeOp.StreamClosed && message.Error != SliceError.None && MatchesStream(message))
+                    EndStream(SliceStreamState.Closed, message.Error);
             }
             Received?.Invoke(op, message);
         }
@@ -172,16 +203,21 @@ namespace FRFrame.Network.Replication
         {
             _route = _routes.Accept((byte)offer.Header, offer.Generation);
             if (_route == null)
+            {
+                EndStream(SliceStreamState.Failed, SliceError.StreamUnavailable);
                 return;
+            }
+            _streamId = offer.Stream;
             var peer = new LesProbePeer(_transport, _connection, _route);
             _manager = new ClientEntityManager(PocPlayerPawn.CreateTypes(), peer, _route.ManagerHeader);
             if (_manager.ClassDataHash != offer.Hash)
             {
                 _log($"POC-2 rejected stream hash. server={offer.Hash} local={_manager.ClassDataHash}; {DescribeLayout()}");
-                ResetStream();
+                EndStream(SliceStreamState.Failed, SliceError.SchemaMismatch);
                 return;
             }
             _log($"POC-2 offer stream={offer.Stream} generation={offer.Generation} schema={offer.Schema} hash={offer.Hash}");
+            _streamRemaining = 10_000;
             _readying = Send(ProbeOp.StreamReady, new SliceMessage
             {
                 Room = Room, Text = SliceMessage.DefinitionId, Stream = offer.Stream,
@@ -195,7 +231,7 @@ namespace FRFrame.Network.Replication
 
         private void ReadStream(ReceivedPacket received)
         {
-            if (_manager == null || !_routes.TryTranslate(received.Bytes, out _, out var packet))
+            if (!Ready || _manager == null || !_routes.TryTranslate(received.Bytes, out _, out var packet))
                 return;
 
             // The three-player world fits one diff part at the negotiated payload limit.
@@ -223,14 +259,23 @@ namespace FRFrame.Network.Replication
                 _log("POC-2 diff Unreliable accepted");
         }
 
-        private void ResetStream()
+        private bool MatchesStream(SliceMessage message) =>
+            _route != null && message.Room == Room && message.Stream == _streamId && message.Generation == _route.Generation;
+
+        private void EndStream(SliceStreamState state, SliceError reason)
         {
             if (_route != null)
                 _routes.Close(_route);
             _route = null;
-            _manager?.Reset();
+            var manager = _manager;
             _manager = null;
-            Ready = false;
+            _streamId = _opening = _readying = 0;
+            Baselines = Diffs = 0;
+            StreamState = state;
+            StreamError = reason;
+            manager?.Reset();
+            if (reason != SliceError.None)
+                _log($"POC-2 stream {state} reason={reason}");
         }
     }
 
