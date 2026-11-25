@@ -96565,6 +96565,10 @@ namespace FRFrame.Network.Replication
 
         public bool Connected => _connection >= 0 && _transport.IsConnected(_connection);
         public bool Disconnected => _transport.ConnectionsClosed != 0 || (_connection >= 0 && !Connected);
+        public bool Authenticated => Connected && _authenticated;
+        public bool CanRecover => _token.Length != 0;
+        public SliceError AuthenticationError { get; private set; }
+        private bool _authenticated;
         public int Player { get; private set; }
         public int Session { get; private set; }
         public int Epoch { get; private set; }
@@ -96602,6 +96606,7 @@ namespace FRFrame.Network.Replication
 
         public void Disconnect()
         {
+            _authenticated = false;
             if (Connected)
                 _transport.Disconnect(_connection);
             foreach (var room in _rooms.Values)
@@ -96618,8 +96623,11 @@ namespace FRFrame.Network.Replication
             _connection = -1;
             _recover = recover;
             Replaced = false;
+            AuthenticationError = SliceError.None;
             return _transport.Connect(_host, _port);
         }
+
+        internal SliceClient StartOnlineReplacement(int port) => new(_host, port == 0 ? _port : port, _identity, _log);
 
         public void SelectRoom(int room)
         {
@@ -96717,7 +96725,7 @@ namespace FRFrame.Network.Replication
 
             if (op == ProbeOp.Response)
                 ApplyReply(message);
-            else if (op == ProbeOp.Members && message.MemberIds.Contains(Player))
+            else if (op == ProbeOp.Members && Authenticated && message.MemberIds.Contains(Player))
             {
                 var room = GetRoom(message.Room, message.Text);
                 room.Owner = message.Player;
@@ -96750,8 +96758,24 @@ namespace FRFrame.Network.Replication
         {
             if (message.ReplyTo is ProbeOp.Login or ProbeOp.Recover)
             {
-                if (message.RequestId != _authRequest || message.Error != SliceError.None)
+                if (_authRequest == 0 || message.RequestId != _authRequest)
                     return;
+                _authRequest = 0;
+                AuthenticationError = message.Error;
+                if (AuthenticationError != SliceError.None)
+                {
+                    _authenticated = false;
+                    if (AuthenticationError != SliceError.Overloaded)
+                    {
+                        _token = "";
+                        Session = Player = Epoch = ConnectionGeneration = 0;
+                        foreach (var id in _rooms.Keys.ToArray())
+                            RemoveRoom(id);
+                    }
+                    _log($"POC-3 authentication failed: {AuthenticationError}");
+                    return;
+                }
+                _authenticated = true;
                 if (message.Session != Session)
                     _nextRequest = 0;
                 Session = message.Session;
@@ -96766,12 +96790,7 @@ namespace FRFrame.Network.Replication
                     room.State = SliceStreamState.Idle;
                 return;
             }
-            if (message.Error == SliceError.None && message.ReplyTo is ProbeOp.CreateRoom or ProbeOp.JoinRoom)
-            {
-                var room = GetRoom(message.Room, message.Text);
-                if (room.State == SliceStreamState.Idle)
-                    Open(room);
-            }
+            // Create/Join responses may be historical replays. Members owns the room projection.
             if (!_rooms.TryGetValue(message.Room, out var current) || current.State != SliceStreamState.Pending)
                 return;
             if (message.ReplyTo == ProbeOp.StreamOpen && message.RequestId == current.OpenRequest && current.Route == null)
@@ -97038,6 +97057,7 @@ namespace FRFrame.Network.Replication
 </file>
 
 <file path="Network/Replication/SliceLifecycleSmoke.cs">
+#nullable enable
 using System;
 using System.Collections.Generic;
 using FRFrame.Network.Shared;
@@ -97045,10 +97065,13 @@ using FRFrame.Network.Shared;
 namespace FRFrame.Network.Replication
 {
     /// <summary>Drives the existing network path from three independent Player processes.</summary>
-    public sealed class SliceLifecycleSmoke
+    public sealed class SliceLifecycleSmoke : IDisposable
     {
-        private readonly SliceClient _client;
+        private readonly SliceClient _initial;
+        private SliceClient _client;
+        private SliceClient? _retiring;
         private readonly Action<string> _log;
+        private readonly int _replacementPort;
         private readonly int[] _moved = new int[3];
         private readonly int[] _own = new int[3];
         private readonly int[] _original = new int[3];
@@ -97059,23 +97082,36 @@ namespace FRFrame.Network.Replication
         private bool _started, _secondCreated, _secondMessage, _secondMarker, _sentSecond;
         private bool _recovering, _rejoined, _markerComplete, _recoveryPublished, _replacementPublished;
         private bool _handoff, _closing, _finalSignal;
+        private bool _onlineReplacementObserved;
         private int _oldSession, _oldEpoch, _oldGeneration;
         private uint _delayed;
         public bool Passed { get; private set; }
         public string Failure { get; private set; } = "";
         public bool TimedOut => !Passed && _time > 40;
+        public SliceClient CurrentClient => _client;
 
-        public SliceLifecycleSmoke(SliceClient client, Action<string> log, bool shortRun = false)
+        public SliceLifecycleSmoke(SliceClient client, Action<string> log, bool shortRun = false, int replacementPort = 0)
         {
-            _client = client;
+            _initial = _client = client;
             _log = log;
             _short = shortRun;
+            _replacementPort = replacementPort;
             client.Received += OnMessage;
         }
 
         public void Tick(float milliseconds, Action<PawnSample> view)
         {
             _time += milliseconds / 1000;
+            if (_retiring != null)
+            {
+                _retiring.Tick(milliseconds, 0, 0, _ => { });
+                if (_retiring.Replaced)
+                {
+                    _onlineReplacementObserved = true;
+                    _log($"POC-3 online replacement observed on old connection session={_oldSession} generation={_oldGeneration}");
+                    _retiring = null;
+                }
+            }
             if (_started && _client.Player != 1 && !_recovering && _client.Connected && _time >= _nextJoin)
             {
                 _nextJoin = _time + 0.6f;
@@ -97131,7 +97167,7 @@ namespace FRFrame.Network.Replication
             if (_resumeAt != 0 && _time >= _resumeAt)
             {
                 _resumeAt = 0;
-                if (!_client.Reconnect(recover: _client.Player == 1))
+                if (!_client.Reconnect(recover: true))
                     Failure = "Could not start the requested connection.";
             }
             if (_rejoined && World(1, 7) && World(2, 3) && _own[1] == _original[1] && _own[2] == _original[2] &&
@@ -97143,7 +97179,7 @@ namespace FRFrame.Network.Replication
                     _client.SendText(1, "poc3-recovered");
                     _log($"POC-3 recovery replay and rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]}");
                 }
-                if (_client.Player == 2 && !_replacementPublished)
+                if (_client.Player == 2 && _onlineReplacementObserved && !_replacementPublished)
                 {
                     _replacementPublished = true;
                     _client.SendText(1, "poc3-replaced");
@@ -97157,7 +97193,7 @@ namespace FRFrame.Network.Replication
                 _client.CloseRoom(2);
             }
             if (_finalSignal && World(1, 7) && !_client.Rooms.ContainsKey(2) && _moved[1] == 7 &&
-                (_client.Player == 3 ? !_secondMessage && !_secondMarker && _observedOffline.Count == 2 :
+                (_client.Player == 3 ? !_secondMessage && !_secondMarker && _observedOffline.Count == 1 && _observedOffline.Contains(1) :
                     _moved[2] == 3 && _secondMessage && _secondMarker && (_recoveryPublished || _replacementPublished)))
             {
                 Passed = true;
@@ -97183,6 +97219,12 @@ namespace FRFrame.Network.Replication
 
         private void OnMessage(ProbeOp op, SliceMessage message)
         {
+            if (op == ProbeOp.Response && message.ReplyTo is ProbeOp.Login or ProbeOp.Recover &&
+                message.Error != SliceError.None)
+            {
+                Failure = $"{message.ReplyTo} returned {message.Error}.";
+                return;
+            }
             if (op == ProbeOp.Response && message.Error == SliceError.None)
             {
                 if (message.ReplyTo == ProbeOp.Login && !_started)
@@ -97232,8 +97274,7 @@ namespace FRFrame.Network.Replication
                 {
                     _recovering = true;
                     RememberBinding();
-                    _client.Disconnect();
-                    _resumeAt = _time + 0.35f;
+                    BeginOnlineReplacement();
                 }
                 if (_client.Player == 1 && message.Text == "poc3-replaced" && !_handoff)
                 {
@@ -97245,6 +97286,34 @@ namespace FRFrame.Network.Replication
             }
             else if (op == ProbeOp.RoomClosed && message.Room == 2 && _client.Player == 2)
                 _client.SendText(1, "poc3-room-two-closed");
+        }
+
+        private void BeginOnlineReplacement()
+        {
+            if (!_client.Connected)
+            {
+                Failure = "The old connection was not online when replacement started.";
+                return;
+            }
+            try
+            {
+                var replacement = _client.StartOnlineReplacement(_replacementPort);
+                _retiring = _client;
+                _retiring.Received -= OnMessage;
+                _client = replacement;
+                _client.Received += OnMessage;
+                _log($"POC-3 replacing still-online session={_oldSession} generation={_oldGeneration}");
+            }
+            catch (InvalidOperationException error)
+            {
+                Failure = error.Message;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_client != _initial)
+                _client.Dispose();
         }
     }
 }
@@ -109911,7 +109980,14 @@ namespace FRFrame.Network.Unity
                 if (_client != null && int.TryParse(_room, out var room))
                 {
                     if (Array.IndexOf(arguments, "-frNetworkLifecycle") >= 0)
-                        _lifecycle = new SliceLifecycleSmoke(_client, Log, Array.IndexOf(arguments, "-frNetworkShort") >= 0);
+                    {
+                        var option = Array.IndexOf(arguments, "-frNetworkReplacementPort");
+                        var replacementPort = 0;
+                        if (option >= 0 && option + 1 < arguments.Length)
+                            int.TryParse(arguments[option + 1], out replacementPort);
+                        _lifecycle = new SliceLifecycleSmoke(_client, Log,
+                            Array.IndexOf(arguments, "-frNetworkShort") >= 0, replacementPort);
+                    }
                     else if (Array.IndexOf(arguments, "-frNetworkAuto") >= 0)
                         _smoke = new SliceSmoke(_client, create, room, Log);
                     else
@@ -109934,7 +110010,8 @@ namespace FRFrame.Network.Unity
                 if (!_reportedTimeout && (_lifecycle.TimedOut || _lifecycle.Failure.Length != 0))
                 {
                     _reportedTimeout = true;
-                    Debug.LogError($"POC-3 FAIL identity={_identity} reason={_lifecycle.Failure} room={_client.Room} epoch={_client.Epoch}");
+                    var current = _lifecycle.CurrentClient;
+                    Debug.LogError($"POC-3 FAIL identity={_identity} reason={_lifecycle.Failure} room={current.Room} epoch={current.Epoch}");
                 }
             }
             else if (_smoke != null)
@@ -110016,7 +110093,7 @@ namespace FRFrame.Network.Unity
 
         private void UpdateView(PawnSample sample)
         {
-            if (Application.isBatchMode || sample.Player is < 1 or > 8 || sample.Room != _client.Room)
+            if (Application.isBatchMode || sample.Player is < 1 or > 8 || sample.Room != (_lifecycle?.CurrentClient ?? _client).Room)
                 return;
             if (_viewRoom != sample.Room)
             {
@@ -110053,7 +110130,8 @@ namespace FRFrame.Network.Unity
 
             GUILayout.BeginArea(new Rect(12, 12, 365, Mathf.Min(590, Screen.height - 24)), GUI.skin.box);
             _scroll = GUILayout.BeginScrollView(_scroll);
-            if (_client == null)
+            var client = _lifecycle?.CurrentClient ?? _client;
+            if (client == null)
             {
                 GUILayout.Label("Host");
                 _host = GUILayout.TextField(_host, 253);
@@ -110066,68 +110144,70 @@ namespace FRFrame.Network.Unity
             }
             else
             {
-                GUILayout.Label(_client.Replaced ? "Session replaced" : _client.Disconnected ? "Disconnected" :
-                    _client.Connected ? "Connected" : "Connecting…");
-                GUILayout.Label($"Player {_client.Player} · Session {_client.Session} · Epoch {_client.Epoch} · Generation {_client.ConnectionGeneration}");
-                if (_client.Session != 0 && _client.Connected)
+                GUILayout.Label(client.AuthenticationError != SliceError.None ? $"Authentication failed: {client.AuthenticationError}" :
+                    client.Replaced ? "Session replaced" : client.Disconnected ? "Disconnected" :
+                    client.Authenticated ? "Connected" : "Connecting…");
+                if (client.Authenticated)
+                    GUILayout.Label($"Player {client.Player} · Session {client.Session} · Epoch {client.Epoch} · Generation {client.ConnectionGeneration}");
+                if (client.Authenticated)
                 {
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("Shared room")) _client.CreateRoom(SliceMessage.SharedDefinitionId);
-                    if (GUILayout.Button("Per-room")) _client.CreateRoom();
-                    if (GUILayout.Button("Chat room")) _client.CreateRoom(SliceMessage.PlainRoom);
+                    if (GUILayout.Button("Shared room")) client.CreateRoom(SliceMessage.SharedDefinitionId);
+                    if (GUILayout.Button("Per-room")) client.CreateRoom();
+                    if (GUILayout.Button("Chat room")) client.CreateRoom(SliceMessage.PlainRoom);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     _room = GUILayout.TextField(_room, 6);
                     if (GUILayout.Button("Join room") && int.TryParse(_room, out var room))
-                        _client.JoinRoom(room);
+                        client.JoinRoom(room);
                     GUILayout.EndHorizontal();
                 }
-                foreach (var entry in _client.Rooms.Values)
-                    if (GUILayout.Button($"{(entry.Id == _client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {entry.State}"))
-                        _client.SelectRoom(entry.Id);
-                if (_client.Room != 0 && _client.Connected)
+                foreach (var entry in client.Rooms.Values)
+                    if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {entry.State}"))
+                        client.SelectRoom(entry.Id);
+                if (client.Room != 0 && client.Authenticated)
                 {
                     var members = "";
-                    for (var i = 0; i < _client.Members.Length; i++)
-                        members += $"  P{_client.Members[i]}:{((_client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
+                    for (var i = 0; i < client.Members.Length; i++)
+                        members += $"  P{client.Members[i]}:{((client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
                     GUILayout.Label(members);
-                    GUILayout.Label(_client.StreamState switch
+                    GUILayout.Label(client.StreamState switch
                     {
                         SliceStreamState.Ready => "LES ready. Click Move, then use WASD.",
                         SliceStreamState.Pending => "Negotiating LES stream…",
-                        _ => $"LES {_client.StreamState}: {_client.StreamError}"
+                        _ => $"LES {client.StreamState}: {client.StreamError}"
                     });
                     GUILayout.BeginHorizontal();
                     GUI.SetNextControlName("room message");
                     _message = GUILayout.TextField(_message, 80);
                     if (GUILayout.Button("Send") && !string.IsNullOrWhiteSpace(_message))
-                        _client.SendText(_message);
+                        client.SendText(_message);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     if (GUILayout.Button("Move"))
                         GUI.FocusControl(null);
-                    if (GUILayout.Button($"Advance marker ({_client.Marker})"))
-                        _client.SetMarker((_client.Marker + 1) % 10);
+                    if (GUILayout.Button($"Advance marker ({client.Marker})"))
+                        client.SetMarker((client.Marker + 1) % 10);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     _target = GUILayout.TextField(_target, 1, GUILayout.Width(24));
                     int.TryParse(_target, out var target);
-                    if (GUILayout.Button("Leave")) _client.LeaveRoom(_client.Room);
-                    if (GUILayout.Button("Kick")) _client.Kick(_client.Room, target);
-                    if (GUILayout.Button("Transfer")) _client.TransferOwner(_client.Room, target);
-                    if (GUILayout.Button("Close room")) _client.CloseRoom(_client.Room);
+                    if (GUILayout.Button("Leave")) client.LeaveRoom(client.Room);
+                    if (GUILayout.Button("Kick")) client.Kick(client.Room, target);
+                    if (GUILayout.Button("Transfer")) client.TransferOwner(client.Room, target);
+                    if (GUILayout.Button("Close room")) client.CloseRoom(client.Room);
                     GUILayout.EndHorizontal();
-                    if (_client.StreamState is SliceStreamState.Failed or SliceStreamState.Closed && GUILayout.Button("Open stream"))
-                        _client.OpenRoomStream(_client.Room);
+                    if (client.StreamState is SliceStreamState.Failed or SliceStreamState.Closed && GUILayout.Button("Open stream"))
+                        client.OpenRoomStream(client.Room);
                 }
-                if (_client.Connected)
+                if (client.Authenticated)
                 {
-                    if (GUILayout.Button("Disconnect")) _client.Disconnect();
+                    if (GUILayout.Button("Disconnect")) client.Disconnect();
                 }
-                else if (_client.Session != 0)
+                else if (client.Session != 0 || client.AuthenticationError != SliceError.None)
                 {
-                    if (!_client.Replaced && GUILayout.Button("Recover session")) _client.Reconnect(true);
-                    if (GUILayout.Button("New login")) _client.Reconnect(false);
+                    if (client.CanRecover && GUILayout.Button("Recover session")) client.Reconnect(true);
+                    if (GUILayout.Button("New login")) client.Reconnect(false);
                     if (GUILayout.Button("Back to connection settings")) Disconnect();
                 }
             }
@@ -110148,6 +110228,7 @@ namespace FRFrame.Network.Unity
 
         private void Disconnect()
         {
+            _lifecycle?.Dispose();
             _client?.Dispose();
             _client = null;
             _smoke = null;

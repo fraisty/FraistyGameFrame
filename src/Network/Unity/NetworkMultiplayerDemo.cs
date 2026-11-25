@@ -72,7 +72,14 @@ namespace FRFrame.Network.Unity
                 if (_client != null && int.TryParse(_room, out var room))
                 {
                     if (Array.IndexOf(arguments, "-frNetworkLifecycle") >= 0)
-                        _lifecycle = new SliceLifecycleSmoke(_client, Log, Array.IndexOf(arguments, "-frNetworkShort") >= 0);
+                    {
+                        var option = Array.IndexOf(arguments, "-frNetworkReplacementPort");
+                        var replacementPort = 0;
+                        if (option >= 0 && option + 1 < arguments.Length)
+                            int.TryParse(arguments[option + 1], out replacementPort);
+                        _lifecycle = new SliceLifecycleSmoke(_client, Log,
+                            Array.IndexOf(arguments, "-frNetworkShort") >= 0, replacementPort);
+                    }
                     else if (Array.IndexOf(arguments, "-frNetworkAuto") >= 0)
                         _smoke = new SliceSmoke(_client, create, room, Log);
                     else
@@ -95,7 +102,8 @@ namespace FRFrame.Network.Unity
                 if (!_reportedTimeout && (_lifecycle.TimedOut || _lifecycle.Failure.Length != 0))
                 {
                     _reportedTimeout = true;
-                    Debug.LogError($"POC-3 FAIL identity={_identity} reason={_lifecycle.Failure} room={_client.Room} epoch={_client.Epoch}");
+                    var current = _lifecycle.CurrentClient;
+                    Debug.LogError($"POC-3 FAIL identity={_identity} reason={_lifecycle.Failure} room={current.Room} epoch={current.Epoch}");
                 }
             }
             else if (_smoke != null)
@@ -177,7 +185,7 @@ namespace FRFrame.Network.Unity
 
         private void UpdateView(PawnSample sample)
         {
-            if (Application.isBatchMode || sample.Player is < 1 or > 8 || sample.Room != _client.Room)
+            if (Application.isBatchMode || sample.Player is < 1 or > 8 || sample.Room != (_lifecycle?.CurrentClient ?? _client).Room)
                 return;
             if (_viewRoom != sample.Room)
             {
@@ -214,7 +222,8 @@ namespace FRFrame.Network.Unity
 
             GUILayout.BeginArea(new Rect(12, 12, 365, Mathf.Min(590, Screen.height - 24)), GUI.skin.box);
             _scroll = GUILayout.BeginScrollView(_scroll);
-            if (_client == null)
+            var client = _lifecycle?.CurrentClient ?? _client;
+            if (client == null)
             {
                 GUILayout.Label("Host");
                 _host = GUILayout.TextField(_host, 253);
@@ -227,68 +236,70 @@ namespace FRFrame.Network.Unity
             }
             else
             {
-                GUILayout.Label(_client.Replaced ? "Session replaced" : _client.Disconnected ? "Disconnected" :
-                    _client.Connected ? "Connected" : "Connecting…");
-                GUILayout.Label($"Player {_client.Player} · Session {_client.Session} · Epoch {_client.Epoch} · Generation {_client.ConnectionGeneration}");
-                if (_client.Session != 0 && _client.Connected)
+                GUILayout.Label(client.AuthenticationError != SliceError.None ? $"Authentication failed: {client.AuthenticationError}" :
+                    client.Replaced ? "Session replaced" : client.Disconnected ? "Disconnected" :
+                    client.Authenticated ? "Connected" : "Connecting…");
+                if (client.Authenticated)
+                    GUILayout.Label($"Player {client.Player} · Session {client.Session} · Epoch {client.Epoch} · Generation {client.ConnectionGeneration}");
+                if (client.Authenticated)
                 {
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("Shared room")) _client.CreateRoom(SliceMessage.SharedDefinitionId);
-                    if (GUILayout.Button("Per-room")) _client.CreateRoom();
-                    if (GUILayout.Button("Chat room")) _client.CreateRoom(SliceMessage.PlainRoom);
+                    if (GUILayout.Button("Shared room")) client.CreateRoom(SliceMessage.SharedDefinitionId);
+                    if (GUILayout.Button("Per-room")) client.CreateRoom();
+                    if (GUILayout.Button("Chat room")) client.CreateRoom(SliceMessage.PlainRoom);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     _room = GUILayout.TextField(_room, 6);
                     if (GUILayout.Button("Join room") && int.TryParse(_room, out var room))
-                        _client.JoinRoom(room);
+                        client.JoinRoom(room);
                     GUILayout.EndHorizontal();
                 }
-                foreach (var entry in _client.Rooms.Values)
-                    if (GUILayout.Button($"{(entry.Id == _client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {entry.State}"))
-                        _client.SelectRoom(entry.Id);
-                if (_client.Room != 0 && _client.Connected)
+                foreach (var entry in client.Rooms.Values)
+                    if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {entry.State}"))
+                        client.SelectRoom(entry.Id);
+                if (client.Room != 0 && client.Authenticated)
                 {
                     var members = "";
-                    for (var i = 0; i < _client.Members.Length; i++)
-                        members += $"  P{_client.Members[i]}:{((_client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
+                    for (var i = 0; i < client.Members.Length; i++)
+                        members += $"  P{client.Members[i]}:{((client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
                     GUILayout.Label(members);
-                    GUILayout.Label(_client.StreamState switch
+                    GUILayout.Label(client.StreamState switch
                     {
                         SliceStreamState.Ready => "LES ready. Click Move, then use WASD.",
                         SliceStreamState.Pending => "Negotiating LES stream…",
-                        _ => $"LES {_client.StreamState}: {_client.StreamError}"
+                        _ => $"LES {client.StreamState}: {client.StreamError}"
                     });
                     GUILayout.BeginHorizontal();
                     GUI.SetNextControlName("room message");
                     _message = GUILayout.TextField(_message, 80);
                     if (GUILayout.Button("Send") && !string.IsNullOrWhiteSpace(_message))
-                        _client.SendText(_message);
+                        client.SendText(_message);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     if (GUILayout.Button("Move"))
                         GUI.FocusControl(null);
-                    if (GUILayout.Button($"Advance marker ({_client.Marker})"))
-                        _client.SetMarker((_client.Marker + 1) % 10);
+                    if (GUILayout.Button($"Advance marker ({client.Marker})"))
+                        client.SetMarker((client.Marker + 1) % 10);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     _target = GUILayout.TextField(_target, 1, GUILayout.Width(24));
                     int.TryParse(_target, out var target);
-                    if (GUILayout.Button("Leave")) _client.LeaveRoom(_client.Room);
-                    if (GUILayout.Button("Kick")) _client.Kick(_client.Room, target);
-                    if (GUILayout.Button("Transfer")) _client.TransferOwner(_client.Room, target);
-                    if (GUILayout.Button("Close room")) _client.CloseRoom(_client.Room);
+                    if (GUILayout.Button("Leave")) client.LeaveRoom(client.Room);
+                    if (GUILayout.Button("Kick")) client.Kick(client.Room, target);
+                    if (GUILayout.Button("Transfer")) client.TransferOwner(client.Room, target);
+                    if (GUILayout.Button("Close room")) client.CloseRoom(client.Room);
                     GUILayout.EndHorizontal();
-                    if (_client.StreamState is SliceStreamState.Failed or SliceStreamState.Closed && GUILayout.Button("Open stream"))
-                        _client.OpenRoomStream(_client.Room);
+                    if (client.StreamState is SliceStreamState.Failed or SliceStreamState.Closed && GUILayout.Button("Open stream"))
+                        client.OpenRoomStream(client.Room);
                 }
-                if (_client.Connected)
+                if (client.Authenticated)
                 {
-                    if (GUILayout.Button("Disconnect")) _client.Disconnect();
+                    if (GUILayout.Button("Disconnect")) client.Disconnect();
                 }
-                else if (_client.Session != 0)
+                else if (client.Session != 0 || client.AuthenticationError != SliceError.None)
                 {
-                    if (!_client.Replaced && GUILayout.Button("Recover session")) _client.Reconnect(true);
-                    if (GUILayout.Button("New login")) _client.Reconnect(false);
+                    if (client.CanRecover && GUILayout.Button("Recover session")) client.Reconnect(true);
+                    if (GUILayout.Button("New login")) client.Reconnect(false);
                     if (GUILayout.Button("Back to connection settings")) Disconnect();
                 }
             }
@@ -309,6 +320,7 @@ namespace FRFrame.Network.Unity
 
         private void Disconnect()
         {
+            _lifecycle?.Dispose();
             _client?.Dispose();
             _client = null;
             _smoke = null;

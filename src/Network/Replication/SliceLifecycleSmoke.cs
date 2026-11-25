@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using FRFrame.Network.Shared;
@@ -5,10 +6,13 @@ using FRFrame.Network.Shared;
 namespace FRFrame.Network.Replication
 {
     /// <summary>Drives the existing network path from three independent Player processes.</summary>
-    public sealed class SliceLifecycleSmoke
+    public sealed class SliceLifecycleSmoke : IDisposable
     {
-        private readonly SliceClient _client;
+        private readonly SliceClient _initial;
+        private SliceClient _client;
+        private SliceClient? _retiring;
         private readonly Action<string> _log;
+        private readonly int _replacementPort;
         private readonly int[] _moved = new int[3];
         private readonly int[] _own = new int[3];
         private readonly int[] _original = new int[3];
@@ -19,23 +23,36 @@ namespace FRFrame.Network.Replication
         private bool _started, _secondCreated, _secondMessage, _secondMarker, _sentSecond;
         private bool _recovering, _rejoined, _markerComplete, _recoveryPublished, _replacementPublished;
         private bool _handoff, _closing, _finalSignal;
+        private bool _onlineReplacementObserved;
         private int _oldSession, _oldEpoch, _oldGeneration;
         private uint _delayed;
         public bool Passed { get; private set; }
         public string Failure { get; private set; } = "";
         public bool TimedOut => !Passed && _time > 40;
+        public SliceClient CurrentClient => _client;
 
-        public SliceLifecycleSmoke(SliceClient client, Action<string> log, bool shortRun = false)
+        public SliceLifecycleSmoke(SliceClient client, Action<string> log, bool shortRun = false, int replacementPort = 0)
         {
-            _client = client;
+            _initial = _client = client;
             _log = log;
             _short = shortRun;
+            _replacementPort = replacementPort;
             client.Received += OnMessage;
         }
 
         public void Tick(float milliseconds, Action<PawnSample> view)
         {
             _time += milliseconds / 1000;
+            if (_retiring != null)
+            {
+                _retiring.Tick(milliseconds, 0, 0, _ => { });
+                if (_retiring.Replaced)
+                {
+                    _onlineReplacementObserved = true;
+                    _log($"POC-3 online replacement observed on old connection session={_oldSession} generation={_oldGeneration}");
+                    _retiring = null;
+                }
+            }
             if (_started && _client.Player != 1 && !_recovering && _client.Connected && _time >= _nextJoin)
             {
                 _nextJoin = _time + 0.6f;
@@ -91,7 +108,7 @@ namespace FRFrame.Network.Replication
             if (_resumeAt != 0 && _time >= _resumeAt)
             {
                 _resumeAt = 0;
-                if (!_client.Reconnect(recover: _client.Player == 1))
+                if (!_client.Reconnect(recover: true))
                     Failure = "Could not start the requested connection.";
             }
             if (_rejoined && World(1, 7) && World(2, 3) && _own[1] == _original[1] && _own[2] == _original[2] &&
@@ -103,7 +120,7 @@ namespace FRFrame.Network.Replication
                     _client.SendText(1, "poc3-recovered");
                     _log($"POC-3 recovery replay and rebind session={_client.Session} epoch={_client.Epoch} generation={_client.ConnectionGeneration} entities={_own[1]}/{_own[2]}");
                 }
-                if (_client.Player == 2 && !_replacementPublished)
+                if (_client.Player == 2 && _onlineReplacementObserved && !_replacementPublished)
                 {
                     _replacementPublished = true;
                     _client.SendText(1, "poc3-replaced");
@@ -117,7 +134,7 @@ namespace FRFrame.Network.Replication
                 _client.CloseRoom(2);
             }
             if (_finalSignal && World(1, 7) && !_client.Rooms.ContainsKey(2) && _moved[1] == 7 &&
-                (_client.Player == 3 ? !_secondMessage && !_secondMarker && _observedOffline.Count == 2 :
+                (_client.Player == 3 ? !_secondMessage && !_secondMarker && _observedOffline.Count == 1 && _observedOffline.Contains(1) :
                     _moved[2] == 3 && _secondMessage && _secondMarker && (_recoveryPublished || _replacementPublished)))
             {
                 Passed = true;
@@ -143,6 +160,12 @@ namespace FRFrame.Network.Replication
 
         private void OnMessage(ProbeOp op, SliceMessage message)
         {
+            if (op == ProbeOp.Response && message.ReplyTo is ProbeOp.Login or ProbeOp.Recover &&
+                message.Error != SliceError.None)
+            {
+                Failure = $"{message.ReplyTo} returned {message.Error}.";
+                return;
+            }
             if (op == ProbeOp.Response && message.Error == SliceError.None)
             {
                 if (message.ReplyTo == ProbeOp.Login && !_started)
@@ -192,8 +215,7 @@ namespace FRFrame.Network.Replication
                 {
                     _recovering = true;
                     RememberBinding();
-                    _client.Disconnect();
-                    _resumeAt = _time + 0.35f;
+                    BeginOnlineReplacement();
                 }
                 if (_client.Player == 1 && message.Text == "poc3-replaced" && !_handoff)
                 {
@@ -205,6 +227,34 @@ namespace FRFrame.Network.Replication
             }
             else if (op == ProbeOp.RoomClosed && message.Room == 2 && _client.Player == 2)
                 _client.SendText(1, "poc3-room-two-closed");
+        }
+
+        private void BeginOnlineReplacement()
+        {
+            if (!_client.Connected)
+            {
+                Failure = "The old connection was not online when replacement started.";
+                return;
+            }
+            try
+            {
+                var replacement = _client.StartOnlineReplacement(_replacementPort);
+                _retiring = _client;
+                _retiring.Received -= OnMessage;
+                _client = replacement;
+                _client.Received += OnMessage;
+                _log($"POC-3 replacing still-online session={_oldSession} generation={_oldGeneration}");
+            }
+            catch (InvalidOperationException error)
+            {
+                Failure = error.Message;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_client != _initial)
+                _client.Dispose();
         }
     }
 }

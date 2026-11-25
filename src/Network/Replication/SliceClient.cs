@@ -69,6 +69,10 @@ namespace FRFrame.Network.Replication
 
         public bool Connected => _connection >= 0 && _transport.IsConnected(_connection);
         public bool Disconnected => _transport.ConnectionsClosed != 0 || (_connection >= 0 && !Connected);
+        public bool Authenticated => Connected && _authenticated;
+        public bool CanRecover => _token.Length != 0;
+        public SliceError AuthenticationError { get; private set; }
+        private bool _authenticated;
         public int Player { get; private set; }
         public int Session { get; private set; }
         public int Epoch { get; private set; }
@@ -106,6 +110,7 @@ namespace FRFrame.Network.Replication
 
         public void Disconnect()
         {
+            _authenticated = false;
             if (Connected)
                 _transport.Disconnect(_connection);
             foreach (var room in _rooms.Values)
@@ -122,8 +127,11 @@ namespace FRFrame.Network.Replication
             _connection = -1;
             _recover = recover;
             Replaced = false;
+            AuthenticationError = SliceError.None;
             return _transport.Connect(_host, _port);
         }
+
+        internal SliceClient StartOnlineReplacement(int port) => new(_host, port == 0 ? _port : port, _identity, _log);
 
         public void SelectRoom(int room)
         {
@@ -221,7 +229,7 @@ namespace FRFrame.Network.Replication
 
             if (op == ProbeOp.Response)
                 ApplyReply(message);
-            else if (op == ProbeOp.Members && message.MemberIds.Contains(Player))
+            else if (op == ProbeOp.Members && Authenticated && message.MemberIds.Contains(Player))
             {
                 var room = GetRoom(message.Room, message.Text);
                 room.Owner = message.Player;
@@ -254,8 +262,24 @@ namespace FRFrame.Network.Replication
         {
             if (message.ReplyTo is ProbeOp.Login or ProbeOp.Recover)
             {
-                if (message.RequestId != _authRequest || message.Error != SliceError.None)
+                if (_authRequest == 0 || message.RequestId != _authRequest)
                     return;
+                _authRequest = 0;
+                AuthenticationError = message.Error;
+                if (AuthenticationError != SliceError.None)
+                {
+                    _authenticated = false;
+                    if (AuthenticationError != SliceError.Overloaded)
+                    {
+                        _token = "";
+                        Session = Player = Epoch = ConnectionGeneration = 0;
+                        foreach (var id in _rooms.Keys.ToArray())
+                            RemoveRoom(id);
+                    }
+                    _log($"POC-3 authentication failed: {AuthenticationError}");
+                    return;
+                }
+                _authenticated = true;
                 if (message.Session != Session)
                     _nextRequest = 0;
                 Session = message.Session;
@@ -270,12 +294,7 @@ namespace FRFrame.Network.Replication
                     room.State = SliceStreamState.Idle;
                 return;
             }
-            if (message.Error == SliceError.None && message.ReplyTo is ProbeOp.CreateRoom or ProbeOp.JoinRoom)
-            {
-                var room = GetRoom(message.Room, message.Text);
-                if (room.State == SliceStreamState.Idle)
-                    Open(room);
-            }
+            // Create/Join responses may be historical replays. Members owns the room projection.
             if (!_rooms.TryGetValue(message.Room, out var current) || current.State != SliceStreamState.Pending)
                 return;
             if (message.ReplyTo == ProbeOp.StreamOpen && message.RequestId == current.OpenRequest && current.Route == null)
