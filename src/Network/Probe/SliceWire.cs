@@ -24,18 +24,20 @@ namespace FRFrame.Network.Probe {
     static SliceWireReflection() {
       byte[] descriptorData = global::System.Convert.FromBase64String(
           string.Concat(
-            "Cg9TbGljZVdpcmUucHJvdG8ilQIKCVNsaWNlV2lyZRISCgpyZXF1ZXN0X2lk",
+            "Cg9TbGljZVdpcmUucHJvdG8i9AIKCVNsaWNlV2lyZRISCgpyZXF1ZXN0X2lk",
             "GAEgASgNEg0KBWVycm9yGAIgASgNEhAKCHJlcGx5X3RvGAMgASgNEgwKBHJv",
             "b20YBCABKAUSDgoGcGxheWVyGAUgASgFEg8KB3Nlc3Npb24YBiABKAUSDAoE",
             "dGV4dBgHIAEoCRIOCgZzdHJlYW0YCCABKA0SEgoKZ2VuZXJhdGlvbhgJIAEo",
             "DRIOCgZoZWFkZXIYCiABKAUSDgoGc2NoZW1hGAsgASgFEgwKBGhhc2gYDCAB",
             "KAYSDgoGbWFya2VyGA0gASgFEhIKCm1lbWJlcl9pZHMYDiADKAUSDgoGb25s",
-            "aW5lGA8gASgFEhAKCGNhcGFjaXR5GBAgASgFQhiqAhVGUkZyYW1lLk5ldHdv",
-            "cmsuUHJvYmViBnByb3RvMw=="));
+            "aW5lGA8gASgFEhAKCGNhcGFjaXR5GBAgASgFEg0KBWVwb2NoGBIgASgFEh0K",
+            "FWNvbm5lY3Rpb25fZ2VuZXJhdGlvbhgTIAEoBRINCgV0b2tlbhgUIAEoCRIO",
+            "CgZ0YXJnZXQYFSABKAUSEAoIZGVsYXlfbXMYFiABKAVCGKoCFUZSRnJhbWUu",
+            "TmV0d29yay5Qcm9iZWIGcHJvdG8z"));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { },
           new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
-            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Probe.SliceWire), global::FRFrame.Network.Probe.SliceWire.Parser, new[]{ "RequestId", "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity" }, null, null, null, null)
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Probe.SliceWire), global::FRFrame.Network.Probe.SliceWire.Parser, new[]{ "RequestId", "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity", "Epoch", "ConnectionGeneration", "Token", "Target", "DelayMs" }, null, null, null, null)
           }));
     }
     #endregion
@@ -96,6 +98,11 @@ namespace FRFrame.Network.Probe {
       memberIds_ = other.memberIds_.Clone();
       online_ = other.online_;
       capacity_ = other.capacity_;
+      epoch_ = other.epoch_;
+      connectionGeneration_ = other.connectionGeneration_;
+      token_ = other.token_;
+      target_ = other.target_;
+      delayMs_ = other.delayMs_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -296,6 +303,66 @@ namespace FRFrame.Network.Probe {
       }
     }
 
+    /// <summary>Field number for the "epoch" field.</summary>
+    public const int EpochFieldNumber = 18;
+    private int epoch_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int Epoch {
+      get { return epoch_; }
+      set {
+        epoch_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "connection_generation" field.</summary>
+    public const int ConnectionGenerationFieldNumber = 19;
+    private int connectionGeneration_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int ConnectionGeneration {
+      get { return connectionGeneration_; }
+      set {
+        connectionGeneration_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "token" field.</summary>
+    public const int TokenFieldNumber = 20;
+    private string token_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string Token {
+      get { return token_; }
+      set {
+        token_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
+    /// <summary>Field number for the "target" field.</summary>
+    public const int TargetFieldNumber = 21;
+    private int target_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int Target {
+      get { return target_; }
+      set {
+        target_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "delay_ms" field.</summary>
+    public const int DelayMsFieldNumber = 22;
+    private int delayMs_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int DelayMs {
+      get { return delayMs_; }
+      set {
+        delayMs_ = value;
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -327,6 +394,11 @@ namespace FRFrame.Network.Probe {
       if(!memberIds_.Equals(other.memberIds_)) return false;
       if (Online != other.Online) return false;
       if (Capacity != other.Capacity) return false;
+      if (Epoch != other.Epoch) return false;
+      if (ConnectionGeneration != other.ConnectionGeneration) return false;
+      if (Token != other.Token) return false;
+      if (Target != other.Target) return false;
+      if (DelayMs != other.DelayMs) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -350,6 +422,11 @@ namespace FRFrame.Network.Probe {
       hash ^= memberIds_.GetHashCode();
       if (Online != 0) hash ^= Online.GetHashCode();
       if (Capacity != 0) hash ^= Capacity.GetHashCode();
+      if (Epoch != 0) hash ^= Epoch.GetHashCode();
+      if (ConnectionGeneration != 0) hash ^= ConnectionGeneration.GetHashCode();
+      if (Token.Length != 0) hash ^= Token.GetHashCode();
+      if (Target != 0) hash ^= Target.GetHashCode();
+      if (DelayMs != 0) hash ^= DelayMs.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -429,6 +506,26 @@ namespace FRFrame.Network.Probe {
         output.WriteRawTag(128, 1);
         output.WriteInt32(Capacity);
       }
+      if (Epoch != 0) {
+        output.WriteRawTag(144, 1);
+        output.WriteInt32(Epoch);
+      }
+      if (ConnectionGeneration != 0) {
+        output.WriteRawTag(152, 1);
+        output.WriteInt32(ConnectionGeneration);
+      }
+      if (Token.Length != 0) {
+        output.WriteRawTag(162, 1);
+        output.WriteString(Token);
+      }
+      if (Target != 0) {
+        output.WriteRawTag(168, 1);
+        output.WriteInt32(Target);
+      }
+      if (DelayMs != 0) {
+        output.WriteRawTag(176, 1);
+        output.WriteInt32(DelayMs);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -500,6 +597,26 @@ namespace FRFrame.Network.Probe {
         output.WriteRawTag(128, 1);
         output.WriteInt32(Capacity);
       }
+      if (Epoch != 0) {
+        output.WriteRawTag(144, 1);
+        output.WriteInt32(Epoch);
+      }
+      if (ConnectionGeneration != 0) {
+        output.WriteRawTag(152, 1);
+        output.WriteInt32(ConnectionGeneration);
+      }
+      if (Token.Length != 0) {
+        output.WriteRawTag(162, 1);
+        output.WriteString(Token);
+      }
+      if (Target != 0) {
+        output.WriteRawTag(168, 1);
+        output.WriteInt32(Target);
+      }
+      if (DelayMs != 0) {
+        output.WriteRawTag(176, 1);
+        output.WriteInt32(DelayMs);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -555,6 +672,21 @@ namespace FRFrame.Network.Probe {
       }
       if (Capacity != 0) {
         size += 2 + pb::CodedOutputStream.ComputeInt32Size(Capacity);
+      }
+      if (Epoch != 0) {
+        size += 2 + pb::CodedOutputStream.ComputeInt32Size(Epoch);
+      }
+      if (ConnectionGeneration != 0) {
+        size += 2 + pb::CodedOutputStream.ComputeInt32Size(ConnectionGeneration);
+      }
+      if (Token.Length != 0) {
+        size += 2 + pb::CodedOutputStream.ComputeStringSize(Token);
+      }
+      if (Target != 0) {
+        size += 2 + pb::CodedOutputStream.ComputeInt32Size(Target);
+      }
+      if (DelayMs != 0) {
+        size += 2 + pb::CodedOutputStream.ComputeInt32Size(DelayMs);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -613,6 +745,21 @@ namespace FRFrame.Network.Probe {
       }
       if (other.Capacity != 0) {
         Capacity = other.Capacity;
+      }
+      if (other.Epoch != 0) {
+        Epoch = other.Epoch;
+      }
+      if (other.ConnectionGeneration != 0) {
+        ConnectionGeneration = other.ConnectionGeneration;
+      }
+      if (other.Token.Length != 0) {
+        Token = other.Token;
+      }
+      if (other.Target != 0) {
+        Target = other.Target;
+      }
+      if (other.DelayMs != 0) {
+        DelayMs = other.DelayMs;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -698,6 +845,26 @@ namespace FRFrame.Network.Probe {
             Capacity = input.ReadInt32();
             break;
           }
+          case 144: {
+            Epoch = input.ReadInt32();
+            break;
+          }
+          case 152: {
+            ConnectionGeneration = input.ReadInt32();
+            break;
+          }
+          case 162: {
+            Token = input.ReadString();
+            break;
+          }
+          case 168: {
+            Target = input.ReadInt32();
+            break;
+          }
+          case 176: {
+            DelayMs = input.ReadInt32();
+            break;
+          }
         }
       }
     #endif
@@ -780,6 +947,26 @@ namespace FRFrame.Network.Probe {
           }
           case 128: {
             Capacity = input.ReadInt32();
+            break;
+          }
+          case 144: {
+            Epoch = input.ReadInt32();
+            break;
+          }
+          case 152: {
+            ConnectionGeneration = input.ReadInt32();
+            break;
+          }
+          case 162: {
+            Token = input.ReadString();
+            break;
+          }
+          case 168: {
+            Target = input.ReadInt32();
+            break;
+          }
+          case 176: {
+            DelayMs = input.ReadInt32();
             break;
           }
         }

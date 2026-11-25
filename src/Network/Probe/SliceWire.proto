@@ -19,4 +19,9 @@ message SliceWire {
   repeated int32 member_ids = 14;
   int32 online = 15;
   int32 capacity = 16;
+  int32 epoch = 18;
+  int32 connection_generation = 19;
+  string token = 20;
+  int32 target = 21;
+  int32 delay_ms = 22;
 }

@@ -7,14 +7,17 @@ using UnityEngine.InputSystem;
 
 namespace FRFrame.Network.Unity
 {
-    /// <summary>Reusable POC-2 scene for manual or scripted tests through the same client.</summary>
+    /// <summary>Reusable network scene for manual or scripted tests through the same client.</summary>
     public sealed class NetworkMultiplayerDemo : MonoBehaviour
     {
         private static readonly Color[] PawnColors = { Color.cyan, new Color(1, 0.65f, 0.25f), new Color(0.83f, 0.60f, 1) };
         private readonly Dictionary<int, (GameObject Object, Material Material)> _views = new();
+        private readonly HashSet<int> _seenViews = new();
+        private readonly List<int> _missingViews = new();
         private readonly Queue<string> _events = new(8);
         private SliceClient _client;
         private SliceSmoke _smoke;
+        private SliceLifecycleSmoke _lifecycle;
         private string _host = "127.0.0.1";
         private string _port = "9050";
         private string _identity = "A";
@@ -26,6 +29,9 @@ namespace FRFrame.Network.Unity
         private bool _reportedTimeout;
         private bool _createOnLogin;
         private int _joinOnLogin;
+        private int _viewRoom;
+        private string _target = "2";
+        private Vector2 _scroll;
 
         private void Start()
         {
@@ -65,7 +71,9 @@ namespace FRFrame.Network.Unity
                 Connect();
                 if (_client != null && int.TryParse(_room, out var room))
                 {
-                    if (Array.IndexOf(arguments, "-frNetworkAuto") >= 0)
+                    if (Array.IndexOf(arguments, "-frNetworkLifecycle") >= 0)
+                        _lifecycle = new SliceLifecycleSmoke(_client, Log, Array.IndexOf(arguments, "-frNetworkShort") >= 0);
+                    else if (Array.IndexOf(arguments, "-frNetworkAuto") >= 0)
                         _smoke = new SliceSmoke(_client, create, room, Log);
                     else
                     {
@@ -80,7 +88,17 @@ namespace FRFrame.Network.Unity
         {
             if (_client == null)
                 return;
-            if (_smoke != null)
+            _seenViews.Clear();
+            if (_lifecycle != null)
+            {
+                _lifecycle.Tick(Time.unscaledDeltaTime * 1000, UpdateView);
+                if (!_reportedTimeout && (_lifecycle.TimedOut || _lifecycle.Failure.Length != 0))
+                {
+                    _reportedTimeout = true;
+                    Debug.LogError($"POC-3 FAIL identity={_identity} reason={_lifecycle.Failure} room={_client.Room} epoch={_client.Epoch}");
+                }
+            }
+            else if (_smoke != null)
             {
                 _smoke.Tick(Time.unscaledDeltaTime * 1000, UpdateView);
                 if (!_reportedTimeout && (_smoke.TimedOut || (!_smoke.Passed && _client.Disconnected)))
@@ -102,8 +120,17 @@ namespace FRFrame.Network.Unity
                 }
                 _client.Tick(Time.unscaledDeltaTime * 1000, (sbyte)x, (sbyte)y, UpdateView);
             }
-            if (!_client.Ready && _views.Count != 0)
-                ClearViews();
+            _missingViews.Clear();
+            foreach (var player in _views.Keys)
+                if (!_seenViews.Contains(player))
+                    _missingViews.Add(player);
+            foreach (var player in _missingViews)
+            {
+                var removed = _views[player];
+                _views.Remove(player);
+                Destroy(removed.Material);
+                Destroy(removed.Object);
+            }
         }
 
         private void Connect()
@@ -145,13 +172,18 @@ namespace FRFrame.Network.Unity
             else if (op == ProbeOp.MarkerChanged)
                 Log($"POC-2 marker={message.Marker} from={message.Player}");
             else if (op == ProbeOp.Members)
-                Log($"POC-2 members={string.Join(",", message.MemberIds)} online-mask={message.Online} owner={message.Player}");
+                Log($"POC-2 members={string.Join(",", message.MemberIds)} online-mask={message.Online} owner={message.Player} room={message.Room}");
         }
 
         private void UpdateView(PawnSample sample)
         {
-            if (Application.isBatchMode || sample.Player is < 1 or > 8)
+            if (Application.isBatchMode || sample.Player is < 1 or > 8 || sample.Room != _client.Room)
                 return;
+            if (_viewRoom != sample.Room)
+            {
+                ClearViews();
+                _viewRoom = sample.Room;
+            }
             if (!_views.TryGetValue(sample.Player, out var view))
             {
                 var pawn = GameObject.CreatePrimitive(sample.Owned ? PrimitiveType.Capsule : PrimitiveType.Sphere);
@@ -163,6 +195,7 @@ namespace FRFrame.Network.Unity
                 view = (pawn, material);
                 _views.Add(sample.Player, view);
             }
+            _seenViews.Add(sample.Player);
             view.Object.transform.position = new Vector3(sample.X, 0.65f, sample.Y);
         }
 
@@ -179,7 +212,8 @@ namespace FRFrame.Network.Unity
                 }
             }
 
-            GUILayout.BeginArea(new Rect(12, 12, 355, 415), GUI.skin.box);
+            GUILayout.BeginArea(new Rect(12, 12, 365, Mathf.Min(590, Screen.height - 24)), GUI.skin.box);
+            _scroll = GUILayout.BeginScrollView(_scroll);
             if (_client == null)
             {
                 GUILayout.Label("Host");
@@ -193,19 +227,26 @@ namespace FRFrame.Network.Unity
             }
             else
             {
-                GUILayout.Label(_client.Disconnected ? "Disconnected" : _client.Connected ? "Connected" : "Connecting…");
-                GUILayout.Label($"Player {_client.Player}    Session {_client.Session}    Room {_client.Room}    Owner {_client.Owner}");
-                if (_client.Session != 0 && _client.Room == 0 && _client.Connected)
+                GUILayout.Label(_client.Replaced ? "Session replaced" : _client.Disconnected ? "Disconnected" :
+                    _client.Connected ? "Connected" : "Connecting…");
+                GUILayout.Label($"Player {_client.Player} · Session {_client.Session} · Epoch {_client.Epoch} · Generation {_client.ConnectionGeneration}");
+                if (_client.Session != 0 && _client.Connected)
                 {
-                    if (GUILayout.Button("Create movement room"))
-                        _client.CreateRoom();
+                    GUILayout.BeginHorizontal();
+                    if (GUILayout.Button("Shared room")) _client.CreateRoom(SliceMessage.SharedDefinitionId);
+                    if (GUILayout.Button("Per-room")) _client.CreateRoom();
+                    if (GUILayout.Button("Chat room")) _client.CreateRoom(SliceMessage.PlainRoom);
+                    GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     _room = GUILayout.TextField(_room, 6);
                     if (GUILayout.Button("Join room") && int.TryParse(_room, out var room))
                         _client.JoinRoom(room);
                     GUILayout.EndHorizontal();
                 }
-                else if (_client.Room != 0)
+                foreach (var entry in _client.Rooms.Values)
+                    if (GUILayout.Button($"{(entry.Id == _client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {entry.State}"))
+                        _client.SelectRoom(entry.Id);
+                if (_client.Room != 0 && _client.Connected)
                 {
                     var members = "";
                     for (var i = 0; i < _client.Members.Length; i++)
@@ -229,12 +270,31 @@ namespace FRFrame.Network.Unity
                     if (GUILayout.Button($"Advance marker ({_client.Marker})"))
                         _client.SetMarker((_client.Marker + 1) % 10);
                     GUILayout.EndHorizontal();
+                    GUILayout.BeginHorizontal();
+                    _target = GUILayout.TextField(_target, 1, GUILayout.Width(24));
+                    int.TryParse(_target, out var target);
+                    if (GUILayout.Button("Leave")) _client.LeaveRoom(_client.Room);
+                    if (GUILayout.Button("Kick")) _client.Kick(_client.Room, target);
+                    if (GUILayout.Button("Transfer")) _client.TransferOwner(_client.Room, target);
+                    if (GUILayout.Button("Close room")) _client.CloseRoom(_client.Room);
+                    GUILayout.EndHorizontal();
+                    if (_client.StreamState is SliceStreamState.Failed or SliceStreamState.Closed && GUILayout.Button("Open stream"))
+                        _client.OpenRoomStream(_client.Room);
                 }
-                if (GUILayout.Button("Disconnect"))
-                    Disconnect();
+                if (_client.Connected)
+                {
+                    if (GUILayout.Button("Disconnect")) _client.Disconnect();
+                }
+                else if (_client.Session != 0)
+                {
+                    if (!_client.Replaced && GUILayout.Button("Recover session")) _client.Reconnect(true);
+                    if (GUILayout.Button("New login")) _client.Reconnect(false);
+                    if (GUILayout.Button("Back to connection settings")) Disconnect();
+                }
             }
             foreach (var message in _events)
                 GUILayout.Label(message);
+            GUILayout.EndScrollView();
             GUILayout.EndArea();
             _typing = GUI.GetNameOfFocusedControl() == "room message";
         }
@@ -252,6 +312,7 @@ namespace FRFrame.Network.Unity
             _client?.Dispose();
             _client = null;
             _smoke = null;
+            _lifecycle = null;
             _reportedTimeout = false;
             _createOnLogin = false;
             _joinOnLogin = 0;

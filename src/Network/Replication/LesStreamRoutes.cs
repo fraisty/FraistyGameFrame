@@ -41,11 +41,11 @@ namespace FRFrame.Network.Replication
         }
 
         /// <summary>Installs the exact route negotiated by the remote server.</summary>
-        internal Route Accept(byte wireHeader, uint generation)
+        internal Route Accept(byte wireHeader, uint generation, byte managerHeader = 0)
         {
             if (wireHeader == 0 || generation == 0 || _routes[wireHeader] != null)
                 return null!;
-            return _routes[wireHeader] = new Route(wireHeader, wireHeader, generation);
+            return _routes[wireHeader] = new Route(wireHeader, managerHeader == 0 ? wireHeader : managerHeader, generation);
         }
 
         public void Close(Route route)

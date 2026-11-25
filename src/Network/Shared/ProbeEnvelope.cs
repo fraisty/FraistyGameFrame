@@ -22,7 +22,17 @@ namespace FRFrame.Network.Shared
         Members = 14,
         RoomBroadcast = 15,
         MarkerChanged = 16,
-        StreamClosed = 17
+        StreamClosed = 17,
+        Recover = 18,
+        LeaveRoom = 19,
+        Kick = 20,
+        TransferOwner = 21,
+        CloseRoom = 22,
+        StreamCancel = 23,
+        StreamConfirm = 24,
+        RoomClosed = 25,
+        RoomLeft = 26,
+        SessionReplaced = 27
     }
 
     /// <summary>POC-only wire envelope: reserved header, version, opcode, LE length and payload.</summary>
@@ -53,7 +63,7 @@ namespace FRFrame.Network.Shared
             payload = default;
             if (packet.Length < HeaderSize || packet.Length > MaxPacket || packet[0] != Header ||
                 packet[1] != ProtocolVersion.Current.Value || packet[2] < (byte)ProbeOp.Protobuf ||
-                packet[2] > (byte)ProbeOp.StreamClosed ||
+                packet[2] > (byte)ProbeOp.SessionReplaced ||
                 BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(3)) != packet.Length - HeaderSize)
                 return false;
 

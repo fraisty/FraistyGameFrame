@@ -19,7 +19,8 @@ namespace FRFrame.Network.Probe
                 Room = message.Room, Player = message.Player, Session = message.Session, Text = message.Text,
                 Stream = message.Stream, Generation = message.Generation, Header = message.Header,
                 Schema = message.Schema, Hash = message.Hash, Marker = message.Marker, Online = message.Online,
-                Capacity = message.Capacity
+                Capacity = message.Capacity, Epoch = message.Epoch, ConnectionGeneration = message.ConnectionGeneration,
+                Token = message.Token, Target = message.Target, DelayMs = message.DelayMs
             };
             wire.MemberIds.AddRange(message.MemberIds);
             return ProbeEnvelope.Write(op, wire.ToByteArray());
@@ -33,8 +34,9 @@ namespace FRFrame.Network.Probe
                 using var stream = new MemoryStream(payload.ToArray(), false);
                 using var input = CodedInputStream.CreateWithLimits(stream, ProbeEnvelope.MaxPayload, 4);
                 var wire = Parser.ParseFrom(input);
-                if (wire.Error > (uint)SliceError.RecoveryDeferred || wire.ReplyTo > (uint)ProbeOp.StreamReady ||
-                    wire.MemberIds.Count > SliceMessage.RoomCapacity || wire.Text.Length > 80)
+                if (wire.Error > (uint)SliceError.InvalidRecovery ||
+                    (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((ProbeOp)wire.ReplyTo))) ||
+                    wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 || wire.Token.Length > 44)
                     return false;
 
                 message = new SliceMessage
@@ -43,7 +45,8 @@ namespace FRFrame.Network.Probe
                     Room = wire.Room, Player = wire.Player, Session = wire.Session, Text = wire.Text,
                     Stream = wire.Stream, Generation = wire.Generation, Header = wire.Header, Schema = wire.Schema,
                     Hash = wire.Hash, Marker = wire.Marker, MemberIds = wire.MemberIds.ToArray(), Online = wire.Online,
-                    Capacity = wire.Capacity
+                    Capacity = wire.Capacity, Epoch = wire.Epoch, ConnectionGeneration = wire.ConnectionGeneration,
+                    Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs
                 };
                 return true;
             }
