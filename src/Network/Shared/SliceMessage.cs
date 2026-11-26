@@ -75,6 +75,7 @@ namespace FRFrame.Network.Shared
         public uint BusinessMessageId;
         public byte[] BusinessPayload = Array.Empty<byte>();
         public RoomPayload? RoomData;
+        public GameInitialization? GameOptions;
 
         public static bool IsClientRequest(OpCode op) =>
             ProtocolMessages.TryGet(op, out var descriptor) && descriptor.Kind == MessageKind.Request;
@@ -91,7 +92,8 @@ namespace FRFrame.Network.Shared
             (op is OpCode.Kick or OpCode.TransferOwner or OpCode.LeaveRoom or OpCode.InvitePlayer or OpCode.RevokeInvitation || Target == 0) &&
             (op == OpCode.SetMarker || DelayMs == 0) &&
             (op == OpCode.SetMarker || Marker == 0) &&
-            (op == OpCode.GameCommand || (GameMessageId == 0 && GamePayload.Length == 0)) &&
+            (op is OpCode.GameCommand or OpCode.GameQuery || (GameMessageId == 0 && GamePayload.Length == 0)) &&
+            (op == OpCode.CreateRoom || GameOptions == null) &&
             (op == OpCode.BusinessRequest || (BusinessMessageId == 0 && BusinessPayload.Length == 0)) &&
             (op is OpCode.CreateRoom or OpCode.ConfigureRoom or OpCode.ListRooms or OpCode.ListInvitations || RoomData == null) &&
             (op switch
@@ -110,7 +112,8 @@ namespace FRFrame.Network.Shared
                 OpCode.SetMarker => Room > 0 && Text.Length == 0 && Marker >= 0 && Marker <= 9 &&
                     DelayMs >= 0 && DelayMs <= 12_000,
                 OpCode.StreamReady => Room > 0 && GameWire.IsDefinitionId(Text) && Stream != 0 && Generation != 0,
-                OpCode.GameCommand => Room > 0 && Text.Length == 0 && GameMessageId != 0 && GamePayload.Length <= GameWire.MaxBodyBytes,
+                OpCode.GameCommand or OpCode.GameQuery => Room > 0 && Text.Length == 0 && GameMessageId != 0 &&
+                    GamePayload.Length <= GameWire.MaxBodyBytes,
                 OpCode.BusinessRequest => Room == 0 && Text.Length == 0 && BusinessMessageId != 0 &&
                     BusinessPayload.Length <= BusinessWire.MaxBodyBytes,
                 OpCode.StreamCancel => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
@@ -120,6 +123,17 @@ namespace FRFrame.Network.Shared
                 OpCode.CloseRoom => Room > 0 && Text.Length == 0,
                 _ => false
             });
+
+        /// <summary>A query response identifies its room and carries data only on success.</summary>
+        public bool IsGameQueryReply() => Room > 0 && Player == 0 && Text.Length == 0 && Stream == 0 && Generation == 0 &&
+            Header == 0 && Schema == 0 && Hash == 0 && Marker == 0 && MemberIds.Length == 0 && Online == 0 && Capacity == 0 &&
+            Token.Length == 0 && Target == 0 && DelayMs == 0 &&
+            (Error == ErrorCode.None
+                ? GameMessageId != 0 && Session > 0 && Epoch > 0 && ConnectionGeneration > 0
+                : GameMessageId == 0 && GamePayload.Length == 0 &&
+                    ((Session > 0 && Epoch > 0 && ConnectionGeneration > 0) ||
+                     (Session == 0 && Epoch == 0 && ConnectionGeneration == 0 &&
+                      Error is ErrorCode.Invalid or ErrorCode.Unauthenticated or ErrorCode.RoomClosing or ErrorCode.ServerDraining)));
 
         /// <summary>Business replies and notifications carry only binding and application data.</summary>
         public bool IsBusinessDelivery(OpCode op) =>
@@ -150,6 +164,26 @@ namespace FRFrame.Network.Shared
                     return false;
             return true;
         }
+    }
+
+    /// <summary>Owned initialization bytes for a single Context and the schema that decodes them.</summary>
+    public sealed class GameInitialization
+    {
+        public const int MaxBodyBytes = 128;
+        private readonly byte[] _payload;
+
+        public GameInitialization(int schemaVersion, ReadOnlySpan<byte> payload)
+        {
+            if (schemaVersion <= 0)
+                throw new ArgumentOutOfRangeException(nameof(schemaVersion));
+            if (payload.Length > MaxBodyBytes)
+                throw new ArgumentOutOfRangeException(nameof(payload));
+            SchemaVersion = schemaVersion;
+            _payload = payload.ToArray();
+        }
+
+        public int SchemaVersion { get; }
+        public ReadOnlySpan<byte> Payload => _payload;
     }
 
     /// <summary>Bounds and identifiers shared by game registrations and the compatible protocol.</summary>

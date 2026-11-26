@@ -146,7 +146,9 @@ namespace FRFrame.Network.Client
 
         public uint CreateRoom(string definition) => CreateRoom(definition, null);
         public uint CreateRoom(string definition, RoomConfiguration? options) =>
-            SendCompatible(OpCode.CreateRoom, new SliceMessage { Text = definition, RoomData = options });
+            CreateRoom(definition, options, null);
+        public uint CreateRoom(string definition, RoomConfiguration? roomOptions, GameInitialization? gameOptions) =>
+            SendCompatible(OpCode.CreateRoom, new SliceMessage { Text = definition, RoomData = roomOptions, GameOptions = gameOptions });
         public uint ConfigureRoom(int room, RoomConfiguration configuration) =>
             SendCompatible(OpCode.ConfigureRoom, new SliceMessage { Room = room, RoomData = configuration });
         public uint ListRooms(int afterRoomId = 0, string? definitionFilter = null, string? namePrefix = null, int pageSize = 2) =>
@@ -173,6 +175,14 @@ namespace FRFrame.Network.Client
             if (room <= 0 || id == 0 || payload.Length > GameWire.MaxBodyBytes)
                 return RejectSend(ErrorCode.Invalid);
             return SendCompatible(OpCode.GameCommand, new SliceMessage { Room = room, GameMessageId = id, GamePayload = payload.ToArray() });
+        }
+
+        /// <summary>Sends a read-only Game Query with a frozen request ID and body.</summary>
+        public uint SendGameQuery(int room, uint id, ReadOnlySpan<byte> payload)
+        {
+            if (room <= 0 || id == 0 || payload.Length > GameWire.MaxBodyBytes)
+                return RejectSend(ErrorCode.Invalid);
+            return SendCompatible(OpCode.GameQuery, new SliceMessage { Room = room, GameMessageId = id, GamePayload = payload.ToArray() });
         }
 
         /// <summary>Sends a typed application's encoded body on the current Session without joining a room.</summary>
@@ -312,7 +322,7 @@ namespace FRFrame.Network.Client
             var now = _clock();
             ClientRequests.Intent? intent;
             if (request.RequestId == 0)
-                intent = _requests.Reserve(op, bytes, now, request.BusinessMessageId, request.Room);
+                intent = _requests.Reserve(op, bytes, now, request.BusinessMessageId, request.Room, request.GameMessageId);
             else
             {
                 intent = _requests.Find(id);
@@ -420,6 +430,15 @@ namespace FRFrame.Network.Client
                         if (message.ConnectionGeneration > Binding.ConnectionGeneration || message.Room != intent.RoomId)
                             return;
                         Notify(RequestFinished, _requests.Finish(intent, ClientRequestStatus.Response, message.Error, roomData: message.RoomData));
+                        return;
+                    }
+                    if (intent.Op == OpCode.GameQuery)
+                    {
+                        if (message.Room != intent.RoomId || message.ConnectionGeneration > Binding.ConnectionGeneration ||
+                            (message.Error == ErrorCode.None && message.GameMessageId != intent.GameQueryId))
+                            return;
+                        Notify(RequestFinished, _requests.Finish(intent, ClientRequestStatus.Response, message.Error,
+                            gameQueryId: message.GameMessageId, gameQueryPayload: message.GamePayload));
                         return;
                     }
                     if (intent.Op == OpCode.BusinessRequest)

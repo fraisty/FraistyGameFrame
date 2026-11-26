@@ -14,6 +14,7 @@ namespace FRFrame.Network.Protocol
         public const int MaxTextBytes = 240;
         public const int MaxTicketBytes = 44;
         private static readonly MessageParser<SliceWire> Parser = SliceWire.Parser.WithDiscardUnknownFields(true);
+        private static readonly MessageParser<GameOptionsWire> OptionsParser = GameOptionsWire.Parser.WithDiscardUnknownFields(true);
 
         /// <summary>Freezes canonical room-result bytes before a successful query enters the replay ledger.</summary>
         public static EncodedRoomResult FreezeRoomResult(RoomPayload data)
@@ -54,6 +55,9 @@ namespace FRFrame.Network.Protocol
                     throw new ArgumentOutOfRangeException(nameof(message));
                 wire.RoomPayload = room.ToByteString();
             }
+            if (message.GameOptions is { } options)
+                wire.GameOptions = new GameOptionsWire { SchemaVersion = (uint)options.SchemaVersion,
+                    Payload = ByteString.CopyFrom(options.Payload) }.ToByteString();
             wire.MemberIds.AddRange(message.MemberIds);
             return Envelope.Write(op, wire.ToByteArray(), new RequestId(message.RequestId));
         }
@@ -81,7 +85,7 @@ namespace FRFrame.Network.Protocol
                 Encoding.UTF8.GetByteCount(wire.Text) > MaxTextBytes ||
                 Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes || wire.GamePayload.Length > GameWire.MaxBodyBytes ||
                 wire.BusinessPayload.Length > BusinessWire.MaxBodyBytes || wire.RoomPayload.Length > RoomWire.MaxBodyBytes ||
-                (header.Op == OpCode.CreateRoom && !wire.HasRoomPayload && payload.Length > 64) ||
+                (header.Op == OpCode.CreateRoom && !wire.HasGameOptions && payload.Length > (wire.HasRoomPayload ? 256 : 64)) ||
                 (header.Op == OpCode.Members && !wire.HasRoomPayload && payload.Length > 128))
             {
                 error = ErrorCode.PayloadTooLarge;
@@ -89,10 +93,15 @@ namespace FRFrame.Network.Protocol
             }
             var businessDelivery = header.Op == OpCode.BusinessPush ||
                 (header.Op == OpCode.Response && wire.ReplyTo == (uint)OpCode.BusinessRequest);
+            var queryReply = header.Op == OpCode.Response && wire.ReplyTo == (uint)OpCode.GameQuery;
+            var gameQuery = header.Op == OpCode.GameQuery || queryReply;
             if (wire.Error > (uint)ErrorCode.InternalError ||
                 (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((OpCode)wire.ReplyTo))) ||
                 (header.Descriptor.Kind == MessageKind.Response && wire.ReplyTo == 0) ||
-                (header.Op is not (OpCode.GameCommand or OpCode.GameEvent) && (wire.HasGameMessageId || wire.HasGamePayload)) ||
+                (!gameQuery && header.Op is not (OpCode.GameCommand or OpCode.GameEvent) && (wire.HasGameMessageId || wire.HasGamePayload)) ||
+                (queryReply && wire.Error != 0 && (wire.HasGameMessageId || wire.HasGamePayload)) ||
+                (gameQuery && wire.HasGamePayload && wire.GamePayload.IsEmpty) ||
+                (wire.HasGameOptions && header.Op != OpCode.CreateRoom) ||
                 (!businessDelivery && header.Op != OpCode.BusinessRequest && (wire.HasBusinessMessageId || wire.HasBusinessPayload)) ||
                 (businessDelivery && wire.Error != 0 && (wire.HasBusinessMessageId || wire.HasBusinessPayload)) ||
                 (header.Op == OpCode.GameEvent && (wire.Room <= 0 || wire.Player <= 0 || wire.GameMessageId == 0 ||
@@ -117,7 +126,22 @@ namespace FRFrame.Network.Protocol
                 BusinessMessageId = wire.BusinessMessageId,
                 BusinessPayload = wire.BusinessPayload.IsEmpty ? Array.Empty<byte>() : wire.BusinessPayload.ToByteArray()
             };
-            if ((businessDelivery && !decoded.IsBusinessDelivery(header.Op)) || !RoomProtocol.TryRead(header.Op, wire, payload, decoded))
+            if (wire.HasGameOptions)
+            {
+                var body = wire.GameOptions.Span;
+                if (body.IsEmpty || !BoundedProtobuf.TryParse(OptionsParser, body, GameInitialization.MaxBodyBytes + 9,
+                    out var options, out _) || options.SchemaVersion is 0 or > int.MaxValue ||
+                    options.Payload.Length > GameInitialization.MaxBodyBytes || !body.SequenceEqual(options.ToByteArray()))
+                {
+                    error = ErrorCode.MalformedMessage;
+                    return false;
+                }
+                decoded.GameOptions = new GameInitialization((int)options.SchemaVersion, options.Payload.Span);
+            }
+            if (((gameQuery || (wire.HasGameOptions && !wire.HasRoomPayload)) && !payload.SequenceEqual(wire.ToByteArray())) ||
+                (businessDelivery && !decoded.IsBusinessDelivery(header.Op)) || !RoomProtocol.TryRead(header.Op, wire, payload, decoded) ||
+                (queryReply && !decoded.IsGameQueryReply()) ||
+                ((header.Op == OpCode.GameQuery || wire.HasGameOptions) && !decoded.IsRequest(header.Op)))
             {
                 error = ErrorCode.MalformedMessage;
                 return false;

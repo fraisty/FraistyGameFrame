@@ -11,7 +11,8 @@ namespace FRFrame.Network.Client
     public readonly struct ClientRequestResult
     {
         internal ClientRequestResult(uint id, long attempt, ClientRequestStatus status, ErrorCode error, bool uncertain,
-            uint businessMessageId = 0, byte[]? businessPayload = null, OpCode operation = OpCode.None, RoomPayload? roomData = null)
+            uint businessMessageId = 0, byte[]? businessPayload = null, OpCode operation = OpCode.None, RoomPayload? roomData = null,
+            int roomId = 0, uint gameQueryId = 0, byte[]? gameQueryPayload = null)
         {
             RequestId = id;
             Attempt = attempt;
@@ -22,6 +23,9 @@ namespace FRFrame.Network.Client
             _businessPayload = businessPayload;
             Operation = operation;
             RoomData = roomData;
+            RoomId = roomId;
+            GameQueryId = gameQueryId;
+            _gameQueryPayload = gameQueryPayload;
         }
 
         public uint RequestId { get; }
@@ -35,6 +39,11 @@ namespace FRFrame.Network.Client
         public OpCode Operation { get; }
         /// <summary>Historical directory, room detail or invitation page from a successful request.</summary>
         public RoomPayload? RoomData { get; }
+        public int RoomId { get; }
+        public uint GameQueryId { get; }
+        private readonly byte[]? _gameQueryPayload;
+        /// <summary>Owned, read-only bytes from a successful Game Query. The result may be historical.</summary>
+        public ReadOnlySpan<byte> GameQueryPayload => _gameQueryPayload;
     }
 
     /// <summary>Session-bound intent storage. Only this owner can turn a pending wait into a terminal result.</summary>
@@ -50,10 +59,11 @@ namespace FRFrame.Network.Client
             public readonly long RetryUntil;
             public readonly uint BusinessMessageId;
             public readonly int RoomId;
+            public readonly uint GameQueryId;
             public long Attempt, Deadline;
             public bool Pending, Sent, Final;
 
-            public Intent(uint id, OpCode op, byte[] bytes, long retryUntil, uint businessMessageId, int roomId)
+            public Intent(uint id, OpCode op, byte[] bytes, long retryUntil, uint businessMessageId, int roomId, uint gameQueryId)
             {
                 Id = id;
                 Op = op;
@@ -61,6 +71,7 @@ namespace FRFrame.Network.Client
                 RetryUntil = retryUntil;
                 BusinessMessageId = businessMessageId;
                 RoomId = roomId;
+                GameQueryId = gameQueryId;
             }
         }
 
@@ -71,11 +82,11 @@ namespace FRFrame.Network.Client
         public Intent? Find(uint id) => _intents.TryGetValue(id, out var value) ? value : null;
         public bool HasWaitSlot => _pending < PendingLimit;
 
-        public Intent? Reserve(OpCode op, byte[] bytes, long now, uint businessMessageId, int roomId)
+        public Intent? Reserve(OpCode op, byte[] bytes, long now, uint businessMessageId, int roomId, uint gameQueryId)
         {
             if (Next == 0 || _intents.Count >= EntryLimit || _bytes + bytes.Length > ByteLimit || !HasWaitSlot)
                 return null;
-            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds, businessMessageId, roomId);
+            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds, businessMessageId, roomId, gameQueryId);
             _intents.Add(intent.Id, intent);
             _bytes += bytes.Length;
             return intent;
@@ -90,7 +101,8 @@ namespace FRFrame.Network.Client
         }
 
         public ClientRequestResult Finish(Intent intent, ClientRequestStatus status, ErrorCode error = ErrorCode.None,
-            uint businessMessageId = 0, byte[]? businessPayload = null, RoomPayload? roomData = null)
+            uint businessMessageId = 0, byte[]? businessPayload = null, RoomPayload? roomData = null,
+            uint gameQueryId = 0, byte[]? gameQueryPayload = null)
         {
             intent.Pending = false;
             _pending--;
@@ -99,7 +111,7 @@ namespace FRFrame.Network.Client
             var uncertain = intent.Sent && (status != ClientRequestStatus.Response ||
                 (intent.Op == OpCode.BusinessRequest && error is ErrorCode.InternalError or ErrorCode.CallbackTimeout or ErrorCode.Cancelled));
             return new ClientRequestResult(intent.Id, intent.Attempt, status, error,
-                uncertain, businessMessageId, businessPayload, intent.Op, roomData);
+                uncertain, businessMessageId, businessPayload, intent.Op, roomData, intent.RoomId, gameQueryId, gameQueryPayload);
         }
 
         public void ForgetUnsent(Intent intent)
