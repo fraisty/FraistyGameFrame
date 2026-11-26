@@ -109961,10 +109961,12 @@ namespace FRFrame.Network.Transport
                 Close(target, TransportCloseReason.AdmissionViolations);
         }
 
+        // MarkerChanged shares the room projection FIFO with Members and RoomClosed.
         private static byte GetChannel(PacketDelivery delivery, EnvelopeHeader header) =>
             delivery == PacketDelivery.Unreliable ? UnreliableChannel :
             header.Op != OpCode.None &&
-            (header.Descriptor.Kind == MessageKind.Response || header.Descriptor.RateClass is MessageRateClass.Control or MessageRateClass.Stream)
+            (header.Op == OpCode.MarkerChanged || header.Descriptor.Kind == MessageKind.Response ||
+             header.Descriptor.RateClass is MessageRateClass.Control or MessageRateClass.Stream)
                 ? ControlChannel : DataChannel;
 
         private static DeliveryMethod Method(PacketDelivery delivery) =>
