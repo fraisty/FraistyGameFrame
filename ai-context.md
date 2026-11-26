@@ -8366,12 +8366,12 @@ namespace FRFrame
 
         public override void Destroy()
         {
+            if (_shutdown)
+                return;
             _shutdown = true;
             foreach (var active in _active)
-            {
-                if (!active.Operation.isDone)
-                    active.Abort(HttpErrorKind.ManagerShutdown);
-            }
+                active.Revoke();
+            _active.Clear();
         }
 
         public UniTask<HttpResult<T>> GetJsonAsync<T>(string url, HttpRequestOptions options = null,
@@ -8419,10 +8419,11 @@ namespace FRFrame
             var outcome = Prepare(HttpMethod.Get, url, null, null, options, cancellationToken, out var settings);
             if (outcome.ErrorKind != HttpErrorKind.None)
                 return new HttpDownloadResult(outcome);
+            if (settings.Headers.ContainsKey("Range") || settings.Headers.ContainsKey("If-Range"))
+                return new HttpDownloadResult(new HttpOutcome(HttpErrorKind.InvalidRequest, "File downloads do not support range requests."));
             if (string.IsNullOrWhiteSpace(destinationPath))
                 return new HttpDownloadResult(new HttpOutcome(HttpErrorKind.InvalidRequest, "A destination file is required."));
 
-            string tempPath = null;
             float lastProgress = -1f;
             void ReportProgress(float value)
             {
@@ -8447,26 +8448,24 @@ namespace FRFrame
 
                 string directory = Path.GetDirectoryName(destinationPath);
                 Directory.CreateDirectory(directory);
-                tempPath = Path.Combine(directory, $".frframe-{Guid.NewGuid():N}.part");
+                string tempPath = Path.Combine(directory, $".frframe-{Guid.NewGuid():N}.part");
 
-                ulong bytesDownloaded;
-                using (var request = new UnityWebRequest(settings.Url, settings.Verb))
-                {
-                    request.downloadHandler = new DownloadHandlerFile(tempPath) { removeFileOnAbort = true };
-                    outcome = await SendAsync(request, settings, cancellationToken, onProgress == null ? null : ReportProgress);
-                    if (outcome.ErrorKind != HttpErrorKind.None)
-                        return new HttpDownloadResult(outcome);
-                    bytesDownloaded = request.downloadedBytes;
-                }
+                using var active = new ActiveRequest(new UnityWebRequest(settings.Url, settings.Verb), tempPath);
+                var request = active.Request;
+                request.downloadHandler = new DownloadHandlerFile(tempPath) { removeFileOnAbort = true };
+                outcome = await SendAsync(active, settings, cancellationToken, onProgress == null ? null : ReportProgress);
+                if (outcome.ErrorKind != HttpErrorKind.None)
+                    return new HttpDownloadResult(outcome);
+                if (outcome.StatusCode == 206 || outcome.Headers.ContainsKey("Content-Range"))
+                    return new HttpDownloadResult(outcome.WithError(HttpErrorKind.HttpStatus, "The server returned a partial file response."));
 
-                // The native handler must be closed before moving the file on Windows.
-                try { File.Move(tempPath, destinationPath); }
+                ulong bytesDownloaded = request.downloadedBytes;
+                try { active.CommitFile(destinationPath); }
                 catch (IOException) when (File.Exists(destinationPath) || Directory.Exists(destinationPath))
                 {
                     return new HttpDownloadResult(outcome.WithError(HttpErrorKind.DestinationExists, "The download destination already exists."));
                 }
 
-                tempPath = null;
                 ReportProgress(1f);
                 return new HttpDownloadResult(outcome, destinationPath, bytesDownloaded);
             }
@@ -8477,17 +8476,6 @@ namespace FRFrame
             catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
             {
                 return new HttpDownloadResult(outcome.WithError(HttpErrorKind.FileIO, "Unable to write or move the download file."));
-            }
-            finally
-            {
-                if (tempPath != null)
-                {
-                    try { File.Delete(tempPath); }
-                    catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
-                    {
-                        FRLog.Warning("Unable to remove an HTTP download temporary file.");
-                    }
-                }
             }
         }
 
@@ -8540,13 +8528,14 @@ namespace FRFrame
         private async UniTask<HttpResult<byte[]>> SendBufferedAsync(RequestSettings settings, byte[] body,
             CancellationToken cancellationToken)
         {
-            using var request = new UnityWebRequest(settings.Url, settings.Verb);
+            using var active = new ActiveRequest(new UnityWebRequest(settings.Url, settings.Verb));
+            var request = active.Request;
             var download = new DownloadHandlerBuffer();
             request.downloadHandler = download;
             if (body != null)
                 request.uploadHandler = new UploadHandlerRaw(body);
 
-            var outcome = await SendAsync(request, settings, cancellationToken);
+            var outcome = await SendAsync(active, settings, cancellationToken);
             if (outcome.ErrorKind != HttpErrorKind.None && outcome.ErrorKind != HttpErrorKind.HttpStatus)
                 return new HttpResult<byte[]>(outcome);
 
@@ -8564,7 +8553,7 @@ namespace FRFrame
             return new HttpResult<byte[]>(outcome, data.Length == 0 ? Array.Empty<byte>() : data.ToArray());
         }
 
-        private async UniTask<HttpOutcome> SendAsync(UnityWebRequest request, RequestSettings settings,
+        private async UniTask<HttpOutcome> SendAsync(ActiveRequest active, RequestSettings settings,
             CancellationToken cancellationToken, Action<float> progress = null)
         {
             if (_shutdown)
@@ -8572,6 +8561,7 @@ namespace FRFrame
             if (cancellationToken.IsCancellationRequested)
                 return Stopped(HttpErrorKind.Cancelled);
 
+            var request = active.Request;
             UnityWebRequestAsyncOperation operation;
             try
             {
@@ -8584,27 +8574,36 @@ namespace FRFrame
                 return new HttpOutcome(HttpErrorKind.InvalidRequest, "Unity rejected the request URL, headers, or platform HTTP settings.");
             }
 
-            var active = new ActiveRequest(request, operation);
             _active.Add(active);
+            var stopReason = HttpErrorKind.None;
             long deadline = Stopwatch.GetTimestamp() + settings.TimeoutSeconds * Stopwatch.Frequency;
             try
             {
-                while (!operation.isDone)
+                while (!active.IsRevoked && !operation.isDone)
                 {
-                    if (active.StopReason == HttpErrorKind.None)
+                    if (stopReason == HttpErrorKind.None)
                     {
                         if (cancellationToken.IsCancellationRequested)
-                            active.Abort(HttpErrorKind.Cancelled);
+                            stopReason = HttpErrorKind.Cancelled;
                         else if (settings.TimeoutSeconds != 0 && Stopwatch.GetTimestamp() >= deadline)
-                            active.Abort(HttpErrorKind.Timeout);
+                            stopReason = HttpErrorKind.Timeout;
+
+                        if (stopReason != HttpErrorKind.None)
+                            request.Abort();
                         else if (progress != null)
+                        {
                             progress(Math.Clamp(request.downloadProgress, 0f, 0.99f));
+                            if (active.IsRevoked)
+                                break;
+                        }
                     }
                     await UniTask.Yield(PlayerLoopTiming.Update);
                 }
 
-                if (active.StopReason != HttpErrorKind.None)
-                    return Stopped(active.StopReason);
+                if (active.IsRevoked)
+                    return Stopped(HttpErrorKind.ManagerShutdown);
+                if (stopReason != HttpErrorKind.None)
+                    return Stopped(stopReason);
 
                 long status = Math.Max(0, request.responseCode);
                 var responseHeaders = request.GetResponseHeaders();
@@ -8629,6 +8628,7 @@ namespace FRFrame
             }
             finally
             {
+                // The caller consumes the native response or commits the file without another yield.
                 _active.Remove(active);
             }
         }
@@ -8743,25 +8743,54 @@ namespace FRFrame
             internal int MaxResponseBytes { get; }
         }
 
-        private sealed class ActiveRequest
+        private sealed class ActiveRequest : IDisposable
         {
-            private readonly UnityWebRequest _request;
+            private string _tempPath;
 
-            internal ActiveRequest(UnityWebRequest request, UnityWebRequestAsyncOperation operation)
+            internal ActiveRequest(UnityWebRequest request, string tempPath = null)
             {
-                _request = request;
-                Operation = operation;
+                Request = request;
+                _tempPath = tempPath;
             }
 
-            internal UnityWebRequestAsyncOperation Operation { get; }
-            internal HttpErrorKind StopReason { get; private set; }
+            internal UnityWebRequest Request { get; private set; }
+            internal bool IsRevoked { get; private set; }
 
-            internal void Abort(HttpErrorKind reason)
+            internal void Revoke()
             {
-                if (StopReason != HttpErrorKind.None)
+                IsRevoked = true;
+                if (!Request.isDone)
+                    Request.Abort();
+                Dispose();
+            }
+
+            internal void CommitFile(string destinationPath)
+            {
+                // Windows requires the native file handler to be closed before the move.
+                CloseRequest();
+                File.Move(_tempPath, destinationPath);
+                _tempPath = null;
+            }
+
+            public void Dispose()
+            {
+                CloseRequest();
+                string path = _tempPath;
+                _tempPath = null;
+                if (path == null)
                     return;
-                StopReason = reason;
-                _request.Abort();
+
+                try { File.Delete(path); }
+                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+                {
+                    FRLog.Warning("Unable to remove an HTTP download temporary file.");
+                }
+            }
+
+            private void CloseRequest()
+            {
+                Request?.Dispose();
+                Request = null;
             }
         }
     }
@@ -8936,16 +8965,17 @@ public static class HttpExample
 - JSON 提供 GET／POST／PUT／DELETE。`204` 和空响应成功时 `Data` 为 `default`。原始 bytes 使用 `GetBytesAsync` 或 `SendBytesAsync`。只有 POST／PUT 可发送请求体。
 - `HttpRequestOptions.Headers` 只作用于当前请求。JSON 默认 `Accept: application/json`，有请求体时默认 `Content-Type: application/json; charset=utf-8`。bytes 请求体默认 `application/octet-stream`。调用者可按请求覆盖这些 Header。Unity 管理 `Content-Length`、`Transfer-Encoding`、`Host`、`Accept-Encoding` 和 `X-Unity-Version`，传入这些 Header 会返回 `InvalidRequest`。
 - `TimeoutSeconds` 默认 15 秒，允许 0–300，0 表示禁用。`MaxRequestBytes` 与 `MaxResponseBytes` 默认 4 MiB，可降低到 0。响应在接收完成后检查。超限的 2xx 返回 `ResponseTooLarge`，非 2xx 保留 `HttpStatus` 与上限以内的错误体前缀。`ResponseHeaders` 按大小写不敏感的名称读取。JSON 解析失败时 `ErrorBody` 包含有界的原始响应，业务按需要处理其中的数据。
-- `CancellationTokenSource.Cancel()` 可以从任意线程调用。`Cancelled`、`Timeout` 和 `ManagerShutdown` 是独立结果。框架所有者在 Unity 主线程调用 `FRFM.Shutdown()`，停止旧实例接收新请求并终止在途请求。
-- `DownloadFileAsync` 将内容写入目标同目录的临时文件，成功后移动到新路径。可用 `Application.persistentDataPath` 构建目标路径。进度在主线程报告，达到 `1` 时最终文件已落盘。磁盘写入与提交失败时检查 `ErrorKind`，已有目标文件会返回 `DestinationExists`。
+- `CancellationTokenSource.Cancel()` 可以从任意线程调用。`Cancelled`、`Timeout` 和 `ManagerShutdown` 是独立结果。`FRFM.Shutdown()` 在 Unity 主线程同步关闭尚未交付的请求及其 Handler，清理临时文件，旧实例停止接收新请求。若 PlayerLoop 继续运行，被撤销的任务返回 `ManagerShutdown`。已复制的内存响应或已提交的文件保留原结果。
+- `DownloadFileAsync` 将完整内容写入目标同目录的临时文件，成功后移动到新路径。可用 `Application.persistentDataPath` 构建目标路径。进度在主线程报告，达到 `1` 时最终文件已落盘。已有目标文件会返回 `DestinationExists`。此 API 对 `Range` 或 `If-Range` 返回 `InvalidRequest`。接收结束后发现 `206` 或其他带 `Content-Range` 的成功状态时，文件下载返回 `HttpStatus` 并保留状态码和 Header。部分响应及截断响应均不会生成最终文件。普通 bytes 请求仍支持按范围读取。
 - HTTP(S) 使用 Unity 的 TLS、重定向及平台 HTTP 策略。用于实际服务时使用适合目标平台的 HTTPS 地址。Unity Player 的设置和平台验收见 [F2 设计](../../../../Docs/FRFrameNetwork/Design/Network-Http-Client-Design.md)。
 
 ## 在现有 Unity Editor 复核
 
 1. 从仓库根目录运行 `python Docs/FRFrameNetwork/Validation/F2HttpLoopback.py`，看到 `127.0.0.1:18952` 后保持它运行。
 2. 将 [F2 Editor 检查脚本](../../../../Docs/FRFrameNetwork/Validation/F2HttpEditorChecks.cs) 临时复制到 `Assets/FRFrame/Core/Http/F2HttpEditorChecks.cs`。编译完成后打开 `Assets/FRFrame/Network/Unity/NetworkMultiplayerDemo.unity`，进入 Play Mode。选择 `FRFrame > Validation > Run F2 HTTP Checks`，每次 Play 运行一次。最后一组检查会关闭 FRFrame，停在 Play Mode 内查看结果。
-3. Console 过滤 `[F2 HTTP]`，确认 `PASS all loopback checks`。检查 JSON 值、404／500 结果、取消和超时的区分、文件进度与覆盖保护，以及 Shutdown 后活动请求数为 0、临时文件已清理。进度回调抛错是有意触发的一次 Warning。
-4. 退出 Play Mode，删除步骤 2 复制的脚本和它的 `.meta`，用 `Ctrl+C` 关闭 fixture。结果范围与证据见 [Master Task](../../../../Docs/FRFrameNetwork/Tasks/Network-POC-Master-Task.md#836-f2-lightweight-http-client-实施交付2026-11-26)。
+3. 在 Console 过滤 `[F2 HTTP]`，确认 `PASS all loopback checks`，包括 bytes 范围读取、部分响应与截断保护、完整文件下载和正常 Shutdown。进度回调抛错是有意触发的一次 Warning。
+4. 分别从新的 Play Mode 会话运行 `FRFrame > Validation > Run F2 HTTP Root Teardown Check` 与 `Run F2 HTTP Stop Play Check`。前者检查销毁根节点的同一帧已释放句柄并删除 `.part`，后者退出 Play Mode 并检查目标目录为空。核对 `PASS CR-F2-2` 日志。
+5. 回到 Edit Mode 后删除步骤 2 临时复制的脚本和它的 `.meta`，用 `Ctrl+C` 关闭 fixture。结果范围与证据见 [Master Task](../../../../Docs/FRFrameNetwork/Tasks/Network-POC-Master-Task.md#838-f2-审查修复交付2026-11-26)。
 ````
 
 ## File: Core/Log/AsyncFileFRLogHandler.cs
