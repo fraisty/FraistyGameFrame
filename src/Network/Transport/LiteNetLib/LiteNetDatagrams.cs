@@ -1,39 +1,69 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net;
 using FRFrame.Network.Shared;
 using LiteNetLib;
 
 namespace FRFrame.Network.Transport
 {
-    /// <summary>Single-owner LiteNetLib pump shared by the Unity client and the .NET Host.</summary>
+    public sealed class TrafficLimit
+    {
+        public int PerSecond { get; set; }
+        public int Burst { get; set; }
+        internal bool IsValid => PerSecond > 0 && Burst > 0;
+    }
+
+    /// <summary>Resource limits for one endpoint. Rates are expressed in packets or bytes per second.</summary>
+    public sealed class TransportAdmissionOptions
+    {
+        public int MaxConnections { get; set; } = 8;
+        public int ReliableViolationLimit { get; set; } = 8;
+        public TrafficLimit ConnectionAttempts { get; set; } = new TrafficLimit { PerSecond = 4, Burst = 8 };
+        public TrafficLimit RawPackets { get; set; } = new TrafficLimit { PerSecond = 240, Burst = 480 };
+        public TrafficLimit RawBytes { get; set; } = new TrafficLimit { PerSecond = 128 * 1024, Burst = 256 * 1024 };
+        public TrafficLimit Control { get; set; } = new TrafficLimit { PerSecond = 20, Burst = 40 };
+        public TrafficLimit Room { get; set; } = new TrafficLimit { PerSecond = 10, Burst = 20 };
+        public TrafficLimit Game { get; set; } = new TrafficLimit { PerSecond = 30, Burst = 60 };
+        public TrafficLimit Stream { get; set; } = new TrafficLimit { PerSecond = 30, Burst = 60 };
+
+        public bool IsValid => MaxConnections is >= 1 and <= 64 && ReliableViolationLimit > 0 &&
+            ConnectionAttempts.IsValid && RawPackets.IsValid && RawBytes.IsValid &&
+            Control.IsValid && Room.IsValid && Game.IsValid && Stream.IsValid;
+    }
+
+    public enum TransportCloseReason : byte { PeerDisconnected, LocalRequest, ReliableIngressOverflow, ReliableOutboundOverflow, AdmissionViolations, Stop }
+
+    /// <summary>Single-owner LiteNetLib pump shared by the Unity client and .NET Host.</summary>
     public sealed class LiteNetDatagrams : IPacketTransport, IDisposable
     {
+        public const byte ControlChannel = 0;
+        public const byte DataChannel = 1;
+        public const byte UnreliableChannel = 2;
         public const int QueueLimit = 32;
-
-        // A fixed key scopes this test protocol. It is not an authentication credential.
-        private const string ProbeKey = "frframe-poc-1";
-        private const int ConnectionLimit = 8;
+        public const int DataLimit = 24;
+        private const int ControlWeight = 4;
         private const int SendBudget = 8;
-        private const int ControlReserve = 8;
-        private readonly Dictionary<int, Connection> _connections = new Dictionary<int, Connection>();
-        private readonly Dictionary<int, Connection> _receiving = new Dictionary<int, Connection>();
-        private readonly ProbeNetManager _manager;
-        private int _connectionSerial;
-        private bool _accepting;
-        private bool _flushRequested;
-        private int _controlCursor, _inputCursor, _controlBurst;
 
-        private sealed class ProbeNetManager : NetManager
+        private readonly Dictionary<int, Connection> _byPeer = new Dictionary<int, Connection>();
+        private readonly Dictionary<int, Connection> _byGeneration = new Dictionary<int, Connection>();
+        private readonly PumpNetManager _manager;
+        private readonly TransportAdmissionOptions _options;
+        private readonly Func<double> _clock;
+        private readonly int[] _descriptorRejected = new int[4];
+        private readonly int[] _headerRejected = new int[(int)ErrorCode.InternalError + 1];
+        private readonly int[] _closed = new int[(int)TransportCloseReason.Stop + 1];
+        private Bucket _connectionAttempts;
+        private int _generation, _ingressCursor;
+        private bool _accepting, _flushRequested, _listening, _readyForPoll;
+
+        private sealed class PumpNetManager : NetManager
         {
-            public ProbeNetManager(INetEventListener listener) : base(listener) { }
+            public PumpNetManager(INetEventListener listener) : base(listener) { }
 
             public bool StartManual(IPAddress ipv4, IPAddress ipv6, int port)
             {
-                if (IsRunning)
-                    return false;
-
                 var started = false;
                 try
                 {
@@ -44,105 +74,163 @@ namespace FRFrame.Network.Transport
                 {
                     if (!started)
                     {
-                        if (IsRunning)
-                            Stop();
-                        else
-                        {
-                            // LiteNetLib 2.1.5 allocates the IPv4 socket before Bind; Stop skips failed starts.
-                            _udpSocketv4?.Dispose();
-                            _udpSocketv4 = null!;
-                        }
+                        // LiteNetLib 2.1.5 allocates the IPv4 socket before Bind; Stop skips failed starts.
+                        _udpSocketv4?.Dispose();
+                        _udpSocketv4 = null!;
                     }
                 }
+            }
+        }
+
+        private struct Bucket
+        {
+            private readonly int _rate, _burst;
+            private double _available, _last;
+
+            public Bucket(TrafficLimit limit, double now)
+            {
+                _rate = limit.PerSecond;
+                _burst = limit.Burst;
+                _available = _burst;
+                _last = now;
+            }
+
+            public bool Take(double now, int amount)
+            {
+                _available = Math.Min(_burst, _available + (now - _last) * _rate);
+                _last = now;
+                if (_available < amount)
+                    return false;
+                _available -= amount;
+                return true;
+            }
+        }
+
+        private sealed class Lanes<T>
+        {
+            public readonly Queue<T> Control = new Queue<T>();
+            public readonly Queue<T> Data = new Queue<T>();
+            public int Count => Control.Count + Data.Count;
+            private int _controlBurst;
+
+            public bool HasRoom(bool control) => Count < QueueLimit && (control || Data.Count < DataLimit);
+
+            public Queue<T>? Select(bool controlReady, bool dataReady)
+            {
+                if (controlReady && (!dataReady || _controlBurst < ControlWeight))
+                {
+                    _controlBurst = dataReady ? _controlBurst + 1 : 0;
+                    return Control;
+                }
+                if (!dataReady)
+                    return null;
+                _controlBurst = 0;
+                return Data;
             }
         }
 
         private sealed class Connection
         {
             public readonly NetPeer Peer;
-            public readonly int Id;
-            public readonly Queue<ReceivedPacket> Ingress = new Queue<ReceivedPacket>();
-            public readonly Queue<ReceivedPacket> Control = new Queue<ReceivedPacket>();
-            public readonly Queue<(PacketDelivery Delivery, byte[] Bytes)> Outbound =
-                new Queue<(PacketDelivery, byte[])>();
-            public int UnreliableOutbound;
+            public readonly TransportConnectionHandle Handle;
+            public readonly Lanes<ReceivedPacket> Ingress = new Lanes<ReceivedPacket>();
+            public readonly Lanes<(PacketDelivery Delivery, byte Channel, byte[] Bytes)> Outbound =
+                new Lanes<(PacketDelivery, byte, byte[])>();
+            public Bucket RawPackets, RawBytes;
+            public readonly Bucket[] Descriptor;
+            public int ReliableViolations;
 
-            public Connection(NetPeer peer, int id)
+            public Connection(NetPeer peer, int generation, TransportAdmissionOptions options, double now)
             {
                 Peer = peer;
-                Id = id;
+                Handle = new TransportConnectionHandle(peer.Id, generation);
+                RawPackets = new Bucket(options.RawPackets, now);
+                RawBytes = new Bucket(options.RawBytes, now);
+                Descriptor = new[]
+                {
+                    new Bucket(options.Control, now), new Bucket(options.Room, now),
+                    new Bucket(options.Game, now), new Bucket(options.Stream, now)
+                };
             }
         }
 
-        public LiteNetDatagrams()
+        public LiteNetDatagrams(TransportAdmissionOptions? options = null)
+            : this(options ?? new TransportAdmissionOptions(), () => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency) { }
+
+        internal LiteNetDatagrams(TransportAdmissionOptions options, Func<double> clock)
         {
+            if (!options.IsValid)
+                throw new ArgumentOutOfRangeException(nameof(options));
+            _options = options;
+            _clock = clock;
             var events = new EventBasedNetListener();
-            _manager = new ProbeNetManager(events)
+            _manager = new PumpNetManager(events)
             {
                 AutoRecycle = true,
-                ChannelsCount = 1,
+                ChannelsCount = 3,
                 MtuDiscovery = false,
                 MaxFragmentsCount = 0,
                 MaxPacketPerManualReceive = 64,
                 EnableStatistics = true
             };
-            events.ConnectionRequestEvent += request =>
-            {
-                if (_accepting && _connections.Count < ConnectionLimit)
-                    request.AcceptIfKey(ProbeKey);
-                else
-                    request.Reject();
-            };
+            events.ConnectionRequestEvent += OnConnectionRequest;
             events.PeerConnectedEvent += peer =>
             {
-                var connection = new Connection(peer, ++_connectionSerial);
-                _connections.Add(connection.Id, connection);
-                _receiving.Add(peer.Id, connection);
-                ClientConnection = connection.Id;
+                var connection = new Connection(peer, checked(++_generation), _options, _clock());
+                _byPeer.Add(peer.Id, connection);
+                _byGeneration.Add(connection.Handle.Generation, connection);
+                if (!_listening)
+                    ClientConnection = connection.Handle;
                 ConnectionsOpened++;
             };
-            events.PeerDisconnectedEvent += (peer, _) =>
-            {
-                if (peer != null && _receiving.Remove(peer.Id, out var connection))
-                {
-                    _connections.Remove(connection.Id);
-                    ConnectionsClosed++;
-                    if (ClientConnection == connection.Id)
-                        ClientConnection = -1;
-                }
-            };
+            events.PeerDisconnectedEvent += (peer, _) => OnPeerDisconnected(peer);
             events.NetworkReceiveEvent += OnReceive;
         }
 
-        public int ClientConnection { get; private set; } = -1;
+        public TransportConnectionHandle ClientConnection { get; private set; }
         public int ConnectionsOpened { get; private set; }
         public int ConnectionsClosed { get; private set; }
+        public int RejectedNotReady { get; private set; }
+        public int RejectedConnectionLimit { get; private set; }
+        public int RejectedConnectionRate { get; private set; }
         public int RejectedIngress { get; private set; }
         public int RejectedOutbound { get; private set; }
+        public int RejectedSize { get; private set; }
+        public int RejectedChannel { get; private set; }
+        public int RejectedDelivery { get; private set; }
+        public int RejectedRawPackets { get; private set; }
+        public int RejectedRawBytes { get; private set; }
         public int IngressHighWater { get; private set; }
         public int OutboundHighWater { get; private set; }
         public int ReliableHighWater { get; private set; }
         public int ReliableOverflows { get; private set; }
-        public int ActiveConnections => _connections.Count;
+        public int ActiveConnections => _byGeneration.Count;
         public NetStatistics Statistics => _manager.Statistics;
         public int LocalPort => _manager.LocalPort;
 
+        public int HeaderRejections(ErrorCode error) => _headerRejected[(int)error];
+        public int DescriptorRejections(MessageRateClass rateClass) => _descriptorRejected[(int)rateClass];
+        public int Disconnects(TransportCloseReason reason) => _closed[(int)reason];
+
         public bool Listen(IPAddress ipv4, bool ipv6Loopback, int port)
         {
+            if (_manager.IsRunning)
+                return false;
             _manager.IPv6Enabled = ipv6Loopback;
-            _accepting = _manager.StartManual(ipv4, IPAddress.IPv6Loopback, port);
-            return _accepting;
+            _listening = _manager.StartManual(ipv4, IPAddress.IPv6Loopback, port);
+            _accepting = _listening;
+            _connectionAttempts = new Bucket(_options.ConnectionAttempts, _clock());
+            return _listening;
         }
 
         public bool Connect(string host, int port)
         {
-            if (!_manager.StartManual(IPAddress.Any, IPAddress.IPv6Any, 0))
+            if (_manager.IsRunning || !_manager.StartManual(IPAddress.Any, IPAddress.IPv6Any, 0))
                 return false;
-
             var connecting = false;
             try
             {
-                connecting = _manager.Connect(host, port, ProbeKey) != null;
+                connecting = _manager.Connect(host, port, new LiteNetLib.Utils.NetDataWriter()) != null;
                 return connecting;
             }
             finally
@@ -152,74 +240,101 @@ namespace FRFrame.Network.Transport
             }
         }
 
-        public bool IsConnected(int connection) => _connections.ContainsKey(connection);
+        private void OnConnectionRequest(ConnectionRequest request)
+        {
+            if (!_accepting || !_readyForPoll)
+                RejectedNotReady++;
+            else if (!_connectionAttempts.Take(_clock(), 1))
+                RejectedConnectionRate++;
+            else if (_byPeer.Count >= _options.MaxConnections)
+                RejectedConnectionLimit++;
+            else
+            {
+                request.Accept();
+                return;
+            }
 
-        public void PollIncoming() => _manager.PollEvents();
+            // Forced rejection removes the SDK request immediately and does not allocate a temporary peer.
+            request.Reject(ReadOnlySpan<byte>.Empty, force: true);
+        }
+
+        public bool IsConnected(TransportConnectionHandle connection) =>
+            _byPeer.TryGetValue(connection.PeerId, out var target) && target.Handle == connection;
+
+        /// <summary>Maps the existing POC Authority integer connection key to the active physical handle.</summary>
+        public TransportConnectionHandle HandleForGeneration(int generation) =>
+            _byGeneration.TryGetValue(generation, out var connection) ? connection.Handle : default;
+
+        public void PollIncoming(bool ready = true)
+        {
+            _readyForPoll = ready;
+            _manager.PollEvents();
+        }
         public void StopAccepting() => _accepting = false;
 
         public bool TryReceive(out ReceivedPacket packet)
         {
-            if (_controlBurst < 4 && TryReceiveLane(true, ref _controlCursor, out packet))
-            {
-                _controlBurst++;
-                return true;
-            }
-            if (TryReceiveLane(false, ref _inputCursor, out packet))
-            {
-                _controlBurst = 0;
-                return true;
-            }
-            return TryReceiveLane(true, ref _controlCursor, out packet);
-        }
-
-        private bool TryReceiveLane(bool control, ref int cursor, out ReceivedPacket packet)
-        {
             Connection? next = null, first = null;
-            foreach (var connection in _connections.Values)
+            foreach (var connection in _byGeneration.Values)
             {
-                if ((control ? connection.Control : connection.Ingress).Count == 0)
+                if (connection.Ingress.Count == 0)
                     continue;
-                if (first == null || connection.Id < first.Id)
+                var generation = connection.Handle.Generation;
+                if (first == null || generation < first.Handle.Generation)
                     first = connection;
-                if (connection.Id > cursor && (next == null || connection.Id < next.Id))
+                if (generation > _ingressCursor && (next == null || generation < next.Handle.Generation))
                     next = connection;
             }
             next ??= first;
-            if (next != null)
+            if (next == null)
             {
-                cursor = next.Id;
-                packet = (control ? next.Control : next.Ingress).Dequeue();
-                return true;
+                packet = default;
+                return false;
             }
-            packet = default;
-            return false;
+            _ingressCursor = next.Handle.Generation;
+            packet = next.Ingress.Select(next.Ingress.Control.Count != 0, next.Ingress.Data.Count != 0)!.Dequeue();
+            return true;
         }
 
-        public bool TrySend(int connection, PacketDelivery delivery, ReadOnlySpan<byte> bytes)
+        public bool TrySend(TransportConnectionHandle connection, PacketDelivery delivery, ReadOnlySpan<byte> bytes)
         {
-            var method = delivery == PacketDelivery.ReliableOrdered ? DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable;
-            if (!_connections.TryGetValue(connection, out var target) ||
-                target.Outbound.Count >= QueueLimit || bytes.Length == 0 ||
-                (delivery == PacketDelivery.Unreliable && target.UnreliableOutbound >= QueueLimit - ControlReserve) ||
-                bytes.Length > Math.Min(Envelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(method)))
+            if (!_byPeer.TryGetValue(connection.PeerId, out var target) || target.Handle != connection ||
+                delivery is not (PacketDelivery.ReliableOrdered or PacketDelivery.Unreliable) ||
+                bytes.Length == 0 || bytes.Length > PacketLimit(target.Peer, delivery))
             {
                 RejectedOutbound++;
-                if (target != null && target.Outbound.Count == QueueLimit && delivery == PacketDelivery.ReliableOrdered)
-                    ReliableOverflows++;
                 return false;
             }
 
-            target.Outbound.Enqueue((delivery, bytes.ToArray()));
-            if (delivery == PacketDelivery.Unreliable)
-                target.UnreliableOutbound++;
+            EnvelopeHeader header = default;
+            if (bytes[0] == Envelope.Header && !Envelope.TryRead(bytes, out header, out _, out _,
+                    _listening ? MessageDirection.ServerToClient : MessageDirection.ClientToServer, delivery))
+            {
+                RejectedOutbound++;
+                return false;
+            }
+
+            var channel = GetChannel(delivery, header);
+            var control = channel == ControlChannel;
+            if (!target.Outbound.HasRoom(control))
+            {
+                RejectedOutbound++;
+                if (delivery == PacketDelivery.ReliableOrdered)
+                {
+                    ReliableOverflows++;
+                    Close(target, TransportCloseReason.ReliableOutboundOverflow);
+                }
+                return false;
+            }
+            (control ? target.Outbound.Control : target.Outbound.Data).Enqueue((delivery, channel, bytes.ToArray()));
             OutboundHighWater = Math.Max(OutboundHighWater, target.Outbound.Count);
             RequestFlush();
             return true;
         }
 
-        public int GetUnreliableLimit(int connection) =>
-            _connections.TryGetValue(connection, out var target)
-                ? Math.Min(Envelope.MaxPacket, target.Peer.GetMaxSinglePacketSize(DeliveryMethod.Unreliable))
+        public int GetUnreliableLimit(TransportConnectionHandle connection) =>
+            _byPeer.TryGetValue(connection.PeerId, out var target) && target.Handle == connection
+                ? PacketLimit(target.Peer, PacketDelivery.Unreliable)
                 : 0;
 
         /// <summary>Coalesces requests into the next shared pump pass over all connections.</summary>
@@ -230,68 +345,181 @@ namespace FRFrame.Network.Transport
             if (_flushRequested)
             {
                 _flushRequested = false;
-                foreach (var connection in _connections.Values)
+                foreach (var connection in _byGeneration.Values)
                 {
-                    for (var sent = 0; sent < SendBudget && connection.Outbound.Count != 0; sent++)
+                    var lanes = connection.Outbound;
+                    var peer = connection.Peer;
+                    var controlPending = peer.GetPacketsCountInReliableQueue(ControlChannel, true);
+                    var dataPending = peer.GetPacketsCountInReliableQueue(DataChannel, true);
+                    ReliableHighWater = Math.Max(ReliableHighWater, controlPending + dataPending);
+                    for (var sent = 0; sent < SendBudget && lanes.Count != 0; sent++)
                     {
-                        var packet = connection.Outbound.Peek();
-                        var reliable = packet.Delivery == PacketDelivery.ReliableOrdered;
-                        var pending = connection.Peer.GetPacketsCountInReliableQueue(0, true);
-                        ReliableHighWater = Math.Max(ReliableHighWater, pending);
-                        if (reliable && pending >= QueueLimit)
+                        var room = controlPending + dataPending < QueueLimit;
+                        var lane = lanes.Select(room && lanes.Control.Count != 0,
+                            lanes.Data.Count != 0 && (lanes.Data.Peek().Delivery == PacketDelivery.Unreliable ||
+                                                      (room && dataPending < DataLimit)));
+                        if (lane == null)
                             break;
-
-                        connection.Outbound.Dequeue();
-                        if (!reliable)
-                            connection.UnreliableOutbound--;
-                        connection.Peer.Send(packet.Bytes, 0,
-                            reliable ? DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable);
-                        if (reliable)
-                            ReliableHighWater = Math.Max(ReliableHighWater, pending + 1);
+                        var packet = lane.Dequeue();
+                        peer.Send(packet.Bytes, packet.Channel, Method(packet.Delivery));
+                        if (packet.Delivery == PacketDelivery.ReliableOrdered)
+                        {
+                            if (packet.Channel == ControlChannel)
+                                controlPending++;
+                            else
+                                dataPending++;
+                            ReliableHighWater = Math.Max(ReliableHighWater, controlPending + dataPending);
+                        }
                     }
-
-                    _flushRequested |= connection.Outbound.Count != 0;
+                    _flushRequested |= lanes.Count != 0;
                 }
             }
 
             _manager.ManualUpdate(elapsedMilliseconds);
         }
 
-        public void Disconnect(int connection)
+        public void Disconnect(TransportConnectionHandle connection)
         {
-            if (_connections.TryGetValue(connection, out var target))
-                target.Peer.Disconnect();
+            if (_byPeer.TryGetValue(connection.PeerId, out var target) && target.Handle == connection)
+                Close(target, TransportCloseReason.LocalRequest);
+        }
+
+        private void Close(Connection connection, TransportCloseReason reason)
+        {
+            Remove(connection, reason);
+            connection.Peer.Disconnect();
+        }
+
+        private void Remove(Connection connection, TransportCloseReason reason)
+        {
+            _byPeer.Remove(connection.Handle.PeerId);
+            _byGeneration.Remove(connection.Handle.Generation);
+            if (ClientConnection == connection.Handle)
+                ClientConnection = default;
+            _closed[(int)reason]++;
+            ConnectionsClosed++;
+        }
+
+        internal void OnPeerDisconnected(NetPeer? peer)
+        {
+            if (peer != null && _byPeer.TryGetValue(peer.Id, out var target) &&
+                ReferenceEquals(target.Peer, peer) && IsConnected(target.Handle))
+                Remove(target, TransportCloseReason.PeerDisconnected);
         }
 
         public void Dispose()
         {
-            _accepting = false;
+            StopAccepting();
+            _closed[(int)TransportCloseReason.Stop] += _byGeneration.Count;
+            ConnectionsClosed += _byGeneration.Count;
+            _byPeer.Clear();
+            _byGeneration.Clear();
             _manager.Stop();
-            _connections.Clear();
-            _receiving.Clear();
-            ClientConnection = -1;
-            _flushRequested = false;
+            ClientConnection = default;
+            _listening = _flushRequested = false;
         }
 
         private void OnReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod method)
         {
-            var reliable = method == DeliveryMethod.ReliableOrdered;
-            if (!_receiving.TryGetValue(peer.Id, out var target) || channel != 0 ||
-                (!reliable && method != DeliveryMethod.Unreliable) || reader.AvailableBytes == 0 ||
-                reader.AvailableBytes > Envelope.MaxPacket ||
-                target.Control.Count + target.Ingress.Count >= QueueLimit ||
-                (!reliable && target.Ingress.Count >= QueueLimit - ControlReserve))
+            if (!_byPeer.TryGetValue(peer.Id, out var target) || !ReferenceEquals(target.Peer, peer))
             {
                 RejectedIngress++;
-                if (reliable)
-                    peer.Disconnect();
+                return;
+            }
+            var reliable = method == DeliveryMethod.ReliableOrdered;
+            if (!reliable && method != DeliveryMethod.Unreliable)
+            {
+                RejectedDelivery++;
+                RejectIngress(target, false);
                 return;
             }
 
             var delivery = reliable ? PacketDelivery.ReliableOrdered : PacketDelivery.Unreliable;
-            (reliable ? target.Control : target.Ingress)
-                .Enqueue(new ReceivedPacket(target.Id, delivery, reader.GetRemainingBytesSpan().ToArray()));
-            IngressHighWater = Math.Max(IngressHighWater, target.Control.Count + target.Ingress.Count);
+            var size = reader.AvailableBytes;
+            if (size <= 0 || size > PacketLimit(peer, delivery))
+            {
+                RejectedSize++;
+                RejectIngress(target, reliable);
+                return;
+            }
+            var now = _clock();
+            if (!target.RawPackets.Take(now, 1))
+            {
+                RejectedRawPackets++;
+                RejectIngress(target, reliable);
+                return;
+            }
+            if (!target.RawBytes.Take(now, size))
+            {
+                RejectedRawBytes++;
+                RejectIngress(target, reliable);
+                return;
+            }
+
+            var bytes = reader.GetRemainingBytesSpan();
+            EnvelopeHeader header = default;
+            if (bytes[0] == Envelope.Header && !Envelope.TryRead(bytes, out header, out _, out var error,
+                    _listening ? MessageDirection.ClientToServer : MessageDirection.ServerToClient, delivery))
+            {
+                _headerRejected[(int)error]++;
+                RejectIngress(target, reliable);
+                return;
+            }
+            var expectedChannel = GetChannel(delivery, header);
+            // LiteNetLib has no channel byte for native Unreliable; the callback reports zero.
+            if (channel != (reliable ? expectedChannel : 0))
+            {
+                RejectedChannel++;
+                RejectIngress(target, reliable);
+                return;
+            }
+            if (header.Op != OpCode.None)
+            {
+                var rateClass = (int)header.Descriptor.RateClass;
+                if (!target.Descriptor[rateClass].Take(now, 1))
+                {
+                    _descriptorRejected[rateClass]++;
+                    RejectIngress(target, reliable);
+                    return;
+                }
+            }
+
+            var isControl = expectedChannel == ControlChannel;
+            if (!target.Ingress.HasRoom(isControl))
+            {
+                RejectedIngress++;
+                if (reliable)
+                {
+                    ReliableOverflows++;
+                    Close(target, TransportCloseReason.ReliableIngressOverflow);
+                }
+                return;
+            }
+
+            if (reliable)
+                target.ReliableViolations = 0;
+            (isControl ? target.Ingress.Control : target.Ingress.Data)
+                .Enqueue(new ReceivedPacket(target.Handle, delivery, expectedChannel, bytes.ToArray(), header));
+            IngressHighWater = Math.Max(IngressHighWater, target.Ingress.Count);
         }
+
+        private void RejectIngress(Connection target, bool reliable)
+        {
+            RejectedIngress++;
+            if (reliable && ++target.ReliableViolations >= _options.ReliableViolationLimit)
+                Close(target, TransportCloseReason.AdmissionViolations);
+        }
+
+        private static byte GetChannel(PacketDelivery delivery, EnvelopeHeader header) =>
+            delivery == PacketDelivery.Unreliable ? UnreliableChannel :
+            header.Op != OpCode.None &&
+            (header.Descriptor.Kind == MessageKind.Response || header.Descriptor.RateClass is MessageRateClass.Control or MessageRateClass.Stream)
+                ? ControlChannel : DataChannel;
+
+        private static DeliveryMethod Method(PacketDelivery delivery) =>
+            delivery == PacketDelivery.ReliableOrdered ? DeliveryMethod.ReliableOrdered : DeliveryMethod.Unreliable;
+
+        private static int PacketLimit(NetPeer peer, PacketDelivery delivery) =>
+            Math.Min(Envelope.MaxPacket, peer.GetMaxSinglePacketSize(Method(delivery)));
     }
 }

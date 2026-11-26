@@ -38,11 +38,11 @@ namespace FRFrame.Network.Protocol
                 TryRead(header, payload, out message, out error);
         }
 
-        private static bool TryRead(EnvelopeHeader header, ReadOnlySpan<byte> payload,
+        public static bool TryRead(EnvelopeHeader header, ReadOnlySpan<byte> payload,
             out SliceMessage message, out ErrorCode error)
         {
             message = null!;
-            if (header.Descriptor.Payload != PayloadKind.Slice)
+            if (header.Op == OpCode.None || header.Descriptor.Payload != PayloadKind.Slice)
             {
                 error = ErrorCode.UnknownOpCode;
                 return false;

@@ -40,6 +40,7 @@ namespace FRFrame.Network.Replication
         public SliceStreamState State { get; internal set; }
         public ErrorCode Error { get; internal set; }
         public int Baselines { get; internal set; }
+        internal byte[]? EarlyBaseline;
         public int Diffs { get; internal set; }
         public uint StreamId { get; internal set; }
         public uint Generation => Route?.Generation ?? 0;
@@ -63,12 +64,12 @@ namespace FRFrame.Network.Replication
         private readonly Action<string> _log;
         private string _token = "";
         private bool _recover;
-        private int _connection = -1;
+        private TransportConnectionHandle _connection;
         private uint _nextRequest;
         private uint _authRequest;
 
-        public bool Connected => _connection >= 0 && _transport.IsConnected(_connection);
-        public bool Disconnected => _transport.ConnectionsClosed != 0 || (_connection >= 0 && !Connected);
+        public bool Connected => _transport.IsConnected(_connection);
+        public bool Disconnected => _transport.ConnectionsClosed != 0 || (_connection.IsValid && !Connected);
         public bool Authenticated => Connected && _authenticated;
         public bool CanRecover => _token.Length != 0;
         public ErrorCode AuthenticationError { get; private set; }
@@ -124,7 +125,7 @@ namespace FRFrame.Network.Replication
             Disconnect();
             _transport.Dispose();
             _transport = new LiteNetDatagrams();
-            _connection = -1;
+            _connection = default;
             _recover = recover;
             Replaced = false;
             AuthenticationError = ErrorCode.None;
@@ -159,7 +160,7 @@ namespace FRFrame.Network.Replication
         public void Tick(float elapsedMilliseconds, sbyte x, sbyte y, Action<PawnSample> sample)
         {
             _transport.PollIncoming();
-            if (_connection < 0 && _transport.ClientConnection >= 0)
+            if (!_connection.IsValid && _transport.ClientConnection.IsValid)
             {
                 _connection = _transport.ClientConnection;
                 _authRequest = _recover
@@ -169,7 +170,7 @@ namespace FRFrame.Network.Replication
 
             while (_transport.TryReceive(out var packet) && Connected)
             {
-                if (packet.Bytes[0] == Envelope.Header)
+                if (packet.IsEnvelope)
                     ReadControl(packet);
                 else
                     ReadStream(packet);
@@ -222,10 +223,9 @@ namespace FRFrame.Network.Replication
 
         private void ReadControl(ReceivedPacket received)
         {
-            if (!SliceCodec.TryReadPacket(received.Bytes, MessageDirection.ServerToClient, received.Delivery,
-                    out var header, out var message, out _))
+            if (!SliceCodec.TryRead(received.Header, received.Payload, out var message, out _))
                 return;
-            var op = header.Op;
+            var op = received.Header.Op;
 
             if (op == OpCode.Response)
                 ApplyReply(message);
@@ -314,6 +314,11 @@ namespace FRFrame.Network.Replication
                     current.State = SliceStreamState.Ready;
                     Send(OpCode.StreamConfirm, new SliceMessage { Room = current.Id, Stream = current.StreamId, Generation = current.Generation });
                     _log($"POC-2 stream Ready room={current.Id} id={current.StreamId} generation={current.Generation} header={current.WireHeader}");
+                    if (current.EarlyBaseline is { } baseline)
+                    {
+                        current.EarlyBaseline = null;
+                        ReadBaseline(current, current.Manager!, baseline.AsSpan(LesStreamRoutes.WireOverhead));
+                    }
                 }
                 else
                     EndStream(current, SliceStreamState.Failed, message.Error, cancel: false);
@@ -379,7 +384,7 @@ namespace FRFrame.Network.Replication
         {
             if (!_routes.TryTranslate(received.Bytes, out var route, out var packet))
                 return;
-            var room = _rooms.Values.FirstOrDefault(r => r.Route == route && r.State == SliceStreamState.Ready);
+            var room = _rooms.Values.FirstOrDefault(r => r.Route == route);
             if (room?.Manager == null)
                 return;
 
@@ -390,8 +395,13 @@ namespace FRFrame.Network.Replication
                 if (packet[2] == 0 || packet[3] != 1 || packet[6] != 20 || originalLength is < 1 or > 4096 ||
                     events < 0 || events > originalLength)
                     return;
-                if (room.Manager.Deserialize(packet) == DeserializeResult.Done)
-                    _log($"POC-2 baseline ReliableOrdered #{++room.Baselines} room={room.Id}");
+                if (room.State == SliceStreamState.Pending)
+                {
+                    // The reliable StreamReady response and the LES baseline use different channels.
+                    room.EarlyBaseline = received.Bytes;
+                    return;
+                }
+                ReadBaseline(room, room.Manager, packet);
                 return;
             }
             if (room.Baselines == 0 || received.Delivery != PacketDelivery.Unreliable ||
@@ -404,6 +414,12 @@ namespace FRFrame.Network.Replication
                 return;
             if (room.Manager.Deserialize(packet) == DeserializeResult.Done && ++room.Diffs == 1)
                 _log($"POC-2 diff Unreliable accepted room={room.Id}");
+        }
+
+        private void ReadBaseline(SliceClientRoom room, ClientEntityManager manager, ReadOnlySpan<byte> packet)
+        {
+            if (manager.Deserialize(packet) == DeserializeResult.Done)
+                _log($"POC-2 baseline ReliableOrdered #{++room.Baselines} room={room.Id}");
         }
 
         private static bool MatchesStream(SliceClientRoom room, SliceMessage message) =>
@@ -426,6 +442,7 @@ namespace FRFrame.Network.Replication
                 _routes.Close(room.Route);
             }
             room.Route = null;
+            room.EarlyBaseline = null;
             var manager = room.Manager;
             room.Manager = null;
             room.StreamId = room.OpenRequest = room.ReadyRequest = 0;

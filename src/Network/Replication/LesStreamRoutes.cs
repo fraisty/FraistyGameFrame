@@ -79,10 +79,10 @@ namespace FRFrame.Network.Replication
     public sealed class LesProbePeer : AbstractNetPeer
     {
         private readonly IPacketTransport transport;
-        private readonly int connection;
+        private readonly TransportConnectionHandle connection;
         private readonly LesStreamRoutes.Route route;
 
-        public LesProbePeer(IPacketTransport transport, int connection, LesStreamRoutes.Route route)
+        public LesProbePeer(IPacketTransport transport, TransportConnectionHandle connection, LesStreamRoutes.Route route)
         {
             this.transport = transport;
             this.connection = connection;

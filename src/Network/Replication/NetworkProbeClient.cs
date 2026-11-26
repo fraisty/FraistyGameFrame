@@ -30,7 +30,7 @@ namespace FRFrame.Network.Replication
         private int _reliableReplies;
         private bool _unreliableReply;
         private readonly Action<string> _log;
-        private int _connection = -1;
+        private TransportConnectionHandle _connection;
 
         public NetworkProbeClient(string host, int port, Action<string> log)
         {
@@ -44,7 +44,7 @@ namespace FRFrame.Network.Replication
         public void Tick(float elapsedMilliseconds)
         {
             _transport.PollIncoming();
-            if (_connection < 0 && _transport.ClientConnection >= 0)
+            if (!_connection.IsValid && _transport.ClientConnection.IsValid)
             {
                 _connection = _transport.ClientConnection;
                 _log($"Connected, usable unreliable payload {_transport.GetUnreliableLimit(_connection)} bytes.");
@@ -68,7 +68,7 @@ namespace FRFrame.Network.Replication
 
             while (_transport.TryReceive(out var received))
             {
-                if (received.Bytes[0] == Envelope.Header)
+                if (received.IsEnvelope)
                     ReadControl(received);
                 else
                     ReadBaseline(received.Bytes);
@@ -87,10 +87,8 @@ namespace FRFrame.Network.Replication
 
         private void ReadControl(ReceivedPacket received)
         {
-            if (!Envelope.TryRead(received.Bytes, out var header, out var payload, out var error,
-                    MessageDirection.ServerToClient, received.Delivery))
-                throw new InvalidOperationException($"Invalid server envelope: {error}.");
-            var op = header.Op;
+            var op = received.Header.Op;
+            var payload = received.Payload;
 
             if (op == OpCode.LesAcknowledged && ProbeCodec.TryDecodeAcknowledgement(payload, out var stream))
             {

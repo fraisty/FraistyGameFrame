@@ -100,11 +100,11 @@ namespace FRFrame.Network.Shared
                     Request(op, 96, MessageRateClass.Stream),
                 OpCode.Response => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Response,
                     PayloadKind.Slice, Envelope.MaxPayload, MessageRateClass.Control),
-                OpCode.Members => Push(op, 128, MessageRateClass.Room),
+                OpCode.Members => Push(op, 128, MessageRateClass.Control),
                 OpCode.RoomBroadcast => Push(op, 256, MessageRateClass.Room),
                 OpCode.MarkerChanged => Push(op, 64, MessageRateClass.Game),
                 OpCode.StreamClosed => Push(op, 64, MessageRateClass.Stream),
-                OpCode.RoomClosed or OpCode.RoomLeft => Push(op, 64, MessageRateClass.Room),
+                OpCode.RoomClosed or OpCode.RoomLeft => Push(op, 64, MessageRateClass.Control),
                 OpCode.SessionReplaced => Push(op, 64, MessageRateClass.Control),
                 _ => default
             };
