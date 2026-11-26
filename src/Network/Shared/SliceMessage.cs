@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 
 namespace FRFrame.Network.Shared
@@ -73,6 +74,7 @@ namespace FRFrame.Network.Shared
         public byte[] GamePayload = Array.Empty<byte>();
         public uint BusinessMessageId;
         public byte[] BusinessPayload = Array.Empty<byte>();
+        public RoomPayload? RoomData;
 
         public static bool IsClientRequest(OpCode op) =>
             ProtocolMessages.TryGet(op, out var descriptor) && descriptor.Kind == MessageKind.Request;
@@ -86,16 +88,22 @@ namespace FRFrame.Network.Shared
             (op == OpCode.StreamReady || (Schema == 0 && Hash == 0)) &&
             (op == OpCode.StreamReady || op == OpCode.StreamCancel || op == OpCode.StreamConfirm ||
                 (Stream == 0 && Generation == 0)) &&
-            (op == OpCode.Kick || op == OpCode.TransferOwner || op == OpCode.LeaveRoom || Target == 0) &&
+            (op is OpCode.Kick or OpCode.TransferOwner or OpCode.LeaveRoom or OpCode.InvitePlayer or OpCode.RevokeInvitation || Target == 0) &&
             (op == OpCode.SetMarker || DelayMs == 0) &&
             (op == OpCode.SetMarker || Marker == 0) &&
             (op == OpCode.GameCommand || (GameMessageId == 0 && GamePayload.Length == 0)) &&
             (op == OpCode.BusinessRequest || (BusinessMessageId == 0 && BusinessPayload.Length == 0)) &&
+            (op is OpCode.CreateRoom or OpCode.ConfigureRoom or OpCode.ListRooms or OpCode.ListInvitations || RoomData == null) &&
             (op switch
             {
                 OpCode.Login => Room == 0 && BusinessWire.IsIdentity(Text),
                 OpCode.Recover => Room == 0 && Text.Length == 0 && Token.Length == 44,
-                OpCode.CreateRoom => Room == 0 && GameWire.IsDefinitionId(Text),
+                OpCode.CreateRoom => Room == 0 && GameWire.IsDefinitionId(Text) && (RoomData == null || RoomData is RoomConfiguration),
+                OpCode.ConfigureRoom => Room > 0 && Text.Length == 0 && RoomData is RoomConfiguration { Capacity: > 0 },
+                OpCode.GetRoomInfo => Room > 0 && Text.Length == 0,
+                OpCode.InvitePlayer or OpCode.RevokeInvitation => Room > 0 && Text.Length == 0 && Target > 0,
+                OpCode.ListRooms or OpCode.ListInvitations => Room == 0 && Text.Length == 0 &&
+                    RoomData is RoomDirectoryQuery query && query.IsValid(op == OpCode.ListInvitations),
                 OpCode.JoinRoom => Room > 0 && Text.Length == 0,
                 OpCode.StreamOpen => Room > 0 && Text.Length == 0,
                 OpCode.RoomMessage => Room > 0 && !string.IsNullOrWhiteSpace(Text) && Text.Length <= 80,

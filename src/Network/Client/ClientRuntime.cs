@@ -59,7 +59,8 @@ namespace FRFrame.Network.Client
     /// <summary>A frozen room projection. A stale snapshot has no locally confirmed online members.</summary>
     public sealed class ClientRoomSnapshot
     {
-        internal ClientRoomSnapshot(int id, int owner, IReadOnlyList<int> members, int online, int capacity, string definition, bool current)
+        internal ClientRoomSnapshot(int id, int owner, IReadOnlyList<int> members, int online, int capacity, string definition, bool current,
+            RoomConfiguration configuration)
         {
             Id = id;
             Owner = owner;
@@ -68,6 +69,7 @@ namespace FRFrame.Network.Client
             Capacity = capacity;
             Definition = definition;
             IsCurrent = current;
+            Configuration = configuration;
         }
 
         public int Id { get; }
@@ -77,6 +79,11 @@ namespace FRFrame.Network.Client
         public int Capacity { get; }
         public string Definition { get; }
         public bool IsCurrent { get; }
+        internal RoomConfiguration Configuration { get; }
+        public string Name => Configuration.Name;
+        public RoomVisibility Visibility => Configuration.Visibility;
+        public RoomJoinPolicy JoinPolicy => Configuration.JoinPolicy;
+        public IReadOnlyDictionary<string, string> Properties => Configuration.Properties;
     }
 
     /// <summary>Owns client state and one manual transport pump on the calling thread.</summary>
@@ -126,6 +133,8 @@ namespace FRFrame.Network.Client
         public event Action<(int Room, int Player, string Text)>? RoomMessageReceived;
         public event Action<ClientGameEvent>? GameEventReceived;
         public event Action<ClientBusinessPush>? BusinessPushReceived;
+        /// <summary>Advisory notification for the current Session binding. Joining rechecks the invitation.</summary>
+        public event Action<(int Room, int Owner, int RemainingMilliseconds)>? RoomInvitationReceived;
 
         internal IClientTransport Transport => _transport!;
         internal TransportConnectionHandle Handle => _handle;
@@ -135,7 +144,20 @@ namespace FRFrame.Network.Client
         public bool Login(string host, int port, string declaration) => Begin(host, port, false, declaration);
         public bool Resume(string host, int port) => Begin(host, port, true, "");
 
-        public uint CreateRoom(string definition) => SendCompatible(OpCode.CreateRoom, new SliceMessage { Text = definition });
+        public uint CreateRoom(string definition) => CreateRoom(definition, null);
+        public uint CreateRoom(string definition, RoomConfiguration? options) =>
+            SendCompatible(OpCode.CreateRoom, new SliceMessage { Text = definition, RoomData = options });
+        public uint ConfigureRoom(int room, RoomConfiguration configuration) =>
+            SendCompatible(OpCode.ConfigureRoom, new SliceMessage { Room = room, RoomData = configuration });
+        public uint ListRooms(int afterRoomId = 0, string? definitionFilter = null, string? namePrefix = null, int pageSize = 2) =>
+            SendCompatible(OpCode.ListRooms, new SliceMessage { RoomData = new RoomDirectoryQuery(afterRoomId, definitionFilter, namePrefix, pageSize) });
+        public uint ListInvitations(int afterRoomId = 0, int pageSize = 2) =>
+            SendCompatible(OpCode.ListInvitations, new SliceMessage { RoomData = new RoomDirectoryQuery(afterRoomId, pageSize: pageSize) });
+        public uint GetRoomInfo(int room) => SendCompatible(OpCode.GetRoomInfo, new SliceMessage { Room = room });
+        public uint InvitePlayer(int room, int player) =>
+            SendCompatible(OpCode.InvitePlayer, new SliceMessage { Room = room, Target = player });
+        public uint RevokeInvitation(int room, int player) =>
+            SendCompatible(OpCode.RevokeInvitation, new SliceMessage { Room = room, Target = player });
         public uint JoinRoom(int room) => SendCompatible(OpCode.JoinRoom, new SliceMessage { Room = room });
         public uint LeaveRoom(int room, int successor = 0) =>
             SendCompatible(OpCode.LeaveRoom, new SliceMessage { Room = room, Target = successor });
@@ -290,7 +312,7 @@ namespace FRFrame.Network.Client
             var now = _clock();
             ClientRequests.Intent? intent;
             if (request.RequestId == 0)
-                intent = _requests.Reserve(op, bytes, now, request.BusinessMessageId);
+                intent = _requests.Reserve(op, bytes, now, request.BusinessMessageId, request.Room);
             else
             {
                 intent = _requests.Find(id);
@@ -393,6 +415,13 @@ namespace FRFrame.Network.Client
                     if (_requests.Find(message.RequestId) is not { Pending: true } intent || intent.Attempt != attempt ||
                         intent.Op != message.ReplyTo || now >= intent.Deadline || !MatchesBinding(message))
                         return;
+                    if (RoomWire.IsOperation(intent.Op))
+                    {
+                        if (message.ConnectionGeneration > Binding.ConnectionGeneration || message.Room != intent.RoomId)
+                            return;
+                        Notify(RequestFinished, _requests.Finish(intent, ClientRequestStatus.Response, message.Error, roomData: message.RoomData));
+                        return;
+                    }
                     if (intent.Op == OpCode.BusinessRequest)
                     {
                         if (message.ConnectionGeneration > Binding.ConnectionGeneration ||
@@ -408,7 +437,8 @@ namespace FRFrame.Network.Client
                     if (message.Room <= 0 || !message.MemberIds.Contains(Binding.Player))
                         return;
                     _rooms[message.Room] = new ClientRoomSnapshot(message.Room, message.Player,
-                        Array.AsReadOnly((int[])message.MemberIds.Clone()), message.Online, message.Capacity, message.Text, true);
+                        Array.AsReadOnly((int[])message.MemberIds.Clone()), message.Online, message.Capacity, message.Text, true,
+                        message.RoomData as RoomConfiguration ?? RoomConfiguration.Default);
                     Notify(RoomChanged, message.Room);
                     break;
                 case OpCode.RoomClosed:
@@ -434,6 +464,11 @@ namespace FRFrame.Network.Client
                     if (message.Session == Binding.Session && message.Epoch == Binding.Epoch &&
                         message.ConnectionGeneration == Binding.ConnectionGeneration)
                         Notify(BusinessPushReceived, new ClientBusinessPush(message.BusinessMessageId, message.BusinessPayload));
+                    return;
+                case OpCode.RoomInvitation:
+                    if (message.Session == Binding.Session && message.Epoch == Binding.Epoch &&
+                        message.ConnectionGeneration == Binding.ConnectionGeneration && message.RoomData is RoomInvitationNotice invitation)
+                        Notify(RoomInvitationReceived, (message.Room, message.Player, invitation.RemainingMilliseconds));
                     return;
                 default:
                     // The POC compatibility bridge consumes its own pushes for current rooms.
@@ -503,7 +538,7 @@ namespace FRFrame.Network.Client
                 foreach (var id in _rooms.Keys.ToArray())
                 {
                     var room = _rooms[id];
-                    _rooms[id] = new ClientRoomSnapshot(id, room.Owner, room.Members, 0, room.Capacity, room.Definition, false);
+                    _rooms[id] = new ClientRoomSnapshot(id, room.Owner, room.Members, 0, room.Capacity, room.Definition, false, room.Configuration);
                 }
             }
             else
@@ -534,6 +569,7 @@ namespace FRFrame.Network.Client
             RoomMessageReceived = null;
             GameEventReceived = null;
             BusinessPushReceived = null;
+            RoomInvitationReceived = null;
             WireReceived = null;
             RawReceived = null;
         }

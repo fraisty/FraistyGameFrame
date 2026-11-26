@@ -15,6 +15,14 @@ namespace FRFrame.Network.Protocol
         public const int MaxTicketBytes = 44;
         private static readonly MessageParser<SliceWire> Parser = SliceWire.Parser.WithDiscardUnknownFields(true);
 
+        /// <summary>Freezes canonical room-result bytes before a successful query enters the replay ledger.</summary>
+        public static EncodedRoomResult FreezeRoomResult(RoomPayload data)
+        {
+            if (data is not (RoomDirectoryPage or RoomInfo))
+                throw new ArgumentException("Expected a Room query result.", nameof(data));
+            return new EncodedRoomResult(RoomProtocol.Write(OpCode.Response, data)!.ToByteString().Span);
+        }
+
         public static byte[] Write(OpCode op, SliceMessage message)
         {
             var wire = new SliceWire
@@ -34,6 +42,18 @@ namespace FRFrame.Network.Protocol
                 wire.BusinessMessageId = message.BusinessMessageId;
             if (message.BusinessPayload.Length != 0)
                 wire.BusinessPayload = ByteString.CopyFrom(message.BusinessPayload);
+            if (message.RoomData is EncodedRoomResult frozen)
+            {
+                if (op != OpCode.Response || message.Error != ErrorCode.None || !RoomWire.IsQuery(message.ReplyTo))
+                    throw new ArgumentException("Frozen Room results are limited to query responses.", nameof(message));
+                wire.RoomPayload = ByteString.CopyFrom(frozen.Bytes);
+            }
+            else if (RoomProtocol.Write(op, message.RoomData) is { } room)
+            {
+                if (room.CalculateSize() > RoomWire.MaxBodyBytes)
+                    throw new ArgumentOutOfRangeException(nameof(message));
+                wire.RoomPayload = room.ToByteString();
+            }
             wire.MemberIds.AddRange(message.MemberIds);
             return Envelope.Write(op, wire.ToByteArray(), new RequestId(message.RequestId));
         }
@@ -60,7 +80,9 @@ namespace FRFrame.Network.Protocol
             if (wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 ||
                 Encoding.UTF8.GetByteCount(wire.Text) > MaxTextBytes ||
                 Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes || wire.GamePayload.Length > GameWire.MaxBodyBytes ||
-                wire.BusinessPayload.Length > BusinessWire.MaxBodyBytes)
+                wire.BusinessPayload.Length > BusinessWire.MaxBodyBytes || wire.RoomPayload.Length > RoomWire.MaxBodyBytes ||
+                (header.Op == OpCode.CreateRoom && !wire.HasRoomPayload && payload.Length > 64) ||
+                (header.Op == OpCode.Members && !wire.HasRoomPayload && payload.Length > 128))
             {
                 error = ErrorCode.PayloadTooLarge;
                 return false;
@@ -95,7 +117,7 @@ namespace FRFrame.Network.Protocol
                 BusinessMessageId = wire.BusinessMessageId,
                 BusinessPayload = wire.BusinessPayload.IsEmpty ? Array.Empty<byte>() : wire.BusinessPayload.ToByteArray()
             };
-            if (businessDelivery && !decoded.IsBusinessDelivery(header.Op))
+            if ((businessDelivery && !decoded.IsBusinessDelivery(header.Op)) || !RoomProtocol.TryRead(header.Op, wire, payload, decoded))
             {
                 error = ErrorCode.MalformedMessage;
                 return false;

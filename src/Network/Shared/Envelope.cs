@@ -35,7 +35,14 @@ namespace FRFrame.Network.Shared
         GameCommand = 28,
         GameEvent = 29,
         BusinessRequest = 30,
-        BusinessPush = 31
+        BusinessPush = 31,
+        ListRooms = 32,
+        GetRoomInfo = 33,
+        ConfigureRoom = 34,
+        InvitePlayer = 35,
+        RevokeInvitation = 36,
+        ListInvitations = 37,
+        RoomInvitation = 38
     }
 
     /// <summary>Correlates a request and its response within the server-selected Session.</summary>
@@ -96,7 +103,10 @@ namespace FRFrame.Network.Shared
                 OpCode.LesAcknowledged => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Control,
                     PayloadKind.StreamAcknowledgement, 8, MessageRateClass.Stream),
                 OpCode.Login or OpCode.Recover => Request(op, 64, MessageRateClass.Control, false),
-                OpCode.CreateRoom or OpCode.JoinRoom or OpCode.LeaveRoom or OpCode.TransferOwner or OpCode.CloseRoom or OpCode.Kick =>
+                OpCode.CreateRoom or OpCode.ConfigureRoom => Request(op, 256, MessageRateClass.Room),
+                OpCode.ListRooms or OpCode.ListInvitations => Request(op, 96, MessageRateClass.Room),
+                OpCode.JoinRoom or OpCode.LeaveRoom or OpCode.TransferOwner or OpCode.CloseRoom or OpCode.Kick or
+                    OpCode.GetRoomInfo or OpCode.InvitePlayer or OpCode.RevokeInvitation =>
                     Request(op, 64, MessageRateClass.Room),
                 OpCode.RoomMessage => Request(op, 256, MessageRateClass.Room),
                 OpCode.SetMarker => Request(op, 64, MessageRateClass.Game),
@@ -106,7 +116,8 @@ namespace FRFrame.Network.Shared
                     Request(op, 96, MessageRateClass.Stream),
                 OpCode.Response => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Response,
                     PayloadKind.Slice, Envelope.MaxPayload, MessageRateClass.Control),
-                OpCode.Members => Push(op, 128, MessageRateClass.Control),
+                OpCode.Members => Push(op, 256, MessageRateClass.Control),
+                OpCode.RoomInvitation => Push(op, 64, MessageRateClass.Control),
                 OpCode.RoomBroadcast => Push(op, 256, MessageRateClass.Room),
                 OpCode.MarkerChanged => Push(op, 64, MessageRateClass.Game),
                 OpCode.GameEvent => Push(op, 256, MessageRateClass.Game),
