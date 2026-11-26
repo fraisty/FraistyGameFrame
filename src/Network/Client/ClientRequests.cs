@@ -10,13 +10,16 @@ namespace FRFrame.Network.Client
     /// <summary>A single wait attempt. A lost or cancelled wait may already have executed on the server.</summary>
     public readonly struct ClientRequestResult
     {
-        internal ClientRequestResult(uint id, long attempt, ClientRequestStatus status, ErrorCode error, bool uncertain)
+        internal ClientRequestResult(uint id, long attempt, ClientRequestStatus status, ErrorCode error, bool uncertain,
+            uint businessMessageId = 0, byte[]? businessPayload = null)
         {
             RequestId = id;
             Attempt = attempt;
             Status = status;
             Error = error;
             MayHaveExecuted = uncertain;
+            BusinessMessageId = businessMessageId;
+            _businessPayload = businessPayload;
         }
 
         public uint RequestId { get; }
@@ -24,6 +27,9 @@ namespace FRFrame.Network.Client
         public ClientRequestStatus Status { get; }
         public ErrorCode Error { get; }
         public bool MayHaveExecuted { get; }
+        private readonly byte[]? _businessPayload;
+        public uint BusinessMessageId { get; }
+        public ReadOnlySpan<byte> BusinessPayload => _businessPayload;
     }
 
     /// <summary>Session-bound intent storage. Only this owner can turn a pending wait into a terminal result.</summary>
@@ -37,15 +43,17 @@ namespace FRFrame.Network.Client
             public readonly OpCode Op;
             public readonly byte[] Bytes;
             public readonly long RetryUntil;
+            public readonly uint BusinessMessageId;
             public long Attempt, Deadline;
             public bool Pending, Sent, Final;
 
-            public Intent(uint id, OpCode op, byte[] bytes, long retryUntil)
+            public Intent(uint id, OpCode op, byte[] bytes, long retryUntil, uint businessMessageId)
             {
                 Id = id;
                 Op = op;
                 Bytes = bytes;
                 RetryUntil = retryUntil;
+                BusinessMessageId = businessMessageId;
             }
         }
 
@@ -56,11 +64,11 @@ namespace FRFrame.Network.Client
         public Intent? Find(uint id) => _intents.TryGetValue(id, out var value) ? value : null;
         public bool HasWaitSlot => _pending < PendingLimit;
 
-        public Intent? Reserve(OpCode op, byte[] bytes, long now)
+        public Intent? Reserve(OpCode op, byte[] bytes, long now, uint businessMessageId)
         {
             if (Next == 0 || _intents.Count >= EntryLimit || _bytes + bytes.Length > ByteLimit || !HasWaitSlot)
                 return null;
-            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds);
+            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds, businessMessageId);
             _intents.Add(intent.Id, intent);
             _bytes += bytes.Length;
             return intent;
@@ -74,14 +82,15 @@ namespace FRFrame.Network.Client
             _pending++;
         }
 
-        public ClientRequestResult Finish(Intent intent, ClientRequestStatus status, ErrorCode error = ErrorCode.None)
+        public ClientRequestResult Finish(Intent intent, ClientRequestStatus status, ErrorCode error = ErrorCode.None,
+            uint businessMessageId = 0, byte[]? businessPayload = null)
         {
             intent.Pending = false;
             _pending--;
             if (status == ClientRequestStatus.Response && error != ErrorCode.Overloaded)
                 intent.Final = true;
             return new ClientRequestResult(intent.Id, intent.Attempt, status, error,
-                intent.Sent && status != ClientRequestStatus.Response);
+                intent.Sent && status != ClientRequestStatus.Response, businessMessageId, businessPayload);
         }
 
         public void ForgetUnsent(Intent intent)

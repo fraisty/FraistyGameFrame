@@ -12,6 +12,15 @@ namespace FRFrame.Network.Client
 {
     public enum ClientConnectionState { Idle, Connecting, Connected, Authenticating, Bound, Recoverable, Replaced, Disposed }
 
+    /// <summary>A business notification for the exact active Session binding.</summary>
+    public readonly struct ClientBusinessPush
+    {
+        private readonly byte[] _payload;
+        internal ClientBusinessPush(uint id, byte[] payload) { MessageId = id; _payload = payload; }
+        public uint MessageId { get; }
+        public ReadOnlySpan<byte> Payload => _payload;
+    }
+
     /// <summary>A server event for a current room. Observers only receive a read-only view of its owned payload.</summary>
     public sealed class ClientGameEvent
     {
@@ -116,6 +125,7 @@ namespace FRFrame.Network.Client
         public event Action<int>? RoomChanged;
         public event Action<(int Room, int Player, string Text)>? RoomMessageReceived;
         public event Action<ClientGameEvent>? GameEventReceived;
+        public event Action<ClientBusinessPush>? BusinessPushReceived;
 
         internal IClientTransport Transport => _transport!;
         internal TransportConnectionHandle Handle => _handle;
@@ -141,6 +151,14 @@ namespace FRFrame.Network.Client
             if (room <= 0 || id == 0 || payload.Length > GameWire.MaxBodyBytes)
                 return RejectSend(ErrorCode.Invalid);
             return SendCompatible(OpCode.GameCommand, new SliceMessage { Room = room, GameMessageId = id, GamePayload = payload.ToArray() });
+        }
+
+        /// <summary>Sends a typed application's encoded body on the current Session without joining a room.</summary>
+        public uint SendBusinessRequest(uint id, ReadOnlySpan<byte> payload)
+        {
+            if (id == 0 || payload.Length > BusinessWire.MaxBodyBytes)
+                return RejectSend(ErrorCode.Invalid);
+            return SendCompatible(OpCode.BusinessRequest, new SliceMessage { BusinessMessageId = id, BusinessPayload = payload.ToArray() });
         }
 
         /// <summary>Restarts a local wait for an uncertain or transient result, using the original bytes.</summary>
@@ -272,7 +290,7 @@ namespace FRFrame.Network.Client
             var now = _clock();
             ClientRequests.Intent? intent;
             if (request.RequestId == 0)
-                intent = _requests.Reserve(op, bytes, now);
+                intent = _requests.Reserve(op, bytes, now, request.BusinessMessageId);
             else
             {
                 intent = _requests.Find(id);
@@ -375,6 +393,15 @@ namespace FRFrame.Network.Client
                     if (_requests.Find(message.RequestId) is not { Pending: true } intent || intent.Attempt != attempt ||
                         intent.Op != message.ReplyTo || now >= intent.Deadline || !MatchesBinding(message))
                         return;
+                    if (intent.Op == OpCode.BusinessRequest)
+                    {
+                        if (message.ConnectionGeneration > Binding.ConnectionGeneration ||
+                            (message.Error == ErrorCode.None && message.BusinessMessageId != intent.BusinessMessageId))
+                            return;
+                        Notify(RequestFinished, _requests.Finish(intent, ClientRequestStatus.Response, message.Error,
+                            message.BusinessMessageId, message.BusinessPayload));
+                        return;
+                    }
                     Notify(RequestFinished, _requests.Finish(intent, ClientRequestStatus.Response, message.Error));
                     break;
                 case OpCode.Members:
@@ -402,6 +429,11 @@ namespace FRFrame.Network.Client
                 case OpCode.GameEvent:
                     if (_rooms.TryGetValue(message.Room, out var gameRoom) && gameRoom.IsCurrent)
                         Notify(GameEventReceived, new ClientGameEvent(message.Room, message.Player, message.GameMessageId, message.GamePayload));
+                    return;
+                case OpCode.BusinessPush:
+                    if (message.Session == Binding.Session && message.Epoch == Binding.Epoch &&
+                        message.ConnectionGeneration == Binding.ConnectionGeneration)
+                        Notify(BusinessPushReceived, new ClientBusinessPush(message.BusinessMessageId, message.BusinessPayload));
                     return;
                 default:
                     // The POC compatibility bridge consumes its own pushes for current rooms.
@@ -501,6 +533,7 @@ namespace FRFrame.Network.Client
             RoomChanged = null;
             RoomMessageReceived = null;
             GameEventReceived = null;
+            BusinessPushReceived = null;
             WireReceived = null;
             RawReceived = null;
         }

@@ -33,7 +33,9 @@ namespace FRFrame.Network.Shared
         RoomLeft = 26,
         SessionReplaced = 27,
         GameCommand = 28,
-        GameEvent = 29
+        GameEvent = 29,
+        BusinessRequest = 30,
+        BusinessPush = 31
     }
 
     /// <summary>Correlates a request and its response within the server-selected Session.</summary>
@@ -99,6 +101,7 @@ namespace FRFrame.Network.Shared
                 OpCode.RoomMessage => Request(op, 256, MessageRateClass.Room),
                 OpCode.SetMarker => Request(op, 64, MessageRateClass.Game),
                 OpCode.GameCommand => Request(op, 256, MessageRateClass.Game),
+                OpCode.BusinessRequest => Request(op, Envelope.MaxPayload, MessageRateClass.Game),
                 OpCode.StreamOpen or OpCode.StreamReady or OpCode.StreamCancel or OpCode.StreamConfirm =>
                     Request(op, 96, MessageRateClass.Stream),
                 OpCode.Response => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Response,
@@ -107,6 +110,7 @@ namespace FRFrame.Network.Shared
                 OpCode.RoomBroadcast => Push(op, 256, MessageRateClass.Room),
                 OpCode.MarkerChanged => Push(op, 64, MessageRateClass.Game),
                 OpCode.GameEvent => Push(op, 256, MessageRateClass.Game),
+                OpCode.BusinessPush => Push(op, Envelope.MaxPayload, MessageRateClass.Game),
                 OpCode.StreamClosed => Push(op, 64, MessageRateClass.Stream),
                 OpCode.RoomClosed or OpCode.RoomLeft => Push(op, 64, MessageRateClass.Control),
                 OpCode.SessionReplaced => Push(op, 64, MessageRateClass.Control),

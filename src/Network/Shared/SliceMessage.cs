@@ -71,6 +71,8 @@ namespace FRFrame.Network.Shared
         public int DelayMs;
         public uint GameMessageId;
         public byte[] GamePayload = Array.Empty<byte>();
+        public uint BusinessMessageId;
+        public byte[] BusinessPayload = Array.Empty<byte>();
 
         public static bool IsClientRequest(OpCode op) =>
             ProtocolMessages.TryGet(op, out var descriptor) && descriptor.Kind == MessageKind.Request;
@@ -88,9 +90,10 @@ namespace FRFrame.Network.Shared
             (op == OpCode.SetMarker || DelayMs == 0) &&
             (op == OpCode.SetMarker || Marker == 0) &&
             (op == OpCode.GameCommand || (GameMessageId == 0 && GamePayload.Length == 0)) &&
+            (op == OpCode.BusinessRequest || (BusinessMessageId == 0 && BusinessPayload.Length == 0)) &&
             (op switch
             {
-                OpCode.Login => Room == 0 && Text.Length == 1 && Text[0] >= 'A' && Text[0] <= 'H',
+                OpCode.Login => Room == 0 && BusinessWire.IsIdentity(Text),
                 OpCode.Recover => Room == 0 && Text.Length == 0 && Token.Length == 44,
                 OpCode.CreateRoom => Room == 0 && GameWire.IsDefinitionId(Text),
                 OpCode.JoinRoom => Room > 0 && Text.Length == 0,
@@ -100,15 +103,45 @@ namespace FRFrame.Network.Shared
                     DelayMs >= 0 && DelayMs <= 12_000,
                 OpCode.StreamReady => Room > 0 && GameWire.IsDefinitionId(Text) && Stream != 0 && Generation != 0,
                 OpCode.GameCommand => Room > 0 && Text.Length == 0 && GameMessageId != 0 && GamePayload.Length <= GameWire.MaxBodyBytes,
+                OpCode.BusinessRequest => Room == 0 && Text.Length == 0 && BusinessMessageId != 0 &&
+                    BusinessPayload.Length <= BusinessWire.MaxBodyBytes,
                 OpCode.StreamCancel => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
                 OpCode.StreamConfirm => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
-                OpCode.LeaveRoom => Room > 0 && Text.Length == 0 && Target >= 0 && Target <= 8,
-                OpCode.Kick => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
-                OpCode.TransferOwner => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
+                OpCode.LeaveRoom => Room > 0 && Text.Length == 0 && Target >= 0,
+                OpCode.Kick or OpCode.TransferOwner => Room > 0 && Text.Length == 0 && Target > 0,
                 OpCode.CloseRoom => Room > 0 && Text.Length == 0,
                 _ => false
             });
 
+        /// <summary>Business replies and notifications carry only binding and application data.</summary>
+        public bool IsBusinessDelivery(OpCode op) =>
+            Room == 0 && Player == 0 && Text.Length == 0 && Stream == 0 && Generation == 0 && Header == 0 &&
+            Schema == 0 && Hash == 0 && Marker == 0 && MemberIds.Length == 0 && Online == 0 && Capacity == 0 &&
+            Token.Length == 0 && Target == 0 && DelayMs == 0 && GameMessageId == 0 && GamePayload.Length == 0 &&
+            BusinessPayload.Length <= BusinessWire.MaxBodyBytes &&
+            (op == OpCode.BusinessPush
+                ? ReplyTo == 0 && Error == ErrorCode.None && BusinessMessageId != 0 &&
+                    Session > 0 && Epoch > 0 && ConnectionGeneration > 0
+                : (Error == ErrorCode.None
+                    ? BusinessMessageId != 0 && Session > 0 && Epoch > 0 && ConnectionGeneration > 0
+                    : BusinessMessageId == 0 && BusinessPayload.Length == 0 &&
+                        ((Session > 0 && Epoch > 0 && ConnectionGeneration > 0) ||
+                         (Session == 0 && Epoch == 0 && ConnectionGeneration == 0 &&
+                          Error is ErrorCode.Invalid or ErrorCode.Unauthenticated or ErrorCode.RoomClosing or ErrorCode.ServerDraining))));
+    }
+
+    public static class BusinessWire
+    {
+        public const int MaxBodyBytes = 384;
+        public static bool IsIdentity(string declaration)
+        {
+            if (string.IsNullOrEmpty(declaration) || declaration.Length > 32)
+                return false;
+            foreach (var c in declaration)
+                if (c is not (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '.' or '_' or '-'))
+                    return false;
+            return true;
+        }
     }
 
     /// <summary>Bounds and identifiers shared by game registrations and the compatible protocol.</summary>

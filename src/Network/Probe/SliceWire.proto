@@ -29,6 +29,18 @@ message SliceWire {
   int32 delay_ms = 22;
   optional uint32 game_message_id = 23;
   optional bytes game_payload = 24;
+  optional uint32 business_message_id = 25;
+  optional bytes business_payload = 26;
+}
+
+message ProfileRequest {
+  uint32 version = 1;
+  uint32 increment = 2;
+}
+message ProfileSnapshot {
+  uint32 version = 1;
+  int32 player_id = 2;
+  uint32 count = 3;
 }
 
 message CounterAdd {

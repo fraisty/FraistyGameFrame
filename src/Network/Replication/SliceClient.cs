@@ -144,6 +144,11 @@ namespace FRFrame.Network.Replication
             add => _runtime.RequestFinished += value;
             remove => _runtime.RequestFinished -= value;
         }
+        public event Action<ClientBusinessPush>? BusinessPushReceived
+        {
+            add => _runtime.BusinessPushReceived += value;
+            remove => _runtime.BusinessPushReceived -= value;
+        }
 
         public static void SetReplicationLog(Action<string> info, Action<string> warning, Action<string> error) =>
             LiteEntitySystem.Logger.LoggerImpl = new SliceLesLog(info, warning, error);
@@ -187,6 +192,7 @@ namespace FRFrame.Network.Replication
         public bool Reconnect(bool recover) => recover ? _runtime.Resume(_host, _port) : _runtime.Login(_host, _port, _identity);
         public uint Retry(uint requestId) => _runtime.Retry(requestId);
         public uint SendGameCommand(int room, uint id, ReadOnlySpan<byte> payload) => _runtime.SendGameCommand(room, id, payload);
+        public uint SendBusinessRequest(uint id, ReadOnlySpan<byte> payload) => _runtime.SendBusinessRequest(id, payload);
 
         internal SliceClient StartOnlineReplacement(int port) =>
             new(_host, port == 0 ? _port : port, _identity, _log, _replicationRegistrations.Values);

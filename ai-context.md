@@ -766,6 +766,7 @@ Network/
     ProbeCodec.cs
     ProbeMessage.cs
     ProbeMessage.proto
+    ProfileProtocol.cs
     ProtocolChecks.cs
     SliceCodec.cs
     SliceWire.cs
@@ -93507,13 +93508,16 @@ namespace FRFrame.Network.Client
     /// <summary>A single wait attempt. A lost or cancelled wait may already have executed on the server.</summary>
     public readonly struct ClientRequestResult
     {
-        internal ClientRequestResult(uint id, long attempt, ClientRequestStatus status, ErrorCode error, bool uncertain)
+        internal ClientRequestResult(uint id, long attempt, ClientRequestStatus status, ErrorCode error, bool uncertain,
+            uint businessMessageId = 0, byte[]? businessPayload = null)
         {
             RequestId = id;
             Attempt = attempt;
             Status = status;
             Error = error;
             MayHaveExecuted = uncertain;
+            BusinessMessageId = businessMessageId;
+            _businessPayload = businessPayload;
         }
 
         public uint RequestId { get; }
@@ -93521,6 +93525,9 @@ namespace FRFrame.Network.Client
         public ClientRequestStatus Status { get; }
         public ErrorCode Error { get; }
         public bool MayHaveExecuted { get; }
+        private readonly byte[]? _businessPayload;
+        public uint BusinessMessageId { get; }
+        public ReadOnlySpan<byte> BusinessPayload => _businessPayload;
     }
 
     /// <summary>Session-bound intent storage. Only this owner can turn a pending wait into a terminal result.</summary>
@@ -93534,15 +93541,17 @@ namespace FRFrame.Network.Client
             public readonly OpCode Op;
             public readonly byte[] Bytes;
             public readonly long RetryUntil;
+            public readonly uint BusinessMessageId;
             public long Attempt, Deadline;
             public bool Pending, Sent, Final;
 
-            public Intent(uint id, OpCode op, byte[] bytes, long retryUntil)
+            public Intent(uint id, OpCode op, byte[] bytes, long retryUntil, uint businessMessageId)
             {
                 Id = id;
                 Op = op;
                 Bytes = bytes;
                 RetryUntil = retryUntil;
+                BusinessMessageId = businessMessageId;
             }
         }
 
@@ -93553,11 +93562,11 @@ namespace FRFrame.Network.Client
         public Intent? Find(uint id) => _intents.TryGetValue(id, out var value) ? value : null;
         public bool HasWaitSlot => _pending < PendingLimit;
 
-        public Intent? Reserve(OpCode op, byte[] bytes, long now)
+        public Intent? Reserve(OpCode op, byte[] bytes, long now, uint businessMessageId)
         {
             if (Next == 0 || _intents.Count >= EntryLimit || _bytes + bytes.Length > ByteLimit || !HasWaitSlot)
                 return null;
-            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds);
+            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds, businessMessageId);
             _intents.Add(intent.Id, intent);
             _bytes += bytes.Length;
             return intent;
@@ -93571,14 +93580,15 @@ namespace FRFrame.Network.Client
             _pending++;
         }
 
-        public ClientRequestResult Finish(Intent intent, ClientRequestStatus status, ErrorCode error = ErrorCode.None)
+        public ClientRequestResult Finish(Intent intent, ClientRequestStatus status, ErrorCode error = ErrorCode.None,
+            uint businessMessageId = 0, byte[]? businessPayload = null)
         {
             intent.Pending = false;
             _pending--;
             if (status == ClientRequestStatus.Response && error != ErrorCode.Overloaded)
                 intent.Final = true;
             return new ClientRequestResult(intent.Id, intent.Attempt, status, error,
-                intent.Sent && status != ClientRequestStatus.Response);
+                intent.Sent && status != ClientRequestStatus.Response, businessMessageId, businessPayload);
         }
 
         public void ForgetUnsent(Intent intent)
@@ -93637,6 +93647,15 @@ using FRFrame.Network.Shared;
 namespace FRFrame.Network.Client
 {
     public enum ClientConnectionState { Idle, Connecting, Connected, Authenticating, Bound, Recoverable, Replaced, Disposed }
+
+    /// <summary>A business notification for the exact active Session binding.</summary>
+    public readonly struct ClientBusinessPush
+    {
+        private readonly byte[] _payload;
+        internal ClientBusinessPush(uint id, byte[] payload) { MessageId = id; _payload = payload; }
+        public uint MessageId { get; }
+        public ReadOnlySpan<byte> Payload => _payload;
+    }
 
     /// <summary>A server event for a current room. Observers only receive a read-only view of its owned payload.</summary>
     public sealed class ClientGameEvent
@@ -93742,6 +93761,7 @@ namespace FRFrame.Network.Client
         public event Action<int>? RoomChanged;
         public event Action<(int Room, int Player, string Text)>? RoomMessageReceived;
         public event Action<ClientGameEvent>? GameEventReceived;
+        public event Action<ClientBusinessPush>? BusinessPushReceived;
 
         internal IClientTransport Transport => _transport!;
         internal TransportConnectionHandle Handle => _handle;
@@ -93767,6 +93787,14 @@ namespace FRFrame.Network.Client
             if (room <= 0 || id == 0 || payload.Length > GameWire.MaxBodyBytes)
                 return RejectSend(ErrorCode.Invalid);
             return SendCompatible(OpCode.GameCommand, new SliceMessage { Room = room, GameMessageId = id, GamePayload = payload.ToArray() });
+        }
+
+        /// <summary>Sends a typed application's encoded body on the current Session without joining a room.</summary>
+        public uint SendBusinessRequest(uint id, ReadOnlySpan<byte> payload)
+        {
+            if (id == 0 || payload.Length > BusinessWire.MaxBodyBytes)
+                return RejectSend(ErrorCode.Invalid);
+            return SendCompatible(OpCode.BusinessRequest, new SliceMessage { BusinessMessageId = id, BusinessPayload = payload.ToArray() });
         }
 
         /// <summary>Restarts a local wait for an uncertain or transient result, using the original bytes.</summary>
@@ -93898,7 +93926,7 @@ namespace FRFrame.Network.Client
             var now = _clock();
             ClientRequests.Intent? intent;
             if (request.RequestId == 0)
-                intent = _requests.Reserve(op, bytes, now);
+                intent = _requests.Reserve(op, bytes, now, request.BusinessMessageId);
             else
             {
                 intent = _requests.Find(id);
@@ -94001,6 +94029,15 @@ namespace FRFrame.Network.Client
                     if (_requests.Find(message.RequestId) is not { Pending: true } intent || intent.Attempt != attempt ||
                         intent.Op != message.ReplyTo || now >= intent.Deadline || !MatchesBinding(message))
                         return;
+                    if (intent.Op == OpCode.BusinessRequest)
+                    {
+                        if (message.ConnectionGeneration > Binding.ConnectionGeneration ||
+                            (message.Error == ErrorCode.None && message.BusinessMessageId != intent.BusinessMessageId))
+                            return;
+                        Notify(RequestFinished, _requests.Finish(intent, ClientRequestStatus.Response, message.Error,
+                            message.BusinessMessageId, message.BusinessPayload));
+                        return;
+                    }
                     Notify(RequestFinished, _requests.Finish(intent, ClientRequestStatus.Response, message.Error));
                     break;
                 case OpCode.Members:
@@ -94028,6 +94065,11 @@ namespace FRFrame.Network.Client
                 case OpCode.GameEvent:
                     if (_rooms.TryGetValue(message.Room, out var gameRoom) && gameRoom.IsCurrent)
                         Notify(GameEventReceived, new ClientGameEvent(message.Room, message.Player, message.GameMessageId, message.GamePayload));
+                    return;
+                case OpCode.BusinessPush:
+                    if (message.Session == Binding.Session && message.Epoch == Binding.Epoch &&
+                        message.ConnectionGeneration == Binding.ConnectionGeneration)
+                        Notify(BusinessPushReceived, new ClientBusinessPush(message.BusinessMessageId, message.BusinessPayload));
                     return;
                 default:
                     // The POC compatibility bridge consumes its own pushes for current rooms.
@@ -94127,6 +94169,7 @@ namespace FRFrame.Network.Client
             RoomChanged = null;
             RoomMessageReceived = null;
             GameEventReceived = null;
+            BusinessPushReceived = null;
             WireReceived = null;
             RawReceived = null;
         }
@@ -95001,6 +95044,55 @@ message StreamAcknowledgement {
 }
 ````
 
+## File: Network/Probe/ProfileProtocol.cs
+````csharp
+using System;
+using FRFrame.Network.Protocol.Wire;
+using FRFrame.Network.Shared;
+using Google.Protobuf;
+
+namespace FRFrame.Network.Protocol
+{
+    /// <summary>Typed codec for the room-independent local Profile example.</summary>
+    public static class ProfileProtocol
+    {
+        public const uint RequestId = 1;
+        public const uint PushId = 1;
+        private const uint Version = 1;
+        private const int ExampleBodyBytes = 16;
+        private static readonly MessageParser<ProfileRequest> RequestParser = ProfileRequest.Parser.WithDiscardUnknownFields(true);
+        private static readonly MessageParser<ProfileSnapshot> SnapshotParser = ProfileSnapshot.Parser.WithDiscardUnknownFields(true);
+
+        public static byte[] EncodeRequest(uint increment = 0) =>
+            new ProfileRequest { Version = Version, Increment = increment }.ToByteArray();
+
+        public static ErrorCode DecodeRequest(ReadOnlySpan<byte> bytes, out uint increment)
+        {
+            increment = 0;
+            if (!BoundedProtobuf.TryParse(RequestParser, bytes, ExampleBodyBytes, out var request, out var error))
+                return error;
+            if (request.Version != Version || request.Increment > 9 || !bytes.SequenceEqual(request.ToByteArray()))
+                return ErrorCode.Invalid;
+            increment = request.Increment;
+            return ErrorCode.None;
+        }
+
+        public static byte[] EncodeSnapshot((int Player, uint Count) profile) =>
+            new ProfileSnapshot { Version = Version, PlayerId = profile.Player, Count = profile.Count }.ToByteArray();
+
+        public static bool TryReadSnapshot(ReadOnlySpan<byte> bytes, out (int Player, uint Count) profile)
+        {
+            profile = default;
+            if (!BoundedProtobuf.TryParse(SnapshotParser, bytes, ExampleBodyBytes, out var snapshot, out _) ||
+                snapshot.Version != Version || snapshot.PlayerId <= 0 || !bytes.SequenceEqual(snapshot.ToByteArray()))
+                return false;
+            profile = (snapshot.PlayerId, snapshot.Count);
+            return true;
+        }
+    }
+}
+````
+
 ## File: Network/Probe/ProtocolChecks.cs
 ````csharp
 #nullable enable
@@ -95154,6 +95246,10 @@ namespace FRFrame.Network.Protocol
                 wire.GameMessageId = message.GameMessageId;
             if (message.GamePayload.Length != 0)
                 wire.GamePayload = ByteString.CopyFrom(message.GamePayload);
+            if (message.BusinessMessageId != 0)
+                wire.BusinessMessageId = message.BusinessMessageId;
+            if (message.BusinessPayload.Length != 0)
+                wire.BusinessPayload = ByteString.CopyFrom(message.BusinessPayload);
             wire.MemberIds.AddRange(message.MemberIds);
             return Envelope.Write(op, wire.ToByteArray(), new RequestId(message.RequestId));
         }
@@ -95179,15 +95275,20 @@ namespace FRFrame.Network.Protocol
                 return false;
             if (wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 ||
                 Encoding.UTF8.GetByteCount(wire.Text) > MaxTextBytes ||
-                Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes || wire.GamePayload.Length > GameWire.MaxBodyBytes)
+                Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes || wire.GamePayload.Length > GameWire.MaxBodyBytes ||
+                wire.BusinessPayload.Length > BusinessWire.MaxBodyBytes)
             {
                 error = ErrorCode.PayloadTooLarge;
                 return false;
             }
+            var businessDelivery = header.Op == OpCode.BusinessPush ||
+                (header.Op == OpCode.Response && wire.ReplyTo == (uint)OpCode.BusinessRequest);
             if (wire.Error > (uint)ErrorCode.InternalError ||
                 (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((OpCode)wire.ReplyTo))) ||
                 (header.Descriptor.Kind == MessageKind.Response && wire.ReplyTo == 0) ||
                 (header.Op is not (OpCode.GameCommand or OpCode.GameEvent) && (wire.HasGameMessageId || wire.HasGamePayload)) ||
+                (!businessDelivery && header.Op != OpCode.BusinessRequest && (wire.HasBusinessMessageId || wire.HasBusinessPayload)) ||
+                (businessDelivery && wire.Error != 0 && (wire.HasBusinessMessageId || wire.HasBusinessPayload)) ||
                 (header.Op == OpCode.GameEvent && (wire.Room <= 0 || wire.Player <= 0 || wire.GameMessageId == 0 ||
                     wire.Error != 0 || wire.ReplyTo != 0 || wire.Session != 0 || wire.Text.Length != 0 || wire.Stream != 0 ||
                     wire.Generation != 0 || wire.Header != 0 || wire.Schema != 0 || wire.Hash != 0 || wire.Marker != 0 ||
@@ -95198,7 +95299,7 @@ namespace FRFrame.Network.Protocol
                 return false;
             }
 
-            message = new SliceMessage
+            var decoded = new SliceMessage
             {
                 RequestId = header.RequestId.Value, Error = (ErrorCode)wire.Error, ReplyTo = (OpCode)wire.ReplyTo,
                 Room = wire.Room, Player = wire.Player, Session = wire.Session, Text = wire.Text,
@@ -95206,8 +95307,16 @@ namespace FRFrame.Network.Protocol
                 Hash = wire.Hash, Marker = wire.Marker, MemberIds = wire.MemberIds.ToArray(), Online = wire.Online,
                 Capacity = wire.Capacity, Epoch = wire.Epoch, ConnectionGeneration = wire.ConnectionGeneration,
                 Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs,
-                GameMessageId = wire.GameMessageId, GamePayload = wire.GamePayload.IsEmpty ? Array.Empty<byte>() : wire.GamePayload.ToByteArray()
+                GameMessageId = wire.GameMessageId, GamePayload = wire.GamePayload.IsEmpty ? Array.Empty<byte>() : wire.GamePayload.ToByteArray(),
+                BusinessMessageId = wire.BusinessMessageId,
+                BusinessPayload = wire.BusinessPayload.IsEmpty ? Array.Empty<byte>() : wire.BusinessPayload.ToByteArray()
             };
+            if (businessDelivery && !decoded.IsBusinessDelivery(header.Op))
+            {
+                error = ErrorCode.MalformedMessage;
+                return false;
+            }
+            message = decoded;
             return true;
         }
     }
@@ -95242,7 +95351,7 @@ namespace FRFrame.Network.Protocol.Wire {
     static SliceWireReflection() {
       byte[] descriptorData = global::System.Convert.FromBase64String(
           string.Concat(
-            "Cg9TbGljZVdpcmUucHJvdG8SEmZyZnJhbWUubmV0d29yay52MSLWAwoJU2xp",
+            "Cg9TbGljZVdpcmUucHJvdG8SEmZyZnJhbWUubmV0d29yay52MSLEBAoJU2xp",
             "Y2VXaXJlEg0KBWVycm9yGAIgASgNEhAKCHJlcGx5X3RvGAMgASgNEgwKBHJv",
             "b20YBCABKAUSDgoGcGxheWVyGAUgASgFEg8KB3Nlc3Npb24YBiABKAUSDAoE",
             "dGV4dBgHIAEoCRIOCgZzdHJlYW0YCCABKA0SEgoKZ2VuZXJhdGlvbhgJIAEo",
@@ -95251,16 +95360,23 @@ namespace FRFrame.Network.Protocol.Wire {
             "aW5lGA8gASgFEhAKCGNhcGFjaXR5GBAgASgFEg0KBWVwb2NoGBIgASgFEh0K",
             "FWNvbm5lY3Rpb25fZ2VuZXJhdGlvbhgTIAEoBRINCgV0b2tlbhgUIAEoCRIO",
             "CgZ0YXJnZXQYFSABKAUSEAoIZGVsYXlfbXMYFiABKAUSHAoPZ2FtZV9tZXNz",
-            "YWdlX2lkGBcgASgNSACIAQESGQoMZ2FtZV9wYXlsb2FkGBggASgMSAGIAQFC",
-            "EgoQX2dhbWVfbWVzc2FnZV9pZEIPCg1fZ2FtZV9wYXlsb2FkSgQIARACSgQI",
-            "ERASUgpyZXF1ZXN0X2lkIi0KCkNvdW50ZXJBZGQSDwoHdmVyc2lvbhgBIAEo",
-            "DRIOCgZhbW91bnQYAiABKBEiMAoOQ291bnRlckNoYW5nZWQSDwoHdmVyc2lv",
-            "bhgBIAEoDRINCgV2YWx1ZRgCIAEoDUIgqgIdRlJGcmFtZS5OZXR3b3JrLlBy",
-            "b3RvY29sLldpcmViBnByb3RvMw=="));
+            "YWdlX2lkGBcgASgNSACIAQESGQoMZ2FtZV9wYXlsb2FkGBggASgMSAGIAQES",
+            "IAoTYnVzaW5lc3NfbWVzc2FnZV9pZBgZIAEoDUgCiAEBEh0KEGJ1c2luZXNz",
+            "X3BheWxvYWQYGiABKAxIA4gBAUISChBfZ2FtZV9tZXNzYWdlX2lkQg8KDV9n",
+            "YW1lX3BheWxvYWRCFgoUX2J1c2luZXNzX21lc3NhZ2VfaWRCEwoRX2J1c2lu",
+            "ZXNzX3BheWxvYWRKBAgBEAJKBAgREBJSCnJlcXVlc3RfaWQiNAoOUHJvZmls",
+            "ZVJlcXVlc3QSDwoHdmVyc2lvbhgBIAEoDRIRCglpbmNyZW1lbnQYAiABKA0i",
+            "RAoPUHJvZmlsZVNuYXBzaG90Eg8KB3ZlcnNpb24YASABKA0SEQoJcGxheWVy",
+            "X2lkGAIgASgFEg0KBWNvdW50GAMgASgNIi0KCkNvdW50ZXJBZGQSDwoHdmVy",
+            "c2lvbhgBIAEoDRIOCgZhbW91bnQYAiABKBEiMAoOQ291bnRlckNoYW5nZWQS",
+            "DwoHdmVyc2lvbhgBIAEoDRINCgV2YWx1ZRgCIAEoDUIgqgIdRlJGcmFtZS5O",
+            "ZXR3b3JrLlByb3RvY29sLldpcmViBnByb3RvMw=="));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { },
           new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
-            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.SliceWire), global::FRFrame.Network.Protocol.Wire.SliceWire.Parser, new[]{ "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity", "Epoch", "ConnectionGeneration", "Token", "Target", "DelayMs", "GameMessageId", "GamePayload" }, new[]{ "GameMessageId", "GamePayload" }, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.SliceWire), global::FRFrame.Network.Protocol.Wire.SliceWire.Parser, new[]{ "Error", "ReplyTo", "Room", "Player", "Session", "Text", "Stream", "Generation", "Header", "Schema", "Hash", "Marker", "MemberIds", "Online", "Capacity", "Epoch", "ConnectionGeneration", "Token", "Target", "DelayMs", "GameMessageId", "GamePayload", "BusinessMessageId", "BusinessPayload" }, new[]{ "GameMessageId", "GamePayload", "BusinessMessageId", "BusinessPayload" }, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.ProfileRequest), global::FRFrame.Network.Protocol.Wire.ProfileRequest.Parser, new[]{ "Version", "Increment" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.ProfileSnapshot), global::FRFrame.Network.Protocol.Wire.ProfileSnapshot.Parser, new[]{ "Version", "PlayerId", "Count" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.CounterAdd), global::FRFrame.Network.Protocol.Wire.CounterAdd.Parser, new[]{ "Version", "Amount" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::FRFrame.Network.Protocol.Wire.CounterChanged), global::FRFrame.Network.Protocol.Wire.CounterChanged.Parser, new[]{ "Version", "Value" }, null, null, null, null)
           }));
@@ -95332,6 +95448,8 @@ namespace FRFrame.Network.Protocol.Wire {
       delayMs_ = other.delayMs_;
       gameMessageId_ = other.gameMessageId_;
       gamePayload_ = other.gamePayload_;
+      businessMessageId_ = other.businessMessageId_;
+      businessPayload_ = other.businessPayload_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -95633,6 +95751,59 @@ namespace FRFrame.Network.Protocol.Wire {
       gamePayload_ = null;
     }
 
+    /// <summary>Field number for the "business_message_id" field.</summary>
+    public const int BusinessMessageIdFieldNumber = 25;
+    private readonly static uint BusinessMessageIdDefaultValue = 0;
+
+    private uint businessMessageId_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint BusinessMessageId {
+      get { if ((_hasBits0 & 2) != 0) { return businessMessageId_; } else { return BusinessMessageIdDefaultValue; } }
+      set {
+        _hasBits0 |= 2;
+        businessMessageId_ = value;
+      }
+    }
+    /// <summary>Gets whether the "business_message_id" field is set</summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool HasBusinessMessageId {
+      get { return (_hasBits0 & 2) != 0; }
+    }
+    /// <summary>Clears the value of the "business_message_id" field</summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void ClearBusinessMessageId() {
+      _hasBits0 &= ~2;
+    }
+
+    /// <summary>Field number for the "business_payload" field.</summary>
+    public const int BusinessPayloadFieldNumber = 26;
+    private readonly static pb::ByteString BusinessPayloadDefaultValue = pb::ByteString.Empty;
+
+    private pb::ByteString businessPayload_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public pb::ByteString BusinessPayload {
+      get { return businessPayload_ ?? BusinessPayloadDefaultValue; }
+      set {
+        businessPayload_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+    /// <summary>Gets whether the "business_payload" field is set</summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool HasBusinessPayload {
+      get { return businessPayload_ != null; }
+    }
+    /// <summary>Clears the value of the "business_payload" field</summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void ClearBusinessPayload() {
+      businessPayload_ = null;
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -95670,6 +95841,8 @@ namespace FRFrame.Network.Protocol.Wire {
       if (DelayMs != other.DelayMs) return false;
       if (GameMessageId != other.GameMessageId) return false;
       if (GamePayload != other.GamePayload) return false;
+      if (BusinessMessageId != other.BusinessMessageId) return false;
+      if (BusinessPayload != other.BusinessPayload) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -95699,6 +95872,8 @@ namespace FRFrame.Network.Protocol.Wire {
       if (DelayMs != 0) hash ^= DelayMs.GetHashCode();
       if (HasGameMessageId) hash ^= GameMessageId.GetHashCode();
       if (HasGamePayload) hash ^= GamePayload.GetHashCode();
+      if (HasBusinessMessageId) hash ^= BusinessMessageId.GetHashCode();
+      if (HasBusinessPayload) hash ^= BusinessPayload.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -95802,6 +95977,14 @@ namespace FRFrame.Network.Protocol.Wire {
         output.WriteRawTag(194, 1);
         output.WriteBytes(GamePayload);
       }
+      if (HasBusinessMessageId) {
+        output.WriteRawTag(200, 1);
+        output.WriteUInt32(BusinessMessageId);
+      }
+      if (HasBusinessPayload) {
+        output.WriteRawTag(210, 1);
+        output.WriteBytes(BusinessPayload);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -95897,6 +96080,14 @@ namespace FRFrame.Network.Protocol.Wire {
         output.WriteRawTag(194, 1);
         output.WriteBytes(GamePayload);
       }
+      if (HasBusinessMessageId) {
+        output.WriteRawTag(200, 1);
+        output.WriteUInt32(BusinessMessageId);
+      }
+      if (HasBusinessPayload) {
+        output.WriteRawTag(210, 1);
+        output.WriteBytes(BusinessPayload);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -95970,6 +96161,12 @@ namespace FRFrame.Network.Protocol.Wire {
       }
       if (HasGamePayload) {
         size += 2 + pb::CodedOutputStream.ComputeBytesSize(GamePayload);
+      }
+      if (HasBusinessMessageId) {
+        size += 2 + pb::CodedOutputStream.ComputeUInt32Size(BusinessMessageId);
+      }
+      if (HasBusinessPayload) {
+        size += 2 + pb::CodedOutputStream.ComputeBytesSize(BusinessPayload);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -96046,6 +96243,12 @@ namespace FRFrame.Network.Protocol.Wire {
       }
       if (other.HasGamePayload) {
         GamePayload = other.GamePayload;
+      }
+      if (other.HasBusinessMessageId) {
+        BusinessMessageId = other.BusinessMessageId;
+      }
+      if (other.HasBusinessPayload) {
+        BusinessPayload = other.BusinessPayload;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -96153,6 +96356,14 @@ namespace FRFrame.Network.Protocol.Wire {
           }
           case 194: {
             GamePayload = input.ReadBytes();
+            break;
+          }
+          case 200: {
+            BusinessMessageId = input.ReadUInt32();
+            break;
+          }
+          case 210: {
+            BusinessPayload = input.ReadBytes();
             break;
           }
         }
@@ -96263,6 +96474,521 @@ namespace FRFrame.Network.Protocol.Wire {
             GamePayload = input.ReadBytes();
             break;
           }
+          case 200: {
+            BusinessMessageId = input.ReadUInt32();
+            break;
+          }
+          case 210: {
+            BusinessPayload = input.ReadBytes();
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class ProfileRequest : pb::IMessage<ProfileRequest>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<ProfileRequest> _parser = new pb::MessageParser<ProfileRequest>(() => new ProfileRequest());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<ProfileRequest> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[1]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public ProfileRequest() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public ProfileRequest(ProfileRequest other) : this() {
+      version_ = other.version_;
+      increment_ = other.increment_;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public ProfileRequest Clone() {
+      return new ProfileRequest(this);
+    }
+
+    /// <summary>Field number for the "version" field.</summary>
+    public const int VersionFieldNumber = 1;
+    private uint version_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint Version {
+      get { return version_; }
+      set {
+        version_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "increment" field.</summary>
+    public const int IncrementFieldNumber = 2;
+    private uint increment_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint Increment {
+      get { return increment_; }
+      set {
+        increment_ = value;
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as ProfileRequest);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(ProfileRequest other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if (Version != other.Version) return false;
+      if (Increment != other.Increment) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      if (Version != 0) hash ^= Version.GetHashCode();
+      if (Increment != 0) hash ^= Increment.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      if (Version != 0) {
+        output.WriteRawTag(8);
+        output.WriteUInt32(Version);
+      }
+      if (Increment != 0) {
+        output.WriteRawTag(16);
+        output.WriteUInt32(Increment);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      if (Version != 0) {
+        output.WriteRawTag(8);
+        output.WriteUInt32(Version);
+      }
+      if (Increment != 0) {
+        output.WriteRawTag(16);
+        output.WriteUInt32(Increment);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      if (Version != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Version);
+      }
+      if (Increment != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Increment);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(ProfileRequest other) {
+      if (other == null) {
+        return;
+      }
+      if (other.Version != 0) {
+        Version = other.Version;
+      }
+      if (other.Increment != 0) {
+        Increment = other.Increment;
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 8: {
+            Version = input.ReadUInt32();
+            break;
+          }
+          case 16: {
+            Increment = input.ReadUInt32();
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 8: {
+            Version = input.ReadUInt32();
+            break;
+          }
+          case 16: {
+            Increment = input.ReadUInt32();
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class ProfileSnapshot : pb::IMessage<ProfileSnapshot>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<ProfileSnapshot> _parser = new pb::MessageParser<ProfileSnapshot>(() => new ProfileSnapshot());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<ProfileSnapshot> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[2]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public ProfileSnapshot() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public ProfileSnapshot(ProfileSnapshot other) : this() {
+      version_ = other.version_;
+      playerId_ = other.playerId_;
+      count_ = other.count_;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public ProfileSnapshot Clone() {
+      return new ProfileSnapshot(this);
+    }
+
+    /// <summary>Field number for the "version" field.</summary>
+    public const int VersionFieldNumber = 1;
+    private uint version_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint Version {
+      get { return version_; }
+      set {
+        version_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "player_id" field.</summary>
+    public const int PlayerIdFieldNumber = 2;
+    private int playerId_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int PlayerId {
+      get { return playerId_; }
+      set {
+        playerId_ = value;
+      }
+    }
+
+    /// <summary>Field number for the "count" field.</summary>
+    public const int CountFieldNumber = 3;
+    private uint count_;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint Count {
+      get { return count_; }
+      set {
+        count_ = value;
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as ProfileSnapshot);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(ProfileSnapshot other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if (Version != other.Version) return false;
+      if (PlayerId != other.PlayerId) return false;
+      if (Count != other.Count) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      if (Version != 0) hash ^= Version.GetHashCode();
+      if (PlayerId != 0) hash ^= PlayerId.GetHashCode();
+      if (Count != 0) hash ^= Count.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      if (Version != 0) {
+        output.WriteRawTag(8);
+        output.WriteUInt32(Version);
+      }
+      if (PlayerId != 0) {
+        output.WriteRawTag(16);
+        output.WriteInt32(PlayerId);
+      }
+      if (Count != 0) {
+        output.WriteRawTag(24);
+        output.WriteUInt32(Count);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      if (Version != 0) {
+        output.WriteRawTag(8);
+        output.WriteUInt32(Version);
+      }
+      if (PlayerId != 0) {
+        output.WriteRawTag(16);
+        output.WriteInt32(PlayerId);
+      }
+      if (Count != 0) {
+        output.WriteRawTag(24);
+        output.WriteUInt32(Count);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      if (Version != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Version);
+      }
+      if (PlayerId != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeInt32Size(PlayerId);
+      }
+      if (Count != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Count);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(ProfileSnapshot other) {
+      if (other == null) {
+        return;
+      }
+      if (other.Version != 0) {
+        Version = other.Version;
+      }
+      if (other.PlayerId != 0) {
+        PlayerId = other.PlayerId;
+      }
+      if (other.Count != 0) {
+        Count = other.Count;
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 8: {
+            Version = input.ReadUInt32();
+            break;
+          }
+          case 16: {
+            PlayerId = input.ReadInt32();
+            break;
+          }
+          case 24: {
+            Count = input.ReadUInt32();
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 8: {
+            Version = input.ReadUInt32();
+            break;
+          }
+          case 16: {
+            PlayerId = input.ReadInt32();
+            break;
+          }
+          case 24: {
+            Count = input.ReadUInt32();
+            break;
+          }
         }
       }
     }
@@ -96285,7 +97011,7 @@ namespace FRFrame.Network.Protocol.Wire {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[1]; }
+      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[3]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -96520,7 +97246,7 @@ namespace FRFrame.Network.Protocol.Wire {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[2]; }
+      get { return global::FRFrame.Network.Protocol.Wire.SliceWireReflection.Descriptor.MessageTypes[4]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -96780,6 +97506,18 @@ message SliceWire {
   int32 delay_ms = 22;
   optional uint32 game_message_id = 23;
   optional bytes game_payload = 24;
+  optional uint32 business_message_id = 25;
+  optional bytes business_payload = 26;
+}
+
+message ProfileRequest {
+  uint32 version = 1;
+  uint32 increment = 2;
+}
+message ProfileSnapshot {
+  uint32 version = 1;
+  int32 player_id = 2;
+  uint32 count = 3;
 }
 
 message CounterAdd {
@@ -97355,8 +98093,10 @@ namespace FRFrame.Network.Replication
 #else
             _player.Value = player;
 #endif
-            _x.Value = player * 2;
+            _x.Value = SpawnX(player);
         }
+
+        internal static float SpawnX(int player) => player <= 8 ? player * 2 : ((player - 1) % 5 + 1) * 2;
 
         public void SetMove(PocPlayerInput direction)
         {
@@ -97544,6 +98284,11 @@ namespace FRFrame.Network.Replication
             add => _runtime.RequestFinished += value;
             remove => _runtime.RequestFinished -= value;
         }
+        public event Action<ClientBusinessPush>? BusinessPushReceived
+        {
+            add => _runtime.BusinessPushReceived += value;
+            remove => _runtime.BusinessPushReceived -= value;
+        }
 
         public static void SetReplicationLog(Action<string> info, Action<string> warning, Action<string> error) =>
             LiteEntitySystem.Logger.LoggerImpl = new SliceLesLog(info, warning, error);
@@ -97587,6 +98332,7 @@ namespace FRFrame.Network.Replication
         public bool Reconnect(bool recover) => recover ? _runtime.Resume(_host, _port) : _runtime.Login(_host, _port, _identity);
         public uint Retry(uint requestId) => _runtime.Retry(requestId);
         public uint SendGameCommand(int room, uint id, ReadOnlySpan<byte> payload) => _runtime.SendGameCommand(room, id, payload);
+        public uint SendBusinessRequest(uint id, ReadOnlySpan<byte> payload) => _runtime.SendBusinessRequest(id, payload);
 
         internal SliceClient StartOnlineReplacement(int port) =>
             new(_host, port == 0 ? _port : port, _identity, _log, _replicationRegistrations.Values);
@@ -98532,7 +99278,9 @@ namespace FRFrame.Network.Shared
         RoomLeft = 26,
         SessionReplaced = 27,
         GameCommand = 28,
-        GameEvent = 29
+        GameEvent = 29,
+        BusinessRequest = 30,
+        BusinessPush = 31
     }
 
     /// <summary>Correlates a request and its response within the server-selected Session.</summary>
@@ -98598,6 +99346,7 @@ namespace FRFrame.Network.Shared
                 OpCode.RoomMessage => Request(op, 256, MessageRateClass.Room),
                 OpCode.SetMarker => Request(op, 64, MessageRateClass.Game),
                 OpCode.GameCommand => Request(op, 256, MessageRateClass.Game),
+                OpCode.BusinessRequest => Request(op, Envelope.MaxPayload, MessageRateClass.Game),
                 OpCode.StreamOpen or OpCode.StreamReady or OpCode.StreamCancel or OpCode.StreamConfirm =>
                     Request(op, 96, MessageRateClass.Stream),
                 OpCode.Response => new MessageDescriptor(op, MessageDirection.ServerToClient, MessageKind.Response,
@@ -98606,6 +99355,7 @@ namespace FRFrame.Network.Shared
                 OpCode.RoomBroadcast => Push(op, 256, MessageRateClass.Room),
                 OpCode.MarkerChanged => Push(op, 64, MessageRateClass.Game),
                 OpCode.GameEvent => Push(op, 256, MessageRateClass.Game),
+                OpCode.BusinessPush => Push(op, Envelope.MaxPayload, MessageRateClass.Game),
                 OpCode.StreamClosed => Push(op, 64, MessageRateClass.Stream),
                 OpCode.RoomClosed or OpCode.RoomLeft => Push(op, 64, MessageRateClass.Control),
                 OpCode.SessionReplaced => Push(op, 64, MessageRateClass.Control),
@@ -98920,6 +99670,8 @@ namespace FRFrame.Network.Shared
         public int DelayMs;
         public uint GameMessageId;
         public byte[] GamePayload = Array.Empty<byte>();
+        public uint BusinessMessageId;
+        public byte[] BusinessPayload = Array.Empty<byte>();
 
         public static bool IsClientRequest(OpCode op) =>
             ProtocolMessages.TryGet(op, out var descriptor) && descriptor.Kind == MessageKind.Request;
@@ -98937,9 +99689,10 @@ namespace FRFrame.Network.Shared
             (op == OpCode.SetMarker || DelayMs == 0) &&
             (op == OpCode.SetMarker || Marker == 0) &&
             (op == OpCode.GameCommand || (GameMessageId == 0 && GamePayload.Length == 0)) &&
+            (op == OpCode.BusinessRequest || (BusinessMessageId == 0 && BusinessPayload.Length == 0)) &&
             (op switch
             {
-                OpCode.Login => Room == 0 && Text.Length == 1 && Text[0] >= 'A' && Text[0] <= 'H',
+                OpCode.Login => Room == 0 && BusinessWire.IsIdentity(Text),
                 OpCode.Recover => Room == 0 && Text.Length == 0 && Token.Length == 44,
                 OpCode.CreateRoom => Room == 0 && GameWire.IsDefinitionId(Text),
                 OpCode.JoinRoom => Room > 0 && Text.Length == 0,
@@ -98949,15 +99702,45 @@ namespace FRFrame.Network.Shared
                     DelayMs >= 0 && DelayMs <= 12_000,
                 OpCode.StreamReady => Room > 0 && GameWire.IsDefinitionId(Text) && Stream != 0 && Generation != 0,
                 OpCode.GameCommand => Room > 0 && Text.Length == 0 && GameMessageId != 0 && GamePayload.Length <= GameWire.MaxBodyBytes,
+                OpCode.BusinessRequest => Room == 0 && Text.Length == 0 && BusinessMessageId != 0 &&
+                    BusinessPayload.Length <= BusinessWire.MaxBodyBytes,
                 OpCode.StreamCancel => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
                 OpCode.StreamConfirm => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
-                OpCode.LeaveRoom => Room > 0 && Text.Length == 0 && Target >= 0 && Target <= 8,
-                OpCode.Kick => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
-                OpCode.TransferOwner => Room > 0 && Text.Length == 0 && Target >= 1 && Target <= 8,
+                OpCode.LeaveRoom => Room > 0 && Text.Length == 0 && Target >= 0,
+                OpCode.Kick or OpCode.TransferOwner => Room > 0 && Text.Length == 0 && Target > 0,
                 OpCode.CloseRoom => Room > 0 && Text.Length == 0,
                 _ => false
             });
 
+        /// <summary>Business replies and notifications carry only binding and application data.</summary>
+        public bool IsBusinessDelivery(OpCode op) =>
+            Room == 0 && Player == 0 && Text.Length == 0 && Stream == 0 && Generation == 0 && Header == 0 &&
+            Schema == 0 && Hash == 0 && Marker == 0 && MemberIds.Length == 0 && Online == 0 && Capacity == 0 &&
+            Token.Length == 0 && Target == 0 && DelayMs == 0 && GameMessageId == 0 && GamePayload.Length == 0 &&
+            BusinessPayload.Length <= BusinessWire.MaxBodyBytes &&
+            (op == OpCode.BusinessPush
+                ? ReplyTo == 0 && Error == ErrorCode.None && BusinessMessageId != 0 &&
+                    Session > 0 && Epoch > 0 && ConnectionGeneration > 0
+                : (Error == ErrorCode.None
+                    ? BusinessMessageId != 0 && Session > 0 && Epoch > 0 && ConnectionGeneration > 0
+                    : BusinessMessageId == 0 && BusinessPayload.Length == 0 &&
+                        ((Session > 0 && Epoch > 0 && ConnectionGeneration > 0) ||
+                         (Session == 0 && Epoch == 0 && ConnectionGeneration == 0 &&
+                          Error is ErrorCode.Invalid or ErrorCode.Unauthenticated or ErrorCode.RoomClosing or ErrorCode.ServerDraining))));
+    }
+
+    public static class BusinessWire
+    {
+        public const int MaxBodyBytes = 384;
+        public static bool IsIdentity(string declaration)
+        {
+            if (string.IsNullOrEmpty(declaration) || declaration.Length > 32)
+                return false;
+            foreach (var c in declaration)
+                if (c is not (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '.' or '_' or '-'))
+                    return false;
+            return true;
+        }
     }
 
     /// <summary>Bounds and identifiers shared by game registrations and the compatible protocol.</summary>
@@ -111691,9 +112474,9 @@ namespace FRFrame.Network.Unity
         private void Connect()
         {
             if (!int.TryParse(_port, out var port) || port is < 1 or > 65535 ||
-                _identity.Length != 1 || _identity[0] is < 'A' or > 'H' || string.IsNullOrWhiteSpace(_host))
+                !BusinessWire.IsIdentity(_identity) || string.IsNullOrWhiteSpace(_host))
             {
-                Log("Enter a host, a port between 1 and 65535, and an identity from A to H.");
+                Log("Enter a host, a port between 1 and 65535, and a configured identity.");
                 return;
             }
             try
@@ -111753,7 +112536,7 @@ namespace FRFrame.Network.Unity
 
         private void UpdateView(PawnSample sample)
         {
-            if (Application.isBatchMode || sample.Player is < 1 or > 8 || sample.Room != (_lifecycle?.CurrentClient ?? _client).Room)
+            if (Application.isBatchMode || sample.Player <= 0 || sample.Room != (_lifecycle?.CurrentClient ?? _client).Room)
                 return;
             if (_viewRoom != sample.Room)
             {
@@ -111797,8 +112580,8 @@ namespace FRFrame.Network.Unity
                 _host = GUILayout.TextField(_host, 253);
                 GUILayout.Label("Port");
                 _port = GUILayout.TextField(_port, 5);
-                GUILayout.Label("Test identity (A–H)");
-                _identity = GUILayout.TextField(_identity, 1).ToUpperInvariant();
+                GUILayout.Label("Identity (default A–H)");
+                _identity = GUILayout.TextField(_identity, 32);
                 if (GUILayout.Button("Connect"))
                     Connect();
             }
@@ -111860,7 +112643,7 @@ namespace FRFrame.Network.Unity
                     if (counter && GUILayout.Button("Add 1")) AddCounter(client.Room);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
-                    _target = GUILayout.TextField(_target, 1, GUILayout.Width(24));
+                    _target = GUILayout.TextField(_target, 10, GUILayout.Width(80));
                     int.TryParse(_target, out var target);
                     if (GUILayout.Button("Leave")) client.LeaveRoom(client.Room);
                     if (GUILayout.Button("Kick")) client.Kick(client.Room, target);

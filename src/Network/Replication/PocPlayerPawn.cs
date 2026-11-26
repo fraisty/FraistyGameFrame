@@ -40,8 +40,10 @@ namespace FRFrame.Network.Replication
 #else
             _player.Value = player;
 #endif
-            _x.Value = player * 2;
+            _x.Value = SpawnX(player);
         }
+
+        internal static float SpawnX(int player) => player <= 8 ? player * 2 : ((player - 1) % 5 + 1) * 2;
 
         public void SetMove(PocPlayerInput direction)
         {

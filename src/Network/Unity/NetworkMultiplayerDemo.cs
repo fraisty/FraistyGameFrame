@@ -160,9 +160,9 @@ namespace FRFrame.Network.Unity
         private void Connect()
         {
             if (!int.TryParse(_port, out var port) || port is < 1 or > 65535 ||
-                _identity.Length != 1 || _identity[0] is < 'A' or > 'H' || string.IsNullOrWhiteSpace(_host))
+                !BusinessWire.IsIdentity(_identity) || string.IsNullOrWhiteSpace(_host))
             {
-                Log("Enter a host, a port between 1 and 65535, and an identity from A to H.");
+                Log("Enter a host, a port between 1 and 65535, and a configured identity.");
                 return;
             }
             try
@@ -222,7 +222,7 @@ namespace FRFrame.Network.Unity
 
         private void UpdateView(PawnSample sample)
         {
-            if (Application.isBatchMode || sample.Player is < 1 or > 8 || sample.Room != (_lifecycle?.CurrentClient ?? _client).Room)
+            if (Application.isBatchMode || sample.Player <= 0 || sample.Room != (_lifecycle?.CurrentClient ?? _client).Room)
                 return;
             if (_viewRoom != sample.Room)
             {
@@ -266,8 +266,8 @@ namespace FRFrame.Network.Unity
                 _host = GUILayout.TextField(_host, 253);
                 GUILayout.Label("Port");
                 _port = GUILayout.TextField(_port, 5);
-                GUILayout.Label("Test identity (A–H)");
-                _identity = GUILayout.TextField(_identity, 1).ToUpperInvariant();
+                GUILayout.Label("Identity (default A–H)");
+                _identity = GUILayout.TextField(_identity, 32);
                 if (GUILayout.Button("Connect"))
                     Connect();
             }
@@ -329,7 +329,7 @@ namespace FRFrame.Network.Unity
                     if (counter && GUILayout.Button("Add 1")) AddCounter(client.Room);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
-                    _target = GUILayout.TextField(_target, 1, GUILayout.Width(24));
+                    _target = GUILayout.TextField(_target, 10, GUILayout.Width(80));
                     int.TryParse(_target, out var target);
                     if (GUILayout.Button("Leave")) client.LeaveRoom(client.Room);
                     if (GUILayout.Button("Kick")) client.Kick(client.Room, target);
