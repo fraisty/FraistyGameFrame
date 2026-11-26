@@ -13,25 +13,37 @@ namespace FRFrame.Network.Replication
 {
     public enum SliceStreamState { Idle, Pending, Ready, Failed, Closed }
 
-    internal delegate bool LesPacketValidator(ReadOnlySpan<byte> packet, int mtu);
+    /// <summary>Checks a manager packet before it is given to the LES decoder.</summary>
+    public delegate bool LesPacketValidator(ReadOnlySpan<byte> packet, int mtu);
 
-    internal sealed class ClientLesRegistration
+    /// <summary>Immutable local schema and pump callbacks for one LES room definition.</summary>
+    public sealed class ClientLesRegistration
     {
-        internal ClientLesRegistration(int version, Func<EntityTypesMap> types, LesPacketValidator baseline,
-            LesPacketValidator diff, Action<ClientEntityManager, int, sbyte, sbyte, Func<PawnSample, bool>> step)
+        /// <summary>
+        /// Registers a local type map and synchronous packet validators. An optional step borrows the ready
+        /// room manager to apply input, run its native Update and read the view. Without a step the client updates it.
+        /// </summary>
+        public ClientLesRegistration(string definitionId, int version, Func<EntityTypesMap> types,
+            LesPacketValidator baseline, LesPacketValidator diff, Action<ClientEntityManager, int>? step = null)
         {
+            if (!GameWire.IsDefinitionId(definitionId) || definitionId == SliceMessage.PlainRoom)
+                throw new ArgumentException("Invalid LES room definition.", nameof(definitionId));
+            if (version <= 0)
+                throw new ArgumentOutOfRangeException(nameof(version));
+            DefinitionId = definitionId;
             Version = version;
-            Types = types;
-            Baseline = baseline;
-            Diff = diff;
+            Types = types ?? throw new ArgumentNullException(nameof(types));
+            Baseline = baseline ?? throw new ArgumentNullException(nameof(baseline));
+            Diff = diff ?? throw new ArgumentNullException(nameof(diff));
             Step = step;
         }
 
-        internal int Version { get; }
+        public string DefinitionId { get; }
+        public int Version { get; }
         internal Func<EntityTypesMap> Types { get; }
         internal LesPacketValidator Baseline { get; }
         internal LesPacketValidator Diff { get; }
-        internal Action<ClientEntityManager, int, sbyte, sbyte, Func<PawnSample, bool>> Step { get; }
+        internal Action<ClientEntityManager, int>? Step { get; }
     }
 
     public readonly struct PawnSample
@@ -86,17 +98,10 @@ namespace FRFrame.Network.Replication
     /// <summary>Maintains one transport connection and pumps all negotiated managers on the caller's thread.</summary>
     public sealed class SliceClient : IDisposable
     {
-        private static readonly ClientLesRegistration Movement = new(SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes,
-            MovementLesClient.Baseline, MovementLesClient.Diff, MovementLesClient.Step);
-        private static readonly Dictionary<string, ClientLesRegistration> ReplicationRegistrations = new(StringComparer.Ordinal)
-        {
-            [SliceMessage.DefinitionId] = Movement,
-            [SliceMessage.SharedDefinitionId] = Movement
-        };
-
         private readonly ClientRuntime _runtime;
         private readonly LesStreamRoutes _routes = new();
         private readonly Dictionary<int, SliceClientRoom> _rooms = new();
+        private readonly Dictionary<string, ClientLesRegistration> _replicationRegistrations = new(StringComparer.Ordinal);
         private readonly string _host, _identity;
         private readonly int _port;
         private readonly Action<string> _log;
@@ -146,8 +151,20 @@ namespace FRFrame.Network.Replication
         public SliceClient(string host, int port, string identity, Action<string> log)
             : this(host, port, identity, log, () => new LiteNetDatagrams()) { }
 
+        /// <summary>Copies the explicit LES registrations before starting the connection. Unregistered rooms stay control-only.</summary>
+        public SliceClient(string host, int port, string identity, Action<string> log, IEnumerable<ClientLesRegistration> registrations)
+            : this(host, port, identity, log, () => new LiteNetDatagrams(),
+                registrations ?? throw new ArgumentNullException(nameof(registrations))) { }
+
         internal SliceClient(string host, int port, string identity, Action<string> log, Func<IClientTransport> createTransport)
+            : this(host, port, identity, log, createTransport, MovementLesClient.Registrations) { }
+
+        private SliceClient(string host, int port, string identity, Action<string> log, Func<IClientTransport> createTransport,
+            IEnumerable<ClientLesRegistration> registrations)
         {
+            foreach (var registration in registrations)
+                if (registration == null || !_replicationRegistrations.TryAdd(registration.DefinitionId, registration))
+                    throw new ArgumentException("Invalid or duplicate LES room definition.", nameof(registrations));
             _host = host;
             _port = port;
             _identity = identity;
@@ -171,7 +188,8 @@ namespace FRFrame.Network.Replication
         public uint Retry(uint requestId) => _runtime.Retry(requestId);
         public uint SendGameCommand(int room, uint id, ReadOnlySpan<byte> payload) => _runtime.SendGameCommand(room, id, payload);
 
-        internal SliceClient StartOnlineReplacement(int port) => new(_host, port == 0 ? _port : port, _identity, _log);
+        internal SliceClient StartOnlineReplacement(int port) =>
+            new(_host, port == 0 ? _port : port, _identity, _log, _replicationRegistrations.Values);
 
         public void SelectRoom(int room)
         {
@@ -196,16 +214,22 @@ namespace FRFrame.Network.Replication
         public uint SendText(int room, string text, uint requestId = 0) =>
             Send(OpCode.RoomMessage, new SliceMessage { Room = room, Text = text, RequestId = requestId });
 
-        public void Tick(float elapsedMilliseconds, sbyte x, sbyte y, Action<PawnSample> sample)
+        /// <summary>Pumps input, room-local LES managers and configured views, then flushes the same connection.</summary>
+        public void Tick(float elapsedMilliseconds) => Tick(elapsedMilliseconds, null);
+
+        public void Tick(float elapsedMilliseconds, sbyte x, sbyte y, Action<PawnSample> sample) =>
+            Tick(elapsedMilliseconds, (room, attempt) => MovementLesClient.Step(room.Manager!, room.Id,
+                room.Id == Room ? x : (sbyte)0, room.Id == Room ? y : (sbyte)0, pawn =>
+                {
+                    sample(pawn);
+                    return _runtime.Attempt == attempt;
+                }));
+
+        private void Tick(float elapsedMilliseconds, Action<SliceClientRoom, long>? movement)
         {
             _runtime.Tick(elapsedMilliseconds, () =>
             {
                 var attempt = _runtime.Attempt;
-                bool Sample(PawnSample pawn)
-                {
-                    sample(pawn);
-                    return _runtime.Attempt == attempt;
-                }
                 foreach (var room in _rooms.Values)
                 {
                     if (room.State == SliceStreamState.Pending && (room.Remaining -= elapsedMilliseconds) <= 0)
@@ -214,7 +238,12 @@ namespace FRFrame.Network.Replication
                         return;
                     if (room.State != SliceStreamState.Ready || room.Baselines == 0 || room.Manager == null)
                         continue;
-                    room.Replication!.Step(room.Manager, room.Id, room.Id == Room ? x : (sbyte)0, room.Id == Room ? y : (sbyte)0, Sample);
+                    if (movement != null && MovementLesClient.IsBuiltIn(room.Replication!))
+                        movement(room, attempt);
+                    else if (room.Replication!.Step is { } step)
+                        step(room.Manager, room.Id);
+                    else
+                        room.Manager.Update();
                     if (_runtime.Attempt != attempt)
                         return;
                 }
@@ -264,7 +293,8 @@ namespace FRFrame.Network.Replication
             if (_rooms.TryGetValue(id, out var room))
                 room.Snapshot = snapshot;
             else
-                _rooms.Add(id, new SliceClientRoom(snapshot, ReplicationRegistrations.TryGetValue(snapshot.Definition, out var schema) ? schema : null));
+                _rooms.Add(id, new SliceClientRoom(snapshot,
+                    _replicationRegistrations.TryGetValue(snapshot.Definition, out var schema) ? schema : null));
             if (Room == 0)
                 Room = id;
         }
@@ -463,6 +493,15 @@ namespace FRFrame.Network.Replication
 
     internal static class MovementLesClient
     {
+        internal static readonly ClientLesRegistration[] Registrations =
+        {
+            new(SliceMessage.DefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes, Baseline, Diff),
+            new(SliceMessage.SharedDefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes, Baseline, Diff)
+        };
+
+        internal static bool IsBuiltIn(ClientLesRegistration registration) =>
+            ReferenceEquals(registration, Registrations[0]) || ReferenceEquals(registration, Registrations[1]);
+
         internal static void Step(ClientEntityManager manager, int room, sbyte x, sbyte y, Func<PawnSample, bool> sample)
         {
             manager.GetPlayerController<PocPlayerController>()?.SetInput(x, y);
