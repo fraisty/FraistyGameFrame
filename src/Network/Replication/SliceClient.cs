@@ -84,6 +84,16 @@ namespace FRFrame.Network.Replication
         internal ClientEntityManager? Manager;
         internal ClientLesRegistration? Replication { get; }
         internal LesStreamRoutes.Route? Route;
+        internal (int Count, int Player) RpcPulse
+        {
+            get
+            {
+                if (Definition == DemoPulse.DefinitionId && Manager != null)
+                    foreach (var pulse in Manager.GetEntities<DemoPulse>())
+                        return (pulse.Count, pulse.LastPlayer);
+                return default;
+            }
+        }
         internal uint OpenRequest, ReadyRequest;
         internal float Remaining;
 
@@ -123,6 +133,7 @@ namespace FRFrame.Network.Replication
         public int Room { get; private set; }
         public bool Replaced => State == ClientConnectionState.Replaced;
         public IReadOnlyDictionary<int, SliceClientRoom> Rooms { get; }
+        internal ClientRuntime Runtime => _runtime;
         private SliceClientRoom? Selected => _rooms.TryGetValue(Room, out var room) ? room : null;
         public int Owner => Selected?.Owner ?? 0;
         public int[] Members => Selected?.Members ?? Array.Empty<int>();
@@ -504,9 +515,12 @@ namespace FRFrame.Network.Replication
             new(SliceMessage.DefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes, Baseline, Diff),
             new(SliceMessage.SharedDefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes, Baseline, Diff)
         };
+        private static readonly ClientLesRegistration DemoRpc =
+            new(DemoPulse.DefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateRpcTypes, Baseline, Diff);
+        internal static readonly ClientLesRegistration[] DemoRegistrations = { Registrations[0], Registrations[1], DemoRpc };
 
         internal static bool IsBuiltIn(ClientLesRegistration registration) =>
-            ReferenceEquals(registration, Registrations[0]) || ReferenceEquals(registration, Registrations[1]);
+            registration == DemoRpc || Array.IndexOf(Registrations, registration) >= 0;
 
         internal static void Step(ClientEntityManager manager, int room, sbyte x, sbyte y, Func<PawnSample, bool> sample)
         {

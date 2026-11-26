@@ -2,6 +2,8 @@
     "name": "FRFrame.Network.Unity",
     "rootNamespace": "FRFrame.Network.Unity",
     "references": [
+        "FRFrame.Core",
+        "UniTask",
         "FRFrame.Network.Client",
         "FRFrame.Network.Shared",
         "FRFrame.Network.Protocol",

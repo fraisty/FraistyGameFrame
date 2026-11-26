@@ -10,7 +10,7 @@ using UnityEngine.InputSystem;
 namespace FRFrame.Network.Unity
 {
     /// <summary>Reusable network scene for manual or scripted tests through the same client.</summary>
-    public sealed class NetworkMultiplayerDemo : MonoBehaviour
+    public sealed partial class NetworkMultiplayerDemo : MonoBehaviour
     {
         private static readonly Color[] PawnColors = { Color.cyan, new Color(1, 0.65f, 0.25f), new Color(0.83f, 0.60f, 1) };
         private readonly Dictionary<int, (GameObject Object, Material Material)> _views = new();
@@ -62,6 +62,12 @@ namespace FRFrame.Network.Unity
             }
 
             var arguments = Environment.GetCommandLineArgs();
+            var capability = Array.IndexOf(arguments, "-frNetworkF5");
+            if (capability >= 0 && capability + 3 < arguments.Length && int.TryParse(arguments[capability + 1], out var capabilityPort))
+            {
+                StartCapabilityCheck(capabilityPort, arguments[capability + 2], arguments[capability + 3]);
+                return;
+            }
             _observe = Array.IndexOf(arguments, "-frNetworkObserve") >= 0;
             _counterProbe = Array.IndexOf(arguments, "-frNetworkCounter") >= 0;
             if (Array.IndexOf(arguments, "-frNetworkLayoutCheck") >= 0)
@@ -142,7 +148,8 @@ namespace FRFrame.Network.Unity
                     x = (keyboard.dKey.isPressed ? 1 : 0) - (keyboard.aKey.isPressed ? 1 : 0);
                     y = (keyboard.wKey.isPressed ? 1 : 0) - (keyboard.sKey.isPressed ? 1 : 0);
                 }
-                _client.Tick(Time.unscaledDeltaTime * 1000, (sbyte)x, (sbyte)y, UpdateView);
+                _client.Tick(Time.unscaledDeltaTime * 1000, _capabilityCheck ? _scriptMove : (sbyte)x, _capabilityCheck ? (sbyte)0 : (sbyte)y, UpdateView);
+                UpdateCapabilityView();
             }
             _missingViews.Clear();
             foreach (var player in _views.Keys)
@@ -167,10 +174,12 @@ namespace FRFrame.Network.Unity
             }
             try
             {
-                _client = new SliceClient(_host, port, _identity, Log);
+                _client = new SliceClient(_host, port, _identity, Log, MovementLesClient.DemoRegistrations);
                 _client.Received += OnMessage;
                 _client.GameEventReceived += OnGameEvent;
                 _client.RequestFinished += OnRequestFinished;
+                _client.Runtime.BusinessPushReceived += OnProfilePush;
+                _client.Runtime.RoomInvitationReceived += OnRoomInvitation;
             }
             catch (InvalidOperationException error)
             {
@@ -194,7 +203,11 @@ namespace FRFrame.Network.Unity
                 }
             }
             else if (op == OpCode.RoomBroadcast)
+            {
+                if (_capabilityCheck && message.Text == "F5 plain chat" && message.Player == 809)
+                    _checkChatReceived = true;
                 Log($"POC-2 room={message.Room} from={message.Player} {message.Text}");
+            }
             else if (op == OpCode.MarkerChanged)
                 Log($"POC-2 marker={message.Marker} from={message.Player}");
             else if (op == OpCode.Members)
@@ -298,11 +311,13 @@ namespace FRFrame.Network.Unity
                 foreach (var entry in client.Rooms.Values)
                     if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {(entry.IsCurrent ? entry.State.ToString() : "stale")}"))
                         client.SelectRoom(entry.Id);
+                if (_counterView?.Snapshot is { } counterState)
+                    GUILayout.Label($"Counter {counterState.Value}/{counterState.Limit} · revision {counterState.Revision} · {(_counterView.IsCurrent ? "current" : "stale")}");
                 if (client.Room != 0 && client.Authenticated)
                 {
                     var definition = client.Rooms[client.Room].Definition;
                     var counter = definition == CounterProtocol.DefinitionId;
-                    var hasMovement = definition is SliceMessage.DefinitionId or SliceMessage.SharedDefinitionId;
+                    var hasMovement = definition is SliceMessage.DefinitionId or SliceMessage.SharedDefinitionId or DemoPulse.DefinitionId;
                     var members = "";
                     var roomMembers = client.Members;
                     for (var i = 0; i < roomMembers.Length; i++)
@@ -339,6 +354,8 @@ namespace FRFrame.Network.Unity
                     if (client.StreamState is SliceStreamState.Failed or SliceStreamState.Closed && GUILayout.Button("Open stream"))
                         client.OpenRoomStream(client.Room);
                 }
+                if (_lifecycle == null && client.Authenticated)
+                    DrawRoomCapabilities(client);
                 if (client.Authenticated)
                 {
                     if (_retryRequest != 0 && client.Session == _retrySession && GUILayout.Button($"Retry request {_retryRequest}"))
@@ -352,11 +369,13 @@ namespace FRFrame.Network.Unity
                     if (GUILayout.Button("Back to connection settings")) Disconnect();
                 }
             }
+            DrawHttpCapability();
             foreach (var message in _events)
                 GUILayout.Label(message);
             GUILayout.EndScrollView();
             GUILayout.EndArea();
-            _typing = GUI.GetNameOfFocusedControl() == "room message";
+            string focused = GUI.GetNameOfFocusedControl();
+            _typing = focused == "room message" || focused.StartsWith("f5-", StringComparison.Ordinal);
         }
 
         private void Log(string message)
@@ -374,12 +393,20 @@ namespace FRFrame.Network.Unity
             _lifecycle?.Dispose();
             if (_client != null)
             {
+                _counterView?.Dispose();
+                _counterView = null;
+                _client.Runtime.BusinessPushReceived -= OnProfilePush;
+                _client.Runtime.RoomInvitationReceived -= OnRoomInvitation;
                 _client.Received -= OnMessage;
                 _client.GameEventReceived -= OnGameEvent;
                 _client.RequestFinished -= OnRequestFinished;
                 _client.Dispose();
             }
             _client = null;
+            _directory = null;
+            _detail = null;
+            _invitation = default;
+            _profilePushes = 0;
             _smoke = null;
             _lifecycle = null;
             _reportedTimeout = false;
@@ -394,6 +421,7 @@ namespace FRFrame.Network.Unity
 
         private void OnRequestFinished(ClientRequestResult result)
         {
+            OnCapabilityResult(result);
             _requestStatus = $"Request {result.RequestId} · {result.Status} · {result.Error}";
             if (result.MayHaveExecuted || (result.Status == ClientRequestStatus.Response && result.Error == ErrorCode.Overloaded))
             {
@@ -417,6 +445,7 @@ namespace FRFrame.Network.Unity
         private void OnDestroy()
         {
             Disconnect();
+            _http.Destroy();
             Destroy(_floorMaterial);
         }
     }

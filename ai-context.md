@@ -787,6 +787,7 @@ Network/
       LiteEntitySystem.dll
       LiteEntitySystemAnalyzer.dll
       RefMagic.dll
+    AssemblyInfo.cs
     FRFrame.Network.Replication.asmdef
     LesStreamRoutes.cs
     NetworkProbeClient.cs
@@ -853,6 +854,8 @@ Network/
   Unity/
     FRFrame.Network.Unity.asmdef
     NetworkLocalProbe.cs
+    NetworkMultiplayerDemo.Capabilities.cs
+    NetworkMultiplayerDemo.Check.cs
     NetworkMultiplayerDemo.cs
     NetworkStartupDiagnostics.cs
 Tests/
@@ -102267,6 +102270,13 @@ Apache License
    limitations under the License.
 ````
 
+## File: Network/Replication/AssemblyInfo.cs
+````csharp
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("FRFrame.Network.Unity")]
+````
+
 ## File: Network/Replication/FRFrame.Network.Replication.asmdef
 ````
 {
@@ -102562,7 +102572,7 @@ using LiteEntitySystem;
 
 namespace FRFrame.Network.Replication
 {
-    internal enum MovementEntity : byte { Pawn, Controller }
+    internal enum MovementEntity : byte { Pawn, Controller, DemoPulse }
 
     // Both builds register these exact constructors in the same order.
     internal sealed class PocPlayerPawn : PawnLogic
@@ -102582,7 +102592,12 @@ namespace FRFrame.Network.Replication
 
         public PocPlayerPawn(EntityParams parameters) : base(parameters) { }
 
-        public static EntityTypesMap CreateTypes() => new EntityTypesMap<MovementEntity>()
+        public static EntityTypesMap CreateTypes() => MovementTypes();
+
+        public static EntityTypesMap CreateRpcTypes() => MovementTypes()
+            .Register(MovementEntity.DemoPulse, parameters => new DemoPulse(parameters));
+
+        private static EntityTypesMap<MovementEntity> MovementTypes() => new EntityTypesMap<MovementEntity>()
             .Register(MovementEntity.Pawn, parameters => new PocPlayerPawn(parameters))
             .Register(MovementEntity.Controller, parameters => new PocPlayerController(parameters));
 
@@ -102622,6 +102637,31 @@ namespace FRFrame.Network.Replication
             var step = 4 * EntityManager.DeltaTimeF;
             _x.Value = Math.Clamp(_x.Value + _moveX * step, -12, 12);
             _y.Value = Math.Clamp(_y.Value + _moveY * step, -8, 8);
+        }
+    }
+
+    /// <summary>Sample-only native LES RPC: announce the first authoritative movement of a pawn.</summary>
+    internal sealed class DemoPulse : EntityLogic
+    {
+        internal const string DefinitionId = "movement.rpc";
+        private static RemoteCall<int> _moved;
+        public int Count { get; private set; }
+        public int LastPlayer { get; private set; }
+
+        public DemoPulse(EntityParams parameters) : base(parameters) { }
+
+        protected override void RegisterRPC(ref RPCRegistrator registrator)
+        {
+            base.RegisterRPC(ref registrator);
+            registrator.CreateRPCAction(this, OnMoved, ref _moved, ExecuteFlags.SendToAll);
+        }
+
+        public void Announce(int player) => ExecuteRPC(_moved, player);
+
+        private void OnMoved(int player)
+        {
+            LastPlayer = player;
+            Count++;
         }
     }
 
@@ -102730,6 +102770,16 @@ namespace FRFrame.Network.Replication
         internal ClientEntityManager? Manager;
         internal ClientLesRegistration? Replication { get; }
         internal LesStreamRoutes.Route? Route;
+        internal (int Count, int Player) RpcPulse
+        {
+            get
+            {
+                if (Definition == DemoPulse.DefinitionId && Manager != null)
+                    foreach (var pulse in Manager.GetEntities<DemoPulse>())
+                        return (pulse.Count, pulse.LastPlayer);
+                return default;
+            }
+        }
         internal uint OpenRequest, ReadyRequest;
         internal float Remaining;
 
@@ -102769,6 +102819,7 @@ namespace FRFrame.Network.Replication
         public int Room { get; private set; }
         public bool Replaced => State == ClientConnectionState.Replaced;
         public IReadOnlyDictionary<int, SliceClientRoom> Rooms { get; }
+        internal ClientRuntime Runtime => _runtime;
         private SliceClientRoom? Selected => _rooms.TryGetValue(Room, out var room) ? room : null;
         public int Owner => Selected?.Owner ?? 0;
         public int[] Members => Selected?.Members ?? Array.Empty<int>();
@@ -103150,9 +103201,12 @@ namespace FRFrame.Network.Replication
             new(SliceMessage.DefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes, Baseline, Diff),
             new(SliceMessage.SharedDefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes, Baseline, Diff)
         };
+        private static readonly ClientLesRegistration DemoRpc =
+            new(DemoPulse.DefinitionId, SliceMessage.SchemaVersion, PocPlayerPawn.CreateRpcTypes, Baseline, Diff);
+        internal static readonly ClientLesRegistration[] DemoRegistrations = { Registrations[0], Registrations[1], DemoRpc };
 
         internal static bool IsBuiltIn(ClientLesRegistration registration) =>
-            ReferenceEquals(registration, Registrations[0]) || ReferenceEquals(registration, Registrations[1]);
+            registration == DemoRpc || Array.IndexOf(Registrations, registration) >= 0;
 
         internal static void Step(ClientEntityManager manager, int room, sbyte x, sbyte y, Func<PawnSample, bool> sample)
         {
@@ -116972,6 +117026,8 @@ namespace FRFrame.Network.Transport
     "name": "FRFrame.Network.Unity",
     "rootNamespace": "FRFrame.Network.Unity",
     "references": [
+        "FRFrame.Core",
+        "UniTask",
         "FRFrame.Network.Client",
         "FRFrame.Network.Shared",
         "FRFrame.Network.Protocol",
@@ -117050,6 +117106,477 @@ namespace FRFrame.Network.Unity
 }
 ````
 
+## File: Network/Unity/NetworkMultiplayerDemo.Capabilities.cs
+````csharp
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using Cysharp.Threading.Tasks;
+using FRFrame.Network.Client;
+using FRFrame.Network.Protocol;
+using FRFrame.Network.Replication;
+using FRFrame.Network.Shared;
+using UnityEngine;
+using UnityEngine.Scripting;
+
+namespace FRFrame.Network.Unity
+{
+    public sealed partial class NetworkMultiplayerDemo
+    {
+        private readonly Dictionary<uint, ClientRequestResult> _capabilityResults = new();
+        private readonly HttpManager _http = new();
+        private CounterRoomState _counterView;
+        private RoomDirectoryPage _directory;
+        private bool _listingInvitations;
+        private RoomInfo _detail;
+        private string _roomName = "Demo", _capacity = "3", _initial = "3", _limit = "17", _prefix = "";
+        private string _httpBase = "http://127.0.0.1:18952", _httpStatus = "";
+        private bool _hidden, _inviteOnly, _showCapabilities, _httpBusy;
+        private bool _capabilityCheck;
+        private sbyte _scriptMove;
+        private int _pulseRoom, _pulseCount, _profilePushes;
+        private (int Player, uint Count) _profileNotice;
+        private (int Room, int Owner, int RemainingMilliseconds) _invitation;
+
+        private uint GetProfile() => _client.Runtime.SendBusinessRequest(ProfileProtocol.RequestId, ProfileProtocol.EncodeRequest(1));
+
+        private void OnProfilePush(ClientBusinessPush push)
+        {
+            if (push.MessageId != ProfileProtocol.PushId || !ProfileProtocol.TryReadSnapshot(push.Payload, out var profile))
+                return;
+            _profilePushes++;
+            _profileNotice = profile;
+            Log($"Profile push P{profile.Player}: {profile.Count}");
+        }
+
+        private void OnRoomInvitation((int Room, int Owner, int RemainingMilliseconds) invitation)
+        {
+            _invitation = invitation;
+            Log($"Invite: room {invitation.Room} from P{invitation.Owner}");
+        }
+
+        private void OnCapabilityResult(ClientRequestResult result)
+        {
+            if (_capabilityCheck)
+                _capabilityResults[result.RequestId] = result;
+            if (result.RoomData is RoomDirectoryPage page)
+            {
+                _directory = page;
+                _listingInvitations = result.Operation == OpCode.ListInvitations;
+            }
+            if (result.RoomData is RoomInfo detail)
+                _detail = detail;
+            if (result.BusinessMessageId == ProfileProtocol.RequestId && ProfileProtocol.TryReadSnapshot(result.BusinessPayload, out var profile))
+                Log($"Profile result #{result.RequestId} P{profile.Player}: {profile.Count}");
+        }
+
+        private void UpdateCapabilityView()
+        {
+            _client.Rooms.TryGetValue(_client.Room, out var room);
+            if (room?.Definition == CounterProtocol.DefinitionId)
+            {
+                if (_counterView == null || _counterView.RoomId != room.Id)
+                {
+                    _counterView?.Dispose();
+                    _counterView = new CounterRoomState(_client.Runtime, room.Id);
+                }
+            }
+            else if (_counterView != null)
+            {
+                _counterView.Dispose();
+                _counterView = null;
+            }
+
+            var pulse = room?.RpcPulse ?? default;
+            if (_pulseRoom != _client.Room)
+                _pulseCount = 0;
+            _pulseRoom = _client.Room;
+            if (pulse.Count > _pulseCount)
+                Log($"LES native RPC received room={_pulseRoom} moved=P{pulse.Player} count={pulse.Count}");
+            _pulseCount = pulse.Count;
+        }
+
+        private void DrawRoomCapabilities(SliceClient client)
+        {
+            _showCapabilities = GUILayout.Toggle(_showCapabilities, "Room directory, invitations and sample games");
+            if (!_showCapabilities)
+                return;
+
+            var runtime = client.Runtime;
+            if (GUILayout.Button("Profile + directed push")) GetProfile();
+            if (GUILayout.Button("Native LES RPC room")) runtime.CreateRoom(DemoPulse.DefinitionId);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Name");
+            GUI.SetNextControlName("f5-name");
+            _roomName = GUILayout.TextField(_roomName, 32);
+            GUILayout.Label("Seats");
+            GUI.SetNextControlName("f5-seats");
+            _capacity = GUILayout.TextField(_capacity, 2, GUILayout.Width(35));
+            GUILayout.EndHorizontal();
+            _hidden = GUILayout.Toggle(_hidden, "Hidden");
+            _inviteOnly = GUILayout.Toggle(_inviteOnly, "Invite only");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Counter initial / limit");
+            GUI.SetNextControlName("f5-initial");
+            _initial = GUILayout.TextField(_initial, 3, GUILayout.Width(42));
+            GUI.SetNextControlName("f5-limit");
+            _limit = GUILayout.TextField(_limit, 3, GUILayout.Width(42));
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Create configured Counter")) ApplyRoomConfiguration(runtime, true);
+            if (client.Room != 0 && GUILayout.Button("Configure selected")) ApplyRoomConfiguration(runtime, false);
+            GUILayout.EndHorizontal();
+
+            if (runtime.Rooms.TryGetValue(client.Room, out var room) && room.IsCurrent)
+                GUILayout.Label($"Members: {room.Name} · {room.Members.Count}/{room.Capacity} · {room.Visibility} / {room.JoinPolicy}");
+            if (client.Rooms.TryGetValue(client.Room, out var view) && view.RpcPulse is { Count: > 0 } pulse)
+                GUILayout.Label($"Native RPC · P{pulse.Player} moved · {pulse.Count} announcements");
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Name prefix");
+            GUI.SetNextControlName("f5-prefix");
+            _prefix = GUILayout.TextField(_prefix, 32);
+            if (GUILayout.Button("List rooms")) runtime.ListRooms(namePrefix: _prefix);
+            if (GUILayout.Button("Invitations")) runtime.ListInvitations();
+            GUILayout.EndHorizontal();
+            if (_directory != null)
+            {
+                foreach (var item in _directory.Rooms)
+                    if (GUILayout.Button($"#{item.RoomId} {item.Name} ({item.Definition}) {item.MemberCount}/{item.Capacity}"))
+                        _room = item.RoomId.ToString();
+                if (_directory.HasMore && GUILayout.Button("Next page"))
+                {
+                    if (_listingInvitations) runtime.ListInvitations(_directory.NextAfterId);
+                    else runtime.ListRooms(_directory.NextAfterId, namePrefix: _prefix);
+                }
+            }
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Inspect room ID") && int.TryParse(_room, out int id)) runtime.GetRoomInfo(id);
+            if (GUILayout.Button("Invite target") && int.TryParse(_target, out int target)) runtime.InvitePlayer(client.Room, target);
+            if (GUILayout.Button("Revoke") && int.TryParse(_target, out int revoke)) runtime.RevokeInvitation(client.Room, revoke);
+            GUILayout.EndHorizontal();
+            if (_detail != null)
+                GUILayout.Label($"Query: #{_detail.Summary.RoomId} {_detail.Summary.Name}, owner P{_detail.Owner}, {_detail.Visibility}");
+            if (_invitation.Room > 0 && GUILayout.Button($"Use invite room #{_invitation.Room} from P{_invitation.Owner}"))
+                _room = _invitation.Room.ToString();
+        }
+
+        private void ApplyRoomConfiguration(ClientRuntime runtime, bool create)
+        {
+            if (!int.TryParse(_capacity, out int capacity) || capacity is < 1 or > 3 ||
+                (create && (!uint.TryParse(_initial, out _) || !uint.TryParse(_limit, out _))))
+            {
+                Log("Enter seats 1–3 and numeric Counter options.");
+                return;
+            }
+            try
+            {
+                var config = new RoomConfiguration(_roomName, capacity, _hidden ? RoomVisibility.Hidden : RoomVisibility.Discoverable,
+                    _inviteOnly ? RoomJoinPolicy.InviteOnly : RoomJoinPolicy.Open);
+                if (create) runtime.CreateRoom(CounterProtocol.DefinitionId, config, CounterProtocol.CreateOptions(uint.Parse(_initial), uint.Parse(_limit)));
+                else runtime.ConfigureRoom(_client.Room, config);
+            }
+            catch (ArgumentException error) { Log(error.Message); }
+        }
+
+        private void DrawHttpCapability()
+        {
+            GUILayout.BeginHorizontal();
+            GUI.SetNextControlName("f5-http");
+            _httpBase = GUILayout.TextField(_httpBase, 160);
+            if (!_httpBusy && GUILayout.Button("Check HTTP")) RunHttpButton().Forget();
+            GUILayout.EndHorizontal();
+            if (_httpStatus.Length != 0)
+                GUILayout.Label(_httpStatus);
+        }
+
+        private async UniTask RunHttpButton()
+        {
+            _httpBusy = true;
+            try { await CheckHttp(_httpBase, destroyCancellationToken); }
+            catch (Exception error) { _httpStatus = error.Message; }
+            finally { _httpBusy = false; }
+        }
+
+        [Preserve]
+        private sealed class FixturePayload
+        {
+            [Preserve] public int value = 0;
+            [Preserve] public FixturePayload() { }
+        }
+
+        private async UniTask CheckHttp(string url, CancellationToken cancellation)
+        {
+            url = url.TrimEnd('/');
+            await _http.InitializeAsync();
+            var json = await _http.GetJsonAsync<FixturePayload>(url + "/json", cancellationToken: cancellation);
+            var bytes = await _http.SendBytesAsync(FRFrame.HttpMethod.Post, url + "/bytes", new byte[] { 0, 42, 255 }, cancellationToken: cancellation);
+            var missing = await _http.GetBytesAsync(url + "/missing", cancellationToken: cancellation);
+            _httpStatus = $"HTTP JSON={json.StatusCode}/{json.ErrorKind}, bytes={bytes.StatusCode}/{bytes.ErrorKind}, missing={missing.StatusCode}/{missing.ErrorKind}";
+            if (!json.IsSuccess || json.Data?.value != 42 || !bytes.IsSuccess || bytes.Data.Length != 3 ||
+                bytes.Data[0] != 0 || bytes.Data[1] != 42 || bytes.Data[2] != 255 || missing.StatusCode != 404 || missing.ErrorKind != HttpErrorKind.HttpStatus)
+                throw new InvalidOperationException(_httpStatus);
+            Log($"F5 HTTP PASS JSON=42 bytes=00-2A-FF status=404 player={_identity}");
+        }
+    }
+}
+````
+
+## File: Network/Unity/NetworkMultiplayerDemo.Check.cs
+````csharp
+using System;
+using System.IO;
+using System.Linq;
+using Cysharp.Threading.Tasks;
+using FRFrame.Network.Client;
+using FRFrame.Network.Protocol;
+using FRFrame.Network.Replication;
+using FRFrame.Network.Shared;
+using UnityEngine;
+
+namespace FRFrame.Network.Unity
+{
+    public sealed partial class NetworkMultiplayerDemo
+    {
+        private bool _checkChatReceived;
+
+        // The files only coordinate three local test participants. All requests go through the normal client pump.
+        internal void StartCapabilityCheck(int port, string identity, string directory)
+        {
+            if (_client != null || identity is not ("amber" or "fern" or "oak"))
+                throw new InvalidOperationException("F5 requires a fresh demo and identity amber, fern or oak.");
+            _capabilityCheck = true;
+            _host = "127.0.0.1";
+            _port = port.ToString();
+            _identity = identity;
+            RunCapabilityCheck(directory).Forget();
+        }
+
+        private async UniTask RunCapabilityCheck(string directory)
+        {
+            string role = _identity;
+            bool owner = role == "amber";
+            bool returning = role == "fern";
+            var cancellation = destroyCancellationToken;
+            void Require(bool ok, string stage)
+            {
+                if (!ok) throw new InvalidOperationException($"{role}: {stage}");
+            }
+            async UniTask Wait(Func<bool> ready, string stage)
+            {
+                float deadline = Time.realtimeSinceStartup + 35f;
+                while (!ready())
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    Require(Time.realtimeSinceStartup < deadline, stage);
+                    await UniTask.Yield(PlayerLoopTiming.LastPostLateUpdate);
+                }
+            }
+            void Signal(string name, string contents = "ok")
+            {
+                string file = Path.Combine(directory, name);
+                File.WriteAllText(file + ".pending", contents);
+                File.Move(file + ".pending", file);
+            }
+            UniTask AwaitFile(string name) => Wait(() => File.Exists(Path.Combine(directory, name)), name);
+
+            int exit = 1;
+            try
+            {
+                Require(Directory.Exists(directory), "coordination directory missing");
+                Connect();
+                Require(_client != null, "could not connect");
+                var client = _client;
+                var runtime = client.Runtime;
+                async UniTask<ClientRequestResult> Reply(uint id, ErrorCode expected = ErrorCode.None)
+                {
+                    Require(id != 0, $"request rejected locally {client.LastSendError}");
+                    await Wait(() => _capabilityResults.ContainsKey(id), $"request #{id} did not finish");
+                    var result = _capabilityResults[id];
+                    _capabilityResults.Remove(id);
+                    Require(result.Status == ClientRequestStatus.Response && result.Error == expected,
+                        $"{result.Operation} #{id}: {result.Status}/{result.Error}, expected {expected}");
+                    return result;
+                }
+                async UniTask<int> Create(string definition, RoomConfiguration configuration, GameInitialization options = null)
+                {
+                    var before = runtime.Rooms.Keys.ToArray();
+                    await Reply(runtime.CreateRoom(definition, configuration, options));
+                    return runtime.Rooms.Keys.Single(id => !before.Contains(id));
+                }
+
+                await Wait(() => client.Authenticated, "login");
+                int player = owner ? 17 : returning ? 401 : 809;
+                Require(client.Player == player && runtime.Rooms.Count == 0, "configured identity and roomless session");
+                var profile = await Reply(GetProfile());
+                Require(profile.BusinessMessageId == ProfileProtocol.RequestId &&
+                    ProfileProtocol.TryReadSnapshot(profile.BusinessPayload, out var identity) && identity == (player, 1u), "typed roomless Profile");
+                await Wait(() => _profilePushes == 1, "directed Profile push");
+                Require(_profileNotice == (player, 1u), "Profile push belongs to authenticated recipient");
+                Log($"F5 PROFILE PASS identity={role} player={player} request={profile.RequestId} pushes=1");
+                await CheckHttp(_httpBase, cancellation);
+
+                int counter, plain, rpc;
+                if (owner)
+                {
+                    plain = await Create(SliceMessage.PlainRoom, new RoomConfiguration("F5 Plain"));
+                    rpc = await Create(DemoPulse.DefinitionId, new RoomConfiguration("F5 Native RPC"));
+                    counter = await Create(CounterProtocol.DefinitionId,
+                        new RoomConfiguration("F5 Counter", 3, RoomVisibility.Hidden, RoomJoinPolicy.InviteOnly),
+                        CounterProtocol.CreateOptions(3, 17));
+                    Signal("rooms", $"{plain}|{rpc}|{counter}");
+                    await AwaitFile("browse-fern");
+                    await AwaitFile("browse-oak");
+                    await Reply(runtime.InvitePlayer(counter, 401));
+                    await Reply(runtime.InvitePlayer(counter, 809));
+                    await AwaitFile("oak-saw-invite");
+                    await Reply(runtime.RevokeInvitation(counter, 809));
+                    Signal("oak-revoked");
+                }
+                else
+                {
+                    await AwaitFile("rooms");
+                    var rooms = File.ReadAllText(Path.Combine(directory, "rooms")).Split('|');
+                    plain = int.Parse(rooms[0]);
+                    rpc = int.Parse(rooms[1]);
+                    counter = int.Parse(rooms[2]);
+                    var first = (RoomDirectoryPage)(await Reply(runtime.ListRooms(namePrefix: "f5", pageSize: 1))).RoomData;
+                    Require(first.HasMore && first.Rooms.Single().RoomId == plain, "directory first page");
+                    var next = (RoomDirectoryPage)(await Reply(runtime.ListRooms(first.NextAfterId, namePrefix: "F5", pageSize: 1))).RoomData;
+                    Require(!next.HasMore && next.Rooms.Single().RoomId == rpc && runtime.Rooms.Count == 0, "directory second page excludes Hidden room");
+                    await Reply(runtime.GetRoomInfo(counter), ErrorCode.RoomUnavailable);
+                    Signal("browse-" + role);
+                    await Wait(() => _invitation.Room == counter && _invitation.Owner == 17, "directed invitation push");
+                    if (returning)
+                    {
+                        var list = (RoomDirectoryPage)(await Reply(runtime.ListInvitations())).RoomData;
+                        Require(list.Rooms.Single().RoomId == counter, "invitation list");
+                        var detail = (RoomInfo)(await Reply(runtime.GetRoomInfo(counter))).RoomData;
+                        Require(detail.Summary.Name == "F5 Counter" && detail.Visibility == RoomVisibility.Hidden, "invited room detail");
+                        await Reply(runtime.JoinRoom(counter));
+                        Require(((RoomDirectoryPage)(await Reply(runtime.ListInvitations())).RoomData).Rooms.Count == 0, "invite consumed on join");
+                    }
+                    else
+                    {
+                        Signal("oak-saw-invite");
+                        await AwaitFile("oak-revoked");
+                        await Reply(runtime.JoinRoom(counter), ErrorCode.Forbidden);
+                        Require(((RoomDirectoryPage)(await Reply(runtime.ListInvitations())).RoomData).Rooms.Count == 0, "revocation visible");
+                        await Reply(runtime.JoinRoom(plain));
+                    }
+                }
+                Log($"F5 ROOMS PASS role={role} plain={plain} rpc={rpc} counter={counter}");
+
+                if (owner || returning)
+                {
+                    client.SelectRoom(counter);
+                    await Wait(() => _counterView is { IsCurrent: true } && _counterView.Snapshot is { Value: 3, Limit: 17, Revision: 1 }, "Counter initial view");
+                    if (owner)
+                    {
+                        var original = await Reply(runtime.SendGameQuery(counter, CounterProtocol.GetState, ReadOnlySpan<byte>.Empty));
+                        await AwaitFile("counter-ready-fern");
+                        await Reply(runtime.ConfigureRoom(counter, new RoomConfiguration("F5 Revised", 2, RoomVisibility.Hidden, RoomJoinPolicy.InviteOnly)));
+                        await Wait(() => runtime.Rooms[counter].Name == "F5 Revised" && runtime.Rooms[counter].Capacity == 2, "new room configuration");
+                        Signal("configured");
+                        await AwaitFile("counter-disconnected");
+                        await Wait(() => runtime.Rooms[counter].OnlineMask == 1, "offline retained member");
+                        await Reply(runtime.SendGameCommand(counter, CounterProtocol.Add, CounterProtocol.EncodeAdd(4)));
+                        await Wait(() => _counterView.Snapshot is { Value: 7, Limit: 17, Revision: 2 }, "versioned Counter Add");
+                        var old = await Reply(client.Send(OpCode.GameQuery, new SliceMessage { Room = counter, RequestId = original.RequestId, GameMessageId = CounterProtocol.GetState }));
+                        Require(CounterProtocol.TryReadState(old.GameQueryPayload, out var previous) && previous.Revision == 1 &&
+                            _counterView.Snapshot is { Revision: 2 }, "historical query cannot roll back view");
+                        Signal("counter-changed");
+                    }
+                    else
+                    {
+                        Signal("counter-ready-fern");
+                        await AwaitFile("configured");
+                        await Wait(() => runtime.Rooms[counter].Name == "F5 Revised" && runtime.Rooms[counter].Capacity == 2, "member configuration updated");
+                        int session = client.Session;
+                        client.Disconnect();
+                        Signal("counter-disconnected");
+                        await AwaitFile("counter-changed");
+                        Require(!_counterView.IsCurrent && _counterView.Snapshot is { Revision: 1 }, "stale view while disconnected");
+                        Require(client.Reconnect(true), "explicit Counter Resume");
+                        await Wait(() => client.Authenticated && client.Session == session && _counterView is { IsCurrent: true } &&
+                            _counterView.Snapshot is { Value: 7, Limit: 17, Revision: 2 }, "new Current Members triggers Counter recovery");
+                        Signal("counter-restored");
+                    }
+                    Log($"F5 COUNTER PASS role={role} value=7 limit=17 revision=2");
+                }
+                await AwaitFile("counter-restored");
+
+                if (!owner) await Reply(runtime.JoinRoom(rpc));
+                client.SelectRoom(rpc);
+                await Wait(() => client.Ready && client.Baselines > 0 && client.Members.Length == 3, "three LES baselines");
+                Signal("les-ready-" + role);
+                if (owner)
+                {
+                    await AwaitFile("les-ready-fern");
+                    await AwaitFile("les-ready-oak");
+                    _scriptMove = 1;
+                }
+                await Wait(() => client.Diffs > 0 && client.Rooms[rpc].RpcPulse is { Count: > 0, Player: 17 }, "native RPC delivered to this replica");
+                _scriptMove = 0;
+                Log($"F5 RPC PASS role={role} player=17 baseline={client.Baselines} diffs={client.Diffs}");
+                Signal("rpc-" + role);
+
+                if (returning)
+                {
+                    int session = client.Session;
+                    uint originalStream = client.Rooms[rpc].StreamId;
+                    client.Disconnect();
+                    Signal("les-disconnected");
+                    await AwaitFile("resume-les");
+                    Require(client.Reconnect(true), "explicit LES Resume");
+                    await Wait(() => client.Authenticated && client.Session == session && client.Ready && client.Baselines > 0 &&
+                        client.Rooms[rpc].StreamId != originalStream, "resumed LES stream baseline");
+                    Signal("les-resumed");
+                    await Wait(() => client.Diffs > 0, "resumed native LES diff");
+                    await Reply(runtime.LeaveRoom(counter));
+                    Log($"F5 LES RESUME PASS role={role} session={session} stream={client.Rooms[rpc].StreamId}");
+                    Signal("les-diff");
+                }
+                else if (owner)
+                {
+                    await AwaitFile("rpc-oak");
+                    await AwaitFile("les-disconnected");
+                    await Wait(() => client.Rooms[rpc].OnlineMask != 7, "offline LES membership");
+                    Signal("resume-les");
+                    await AwaitFile("les-resumed");
+                    _scriptMove = -1;
+                    await AwaitFile("les-diff");
+                    _scriptMove = 0;
+                    await Wait(() => _checkChatReceived, "plain room shared chat");
+                    await Reply(runtime.Kick(rpc, 809));
+                    await Reply(runtime.TransferOwner(plain, 809));
+                    await Wait(() => !runtime.Rooms.ContainsKey(plain), "new owner closed plain room");
+                    Signal("finish");
+                }
+                else
+                {
+                    await Reply(runtime.SendRoomMessage(plain, "F5 plain chat"));
+                    await Wait(() => !runtime.Rooms.ContainsKey(rpc) && runtime.Rooms[plain].Owner == 809, "Kick and ownership transfer");
+                    await Reply(runtime.CloseRoom(plain));
+                }
+                await AwaitFile("finish");
+                Require(_profilePushes == 1, "no Profile push for either other player");
+                Disconnect();
+                Signal("pass-" + role);
+                Log($"F5 PASS role={role}");
+                exit = 0;
+            }
+            catch (Exception error)
+            {
+                Debug.LogError($"F5 FAIL role={role}: {error}");
+            }
+            if (!Application.isEditor)
+                Application.Quit(exit);
+        }
+    }
+}
+````
+
 ## File: Network/Unity/NetworkMultiplayerDemo.cs
 ````csharp
 using System;
@@ -117064,7 +117591,7 @@ using UnityEngine.InputSystem;
 namespace FRFrame.Network.Unity
 {
     /// <summary>Reusable network scene for manual or scripted tests through the same client.</summary>
-    public sealed class NetworkMultiplayerDemo : MonoBehaviour
+    public sealed partial class NetworkMultiplayerDemo : MonoBehaviour
     {
         private static readonly Color[] PawnColors = { Color.cyan, new Color(1, 0.65f, 0.25f), new Color(0.83f, 0.60f, 1) };
         private readonly Dictionary<int, (GameObject Object, Material Material)> _views = new();
@@ -117116,6 +117643,12 @@ namespace FRFrame.Network.Unity
             }
 
             var arguments = Environment.GetCommandLineArgs();
+            var capability = Array.IndexOf(arguments, "-frNetworkF5");
+            if (capability >= 0 && capability + 3 < arguments.Length && int.TryParse(arguments[capability + 1], out var capabilityPort))
+            {
+                StartCapabilityCheck(capabilityPort, arguments[capability + 2], arguments[capability + 3]);
+                return;
+            }
             _observe = Array.IndexOf(arguments, "-frNetworkObserve") >= 0;
             _counterProbe = Array.IndexOf(arguments, "-frNetworkCounter") >= 0;
             if (Array.IndexOf(arguments, "-frNetworkLayoutCheck") >= 0)
@@ -117196,7 +117729,8 @@ namespace FRFrame.Network.Unity
                     x = (keyboard.dKey.isPressed ? 1 : 0) - (keyboard.aKey.isPressed ? 1 : 0);
                     y = (keyboard.wKey.isPressed ? 1 : 0) - (keyboard.sKey.isPressed ? 1 : 0);
                 }
-                _client.Tick(Time.unscaledDeltaTime * 1000, (sbyte)x, (sbyte)y, UpdateView);
+                _client.Tick(Time.unscaledDeltaTime * 1000, _capabilityCheck ? _scriptMove : (sbyte)x, _capabilityCheck ? (sbyte)0 : (sbyte)y, UpdateView);
+                UpdateCapabilityView();
             }
             _missingViews.Clear();
             foreach (var player in _views.Keys)
@@ -117221,10 +117755,12 @@ namespace FRFrame.Network.Unity
             }
             try
             {
-                _client = new SliceClient(_host, port, _identity, Log);
+                _client = new SliceClient(_host, port, _identity, Log, MovementLesClient.DemoRegistrations);
                 _client.Received += OnMessage;
                 _client.GameEventReceived += OnGameEvent;
                 _client.RequestFinished += OnRequestFinished;
+                _client.Runtime.BusinessPushReceived += OnProfilePush;
+                _client.Runtime.RoomInvitationReceived += OnRoomInvitation;
             }
             catch (InvalidOperationException error)
             {
@@ -117248,7 +117784,11 @@ namespace FRFrame.Network.Unity
                 }
             }
             else if (op == OpCode.RoomBroadcast)
+            {
+                if (_capabilityCheck && message.Text == "F5 plain chat" && message.Player == 809)
+                    _checkChatReceived = true;
                 Log($"POC-2 room={message.Room} from={message.Player} {message.Text}");
+            }
             else if (op == OpCode.MarkerChanged)
                 Log($"POC-2 marker={message.Marker} from={message.Player}");
             else if (op == OpCode.Members)
@@ -117352,11 +117892,13 @@ namespace FRFrame.Network.Unity
                 foreach (var entry in client.Rooms.Values)
                     if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {(entry.IsCurrent ? entry.State.ToString() : "stale")}"))
                         client.SelectRoom(entry.Id);
+                if (_counterView?.Snapshot is { } counterState)
+                    GUILayout.Label($"Counter {counterState.Value}/{counterState.Limit} · revision {counterState.Revision} · {(_counterView.IsCurrent ? "current" : "stale")}");
                 if (client.Room != 0 && client.Authenticated)
                 {
                     var definition = client.Rooms[client.Room].Definition;
                     var counter = definition == CounterProtocol.DefinitionId;
-                    var hasMovement = definition is SliceMessage.DefinitionId or SliceMessage.SharedDefinitionId;
+                    var hasMovement = definition is SliceMessage.DefinitionId or SliceMessage.SharedDefinitionId or DemoPulse.DefinitionId;
                     var members = "";
                     var roomMembers = client.Members;
                     for (var i = 0; i < roomMembers.Length; i++)
@@ -117393,6 +117935,8 @@ namespace FRFrame.Network.Unity
                     if (client.StreamState is SliceStreamState.Failed or SliceStreamState.Closed && GUILayout.Button("Open stream"))
                         client.OpenRoomStream(client.Room);
                 }
+                if (_lifecycle == null && client.Authenticated)
+                    DrawRoomCapabilities(client);
                 if (client.Authenticated)
                 {
                     if (_retryRequest != 0 && client.Session == _retrySession && GUILayout.Button($"Retry request {_retryRequest}"))
@@ -117406,11 +117950,13 @@ namespace FRFrame.Network.Unity
                     if (GUILayout.Button("Back to connection settings")) Disconnect();
                 }
             }
+            DrawHttpCapability();
             foreach (var message in _events)
                 GUILayout.Label(message);
             GUILayout.EndScrollView();
             GUILayout.EndArea();
-            _typing = GUI.GetNameOfFocusedControl() == "room message";
+            string focused = GUI.GetNameOfFocusedControl();
+            _typing = focused == "room message" || focused.StartsWith("f5-", StringComparison.Ordinal);
         }
 
         private void Log(string message)
@@ -117428,12 +117974,20 @@ namespace FRFrame.Network.Unity
             _lifecycle?.Dispose();
             if (_client != null)
             {
+                _counterView?.Dispose();
+                _counterView = null;
+                _client.Runtime.BusinessPushReceived -= OnProfilePush;
+                _client.Runtime.RoomInvitationReceived -= OnRoomInvitation;
                 _client.Received -= OnMessage;
                 _client.GameEventReceived -= OnGameEvent;
                 _client.RequestFinished -= OnRequestFinished;
                 _client.Dispose();
             }
             _client = null;
+            _directory = null;
+            _detail = null;
+            _invitation = default;
+            _profilePushes = 0;
             _smoke = null;
             _lifecycle = null;
             _reportedTimeout = false;
@@ -117448,6 +118002,7 @@ namespace FRFrame.Network.Unity
 
         private void OnRequestFinished(ClientRequestResult result)
         {
+            OnCapabilityResult(result);
             _requestStatus = $"Request {result.RequestId} · {result.Status} · {result.Error}";
             if (result.MayHaveExecuted || (result.Status == ClientRequestStatus.Response && result.Error == ErrorCode.Overloaded))
             {
@@ -117471,6 +118026,7 @@ namespace FRFrame.Network.Unity
         private void OnDestroy()
         {
             Disconnect();
+            _http.Destroy();
             Destroy(_floorMaterial);
         }
     }

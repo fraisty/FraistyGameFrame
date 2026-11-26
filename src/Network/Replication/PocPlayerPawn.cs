@@ -3,7 +3,7 @@ using LiteEntitySystem;
 
 namespace FRFrame.Network.Replication
 {
-    internal enum MovementEntity : byte { Pawn, Controller }
+    internal enum MovementEntity : byte { Pawn, Controller, DemoPulse }
 
     // Both builds register these exact constructors in the same order.
     internal sealed class PocPlayerPawn : PawnLogic
@@ -23,7 +23,12 @@ namespace FRFrame.Network.Replication
 
         public PocPlayerPawn(EntityParams parameters) : base(parameters) { }
 
-        public static EntityTypesMap CreateTypes() => new EntityTypesMap<MovementEntity>()
+        public static EntityTypesMap CreateTypes() => MovementTypes();
+
+        public static EntityTypesMap CreateRpcTypes() => MovementTypes()
+            .Register(MovementEntity.DemoPulse, parameters => new DemoPulse(parameters));
+
+        private static EntityTypesMap<MovementEntity> MovementTypes() => new EntityTypesMap<MovementEntity>()
             .Register(MovementEntity.Pawn, parameters => new PocPlayerPawn(parameters))
             .Register(MovementEntity.Controller, parameters => new PocPlayerController(parameters));
 
@@ -63,6 +68,31 @@ namespace FRFrame.Network.Replication
             var step = 4 * EntityManager.DeltaTimeF;
             _x.Value = Math.Clamp(_x.Value + _moveX * step, -12, 12);
             _y.Value = Math.Clamp(_y.Value + _moveY * step, -8, 8);
+        }
+    }
+
+    /// <summary>Sample-only native LES RPC: announce the first authoritative movement of a pawn.</summary>
+    internal sealed class DemoPulse : EntityLogic
+    {
+        internal const string DefinitionId = "movement.rpc";
+        private static RemoteCall<int> _moved;
+        public int Count { get; private set; }
+        public int LastPlayer { get; private set; }
+
+        public DemoPulse(EntityParams parameters) : base(parameters) { }
+
+        protected override void RegisterRPC(ref RPCRegistrator registrator)
+        {
+            base.RegisterRPC(ref registrator);
+            registrator.CreateRPCAction(this, OnMoved, ref _moved, ExecuteFlags.SendToAll);
+        }
+
+        public void Announce(int player) => ExecuteRPC(_moved, player);
+
+        private void OnMoved(int player)
+        {
+            LastPlayer = player;
+            Count++;
         }
     }
 
