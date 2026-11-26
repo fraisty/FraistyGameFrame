@@ -2,7 +2,8 @@
     "name": "FRFrame.Network.Client",
     "rootNamespace": "FRFrame.Network.Client",
     "references": [
-        "FRFrame.Network.Shared"
+        "FRFrame.Network.Shared",
+        "FRFrame.Network.Protocol"
     ],
     "overrideReferences": true,
     "autoReferenced": false,

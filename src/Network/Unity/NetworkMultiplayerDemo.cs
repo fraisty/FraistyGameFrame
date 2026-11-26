@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using FRFrame.Network.Client;
 using FRFrame.Network.Replication;
 using FRFrame.Network.Shared;
 using UnityEngine;
@@ -34,6 +35,9 @@ namespace FRFrame.Network.Unity
         private int _viewRoom;
         private string _target = "2";
         private Vector2 _scroll;
+        private uint _retryRequest;
+        private int _retrySession;
+        private string _requestStatus = "";
 
         private void Start()
         {
@@ -161,6 +165,7 @@ namespace FRFrame.Network.Unity
             {
                 _client = new SliceClient(_host, port, _identity, Log);
                 _client.Received += OnMessage;
+                _client.RequestFinished += OnRequestFinished;
             }
             catch (InvalidOperationException error)
             {
@@ -245,8 +250,11 @@ namespace FRFrame.Network.Unity
             else
             {
                 GUILayout.Label(client.AuthenticationError != ErrorCode.None ? $"Authentication failed: {client.AuthenticationError}" :
-                    client.Replaced ? "Session replaced" : client.Disconnected ? "Disconnected" :
-                    client.Authenticated ? "Connected" : "Connecting…");
+                    client.ConnectionError != ErrorCode.None ? $"Connection failed: {client.ConnectionError}" : client.State.ToString());
+                if (_requestStatus.Length != 0)
+                    GUILayout.Label(_requestStatus);
+                if (client.LastSendError != ErrorCode.None)
+                    GUILayout.Label($"Request rejected locally: {client.LastSendError}");
                 if (client.Authenticated)
                     GUILayout.Label($"Player {client.Player} · Session {client.Session} · Epoch {client.Epoch} · Generation {client.ConnectionGeneration}");
                 if (client.Authenticated)
@@ -263,13 +271,14 @@ namespace FRFrame.Network.Unity
                     GUILayout.EndHorizontal();
                 }
                 foreach (var entry in client.Rooms.Values)
-                    if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {entry.State}"))
+                    if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {(entry.IsCurrent ? entry.State.ToString() : "stale")}"))
                         client.SelectRoom(entry.Id);
                 if (client.Room != 0 && client.Authenticated)
                 {
                     var members = "";
-                    for (var i = 0; i < client.Members.Length; i++)
-                        members += $"  P{client.Members[i]}:{((client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
+                    var roomMembers = client.Members;
+                    for (var i = 0; i < roomMembers.Length; i++)
+                        members += $"  P{roomMembers[i]}:{((client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
                     GUILayout.Label(members);
                     GUILayout.Label(client.StreamState switch
                     {
@@ -302,9 +311,11 @@ namespace FRFrame.Network.Unity
                 }
                 if (client.Authenticated)
                 {
+                    if (_retryRequest != 0 && client.Session == _retrySession && GUILayout.Button($"Retry request {_retryRequest}"))
+                        client.Retry(_retryRequest);
                     if (GUILayout.Button("Disconnect")) client.Disconnect();
                 }
-                else if (client.Session != 0 || client.AuthenticationError != ErrorCode.None)
+                else if (client.Disconnected)
                 {
                     if (client.CanRecover && GUILayout.Button("Recover session")) client.Reconnect(true);
                     if (GUILayout.Button("New login")) client.Reconnect(false);
@@ -331,14 +342,34 @@ namespace FRFrame.Network.Unity
             _observation?.Dispose();
             _observation = null;
             _lifecycle?.Dispose();
-            _client?.Dispose();
+            if (_client != null)
+            {
+                _client.Received -= OnMessage;
+                _client.RequestFinished -= OnRequestFinished;
+                _client.Dispose();
+            }
             _client = null;
             _smoke = null;
             _lifecycle = null;
             _reportedTimeout = false;
             _createOnLogin = false;
             _joinOnLogin = 0;
+            _requestStatus = "";
+            _retryRequest = 0;
+            _retrySession = 0;
             ClearViews();
+        }
+
+        private void OnRequestFinished(ClientRequestResult result)
+        {
+            _requestStatus = $"Request {result.RequestId} · {result.Status} · {result.Error}";
+            if (result.MayHaveExecuted || (result.Status == ClientRequestStatus.Response && result.Error == ErrorCode.Overloaded))
+            {
+                _retryRequest = result.RequestId;
+                _retrySession = _client.Session;
+            }
+            else if (_retryRequest == result.RequestId)
+                _retryRequest = 0;
         }
 
         private void ClearViews()

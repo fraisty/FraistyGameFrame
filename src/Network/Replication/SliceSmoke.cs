@@ -48,8 +48,9 @@ namespace FRFrame.Network.Replication
                 _sentControl = true;
                 var text = $"poc2-hello-{_client.Player}";
                 _message = _client.SendText(text);
-                _client.SendText(text, _message);
-                _client.SendText("different-payload", _message);
+                if (_message != 0 && _client.SendText("different-payload", _message) == 0 &&
+                    _client.LastSendError == ErrorCode.RequestIdConflict)
+                    _conflicts++;
                 if (_create)
                     _client.SetMarker(7);
             }
@@ -111,9 +112,11 @@ namespace FRFrame.Network.Replication
                 if (message.ReplyTo == OpCode.RoomMessage && message.RequestId == _message)
                 {
                     if (message.Error == ErrorCode.None)
+                    {
                         _replies++;
-                    else if (message.Error == ErrorCode.RequestIdConflict)
-                        _conflicts++;
+                        if (_replies == 1)
+                            _client.SendText($"poc2-hello-{_client.Player}", _message);
+                    }
                 }
             }
             else if (op == OpCode.RoomBroadcast && message.Player is >= 1 and <= 3 &&

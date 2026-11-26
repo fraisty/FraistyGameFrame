@@ -36,7 +36,7 @@ namespace FRFrame.Network.Transport
     public enum TransportCloseReason : byte { PeerDisconnected, LocalRequest, ReliableIngressOverflow, ReliableOutboundOverflow, AdmissionViolations, Stop }
 
     /// <summary>Single-owner LiteNetLib pump shared by the Unity client and .NET Host.</summary>
-    public sealed class LiteNetDatagrams : IPacketTransport, IDisposable
+    public sealed class LiteNetDatagrams : IClientTransport
     {
         public const byte ControlChannel = 0;
         public const byte DataChannel = 1;

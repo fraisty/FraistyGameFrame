@@ -62,4 +62,15 @@ namespace FRFrame.Network.Shared
         void Disconnect(TransportConnectionHandle connection);
         void RequestFlush();
     }
+
+    /// <summary>One client connection attempt. The caller owns polling, sending and disposal.</summary>
+    public interface IClientTransport : IPacketTransport, IDisposable
+    {
+        TransportConnectionHandle ClientConnection { get; }
+        bool Connect(string host, int port);
+        bool IsConnected(TransportConnectionHandle connection);
+        void PollIncoming(bool ready = true);
+        bool TryReceive(out ReceivedPacket packet);
+        void CompleteTick(float elapsedMilliseconds);
+    }
 }
