@@ -84,6 +84,12 @@ Core/
     FsmTaskController.cs
     FsmTypes.cs
     TaskState.cs
+  Http/
+    Runtime/
+      HttpManager.cs
+      HttpRequestOptions.cs
+      HttpResult.cs
+    HttpModule_Guide.md
   Log/
     AsyncFileFRLogHandler.cs
     CrashReportFRLogHandler.cs
@@ -8325,6 +8331,621 @@ namespace FRFrame
         Canceled = 4
     }
 }
+````
+
+## File: Core/Http/Runtime/HttpManager.cs
+````csharp
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+using Cysharp.Threading.Tasks;
+using Newtonsoft.Json;
+using UnityEngine.Networking;
+
+namespace FRFrame
+{
+    /// <summary>Unity 主线程上的轻量 HTTP 客户端。取消令牌可由任意线程触发。</summary>
+    public sealed class HttpManager : IManagerBase
+    {
+        private const string JsonContentType = "application/json; charset=utf-8";
+        private const string BytesContentType = "application/octet-stream";
+        private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
+        {
+            TypeNameHandling = TypeNameHandling.None,
+            CheckAdditionalContent = true
+        };
+
+        private readonly HashSet<ActiveRequest> _active = new HashSet<ActiveRequest>();
+        private bool _shutdown;
+
+        public override UniTask InitializeAsync() => UniTask.CompletedTask;
+
+        public override void Destroy()
+        {
+            _shutdown = true;
+            foreach (var active in _active)
+            {
+                if (!active.Operation.isDone)
+                    active.Abort(HttpErrorKind.ManagerShutdown);
+            }
+        }
+
+        public UniTask<HttpResult<T>> GetJsonAsync<T>(string url, HttpRequestOptions options = null,
+            CancellationToken cancellationToken = default) =>
+            SendJsonAsync<object, T>(HttpMethod.Get, url, null, options, cancellationToken);
+
+        public UniTask<HttpResult<TResponse>> PostJsonAsync<TRequest, TResponse>(string url, TRequest body,
+            HttpRequestOptions options = null, CancellationToken cancellationToken = default) =>
+            SendJsonAsync<TRequest, TResponse>(HttpMethod.Post, url, body, options, cancellationToken);
+
+        public UniTask<HttpResult<TResponse>> PutJsonAsync<TRequest, TResponse>(string url, TRequest body,
+            HttpRequestOptions options = null, CancellationToken cancellationToken = default) =>
+            SendJsonAsync<TRequest, TResponse>(HttpMethod.Put, url, body, options, cancellationToken);
+
+        public UniTask<HttpResult<T>> DeleteJsonAsync<T>(string url, HttpRequestOptions options = null,
+            CancellationToken cancellationToken = default) =>
+            SendJsonAsync<object, T>(HttpMethod.Delete, url, null, options, cancellationToken);
+
+        public UniTask<HttpResult<byte[]>> GetBytesAsync(string url, HttpRequestOptions options = null,
+            CancellationToken cancellationToken = default) =>
+            SendBytesAsync(HttpMethod.Get, url, options: options, cancellationToken: cancellationToken);
+
+        public UniTask<HttpResult<byte[]>> SendBytesAsync(HttpMethod method, string url, byte[] body = null,
+            string contentType = null, HttpRequestOptions options = null, CancellationToken cancellationToken = default)
+        {
+            var outcome = Prepare(method, url, body == null ? null : contentType ?? BytesContentType, null,
+                options, cancellationToken, out var request);
+            if (outcome.ErrorKind != HttpErrorKind.None)
+                return UniTask.FromResult(new HttpResult<byte[]>(outcome));
+            if (body != null && method != HttpMethod.Post && method != HttpMethod.Put)
+                return UniTask.FromResult(new HttpResult<byte[]>(new HttpOutcome(HttpErrorKind.InvalidRequest,
+                    "Only POST and PUT can send a request body.")));
+            if (body != null && body.Length > request.MaxRequestBytes)
+                return UniTask.FromResult(new HttpResult<byte[]>(RequestTooLarge()));
+
+            // UploadHandlerRaw copies the bytes into native memory before SendBufferedAsync first yields.
+            return SendBufferedAsync(request, body, cancellationToken);
+        }
+
+        /// <summary>流式下载到新文件。进度在主线程通知，1 表示最终文件已可用。</summary>
+        public async UniTask<HttpDownloadResult> DownloadFileAsync(string url, string destinationPath,
+            HttpRequestOptions options = null, Action<float> onProgress = null,
+            CancellationToken cancellationToken = default)
+        {
+            var outcome = Prepare(HttpMethod.Get, url, null, null, options, cancellationToken, out var settings);
+            if (outcome.ErrorKind != HttpErrorKind.None)
+                return new HttpDownloadResult(outcome);
+            if (string.IsNullOrWhiteSpace(destinationPath))
+                return new HttpDownloadResult(new HttpOutcome(HttpErrorKind.InvalidRequest, "A destination file is required."));
+
+            string tempPath = null;
+            float lastProgress = -1f;
+            void ReportProgress(float value)
+            {
+                if (onProgress == null || value <= lastProgress)
+                    return;
+                lastProgress = value;
+                try { onProgress(value); }
+                catch (Exception)
+                {
+                    onProgress = null;
+                    FRLog.Warning("HTTP file download progress callback failed and was disabled.");
+                }
+            }
+
+            try
+            {
+                destinationPath = Path.GetFullPath(destinationPath);
+                if (string.IsNullOrEmpty(Path.GetFileName(destinationPath)))
+                    return new HttpDownloadResult(new HttpOutcome(HttpErrorKind.InvalidRequest, "A destination file is required."));
+                if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
+                    return new HttpDownloadResult(new HttpOutcome(HttpErrorKind.DestinationExists, "The download destination already exists."));
+
+                string directory = Path.GetDirectoryName(destinationPath);
+                Directory.CreateDirectory(directory);
+                tempPath = Path.Combine(directory, $".frframe-{Guid.NewGuid():N}.part");
+
+                ulong bytesDownloaded;
+                using (var request = new UnityWebRequest(settings.Url, settings.Verb))
+                {
+                    request.downloadHandler = new DownloadHandlerFile(tempPath) { removeFileOnAbort = true };
+                    outcome = await SendAsync(request, settings, cancellationToken, onProgress == null ? null : ReportProgress);
+                    if (outcome.ErrorKind != HttpErrorKind.None)
+                        return new HttpDownloadResult(outcome);
+                    bytesDownloaded = request.downloadedBytes;
+                }
+
+                // The native handler must be closed before moving the file on Windows.
+                try { File.Move(tempPath, destinationPath); }
+                catch (IOException) when (File.Exists(destinationPath) || Directory.Exists(destinationPath))
+                {
+                    return new HttpDownloadResult(outcome.WithError(HttpErrorKind.DestinationExists, "The download destination already exists."));
+                }
+
+                tempPath = null;
+                ReportProgress(1f);
+                return new HttpDownloadResult(outcome, destinationPath, bytesDownloaded);
+            }
+            catch (Exception error) when (error is ArgumentException || error is NotSupportedException)
+            {
+                return new HttpDownloadResult(outcome.WithError(HttpErrorKind.InvalidRequest, "The download path is invalid."));
+            }
+            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+            {
+                return new HttpDownloadResult(outcome.WithError(HttpErrorKind.FileIO, "Unable to write or move the download file."));
+            }
+            finally
+            {
+                if (tempPath != null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+                    {
+                        FRLog.Warning("Unable to remove an HTTP download temporary file.");
+                    }
+                }
+            }
+        }
+
+        private async UniTask<HttpResult<TResponse>> SendJsonAsync<TRequest, TResponse>(HttpMethod method,
+            string url, TRequest body, HttpRequestOptions options, CancellationToken cancellationToken)
+        {
+            bool hasBody = method == HttpMethod.Post || method == HttpMethod.Put;
+            var outcome = Prepare(method, url, hasBody ? JsonContentType : null, "application/json", options,
+                cancellationToken, out var request);
+            if (outcome.ErrorKind != HttpErrorKind.None)
+                return new HttpResult<TResponse>(outcome);
+
+            byte[] payload = null;
+            if (hasBody)
+            {
+                try
+                {
+                    using var writer = new StringWriter(System.Globalization.CultureInfo.InvariantCulture);
+                    using var json = new JsonTextWriter(writer);
+                    JsonSerializer.Create(JsonSettings).Serialize(json, body);
+                    var serialized = writer.ToString();
+                    if (Encoding.UTF8.GetByteCount(serialized) > request.MaxRequestBytes)
+                        return new HttpResult<TResponse>(RequestTooLarge());
+                    payload = Encoding.UTF8.GetBytes(serialized);
+                }
+                catch (Exception)
+                {
+                    return new HttpResult<TResponse>(new HttpOutcome(HttpErrorKind.Serialization, "Unable to encode the JSON request."));
+                }
+            }
+
+            var bytes = await SendBufferedAsync(request, payload, cancellationToken);
+            outcome = new HttpOutcome(bytes.ErrorKind, bytes.ErrorMessage, bytes.StatusCode, bytes.ResponseHeaders);
+            if (!bytes.IsSuccess || bytes.Data.Length == 0)
+                return new HttpResult<TResponse>(outcome, errorBody: bytes.ErrorBody);
+
+            try
+            {
+                using var reader = new StreamReader(new MemoryStream(bytes.Data, writable: false), Encoding.UTF8);
+                using var json = new JsonTextReader(reader);
+                return new HttpResult<TResponse>(outcome, JsonSerializer.Create(JsonSettings).Deserialize<TResponse>(json));
+            }
+            catch (Exception)
+            {
+                return new HttpResult<TResponse>(outcome.WithError(HttpErrorKind.Serialization, "Unable to decode the JSON response."),
+                    errorBody: bytes.Data);
+            }
+        }
+
+        private async UniTask<HttpResult<byte[]>> SendBufferedAsync(RequestSettings settings, byte[] body,
+            CancellationToken cancellationToken)
+        {
+            using var request = new UnityWebRequest(settings.Url, settings.Verb);
+            var download = new DownloadHandlerBuffer();
+            request.downloadHandler = download;
+            if (body != null)
+                request.uploadHandler = new UploadHandlerRaw(body);
+
+            var outcome = await SendAsync(request, settings, cancellationToken);
+            if (outcome.ErrorKind != HttpErrorKind.None && outcome.ErrorKind != HttpErrorKind.HttpStatus)
+                return new HttpResult<byte[]>(outcome);
+
+            var data = download.nativeData;
+            if (outcome.ErrorKind == HttpErrorKind.HttpStatus)
+            {
+                int size = Math.Min(data.Length, settings.MaxResponseBytes);
+                var errorBody = size == 0 ? Array.Empty<byte>() : new byte[size];
+                for (int i = 0; i < size; i++)
+                    errorBody[i] = data[i];
+                return new HttpResult<byte[]>(outcome, errorBody: errorBody);
+            }
+            if (data.Length > settings.MaxResponseBytes)
+                return new HttpResult<byte[]>(outcome.WithError(HttpErrorKind.ResponseTooLarge, "The response exceeds the configured byte limit."));
+            return new HttpResult<byte[]>(outcome, data.Length == 0 ? Array.Empty<byte>() : data.ToArray());
+        }
+
+        private async UniTask<HttpOutcome> SendAsync(UnityWebRequest request, RequestSettings settings,
+            CancellationToken cancellationToken, Action<float> progress = null)
+        {
+            if (_shutdown)
+                return Stopped(HttpErrorKind.ManagerShutdown);
+            if (cancellationToken.IsCancellationRequested)
+                return Stopped(HttpErrorKind.Cancelled);
+
+            UnityWebRequestAsyncOperation operation;
+            try
+            {
+                foreach (var header in settings.Headers)
+                    request.SetRequestHeader(header.Key, header.Value);
+                operation = request.SendWebRequest();
+            }
+            catch (Exception error) when (error is ArgumentException || error is InvalidOperationException)
+            {
+                return new HttpOutcome(HttpErrorKind.InvalidRequest, "Unity rejected the request URL, headers, or platform HTTP settings.");
+            }
+
+            var active = new ActiveRequest(request, operation);
+            _active.Add(active);
+            long deadline = Stopwatch.GetTimestamp() + settings.TimeoutSeconds * Stopwatch.Frequency;
+            try
+            {
+                while (!operation.isDone)
+                {
+                    if (active.StopReason == HttpErrorKind.None)
+                    {
+                        if (cancellationToken.IsCancellationRequested)
+                            active.Abort(HttpErrorKind.Cancelled);
+                        else if (settings.TimeoutSeconds != 0 && Stopwatch.GetTimestamp() >= deadline)
+                            active.Abort(HttpErrorKind.Timeout);
+                        else if (progress != null)
+                            progress(Math.Clamp(request.downloadProgress, 0f, 0.99f));
+                    }
+                    await UniTask.Yield(PlayerLoopTiming.Update);
+                }
+
+                if (active.StopReason != HttpErrorKind.None)
+                    return Stopped(active.StopReason);
+
+                long status = Math.Max(0, request.responseCode);
+                var responseHeaders = request.GetResponseHeaders();
+                IReadOnlyDictionary<string, string> headers = null;
+                if (responseHeaders != null)
+                {
+                    var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var header in responseHeaders)
+                        snapshot[header.Key] = header.Value;
+                    headers = new ReadOnlyDictionary<string, string>(snapshot);
+                }
+
+                if (status > 0 && (status < 200 || status >= 300))
+                    return new HttpOutcome(HttpErrorKind.HttpStatus, "The HTTP server returned a non-success status.", status, headers);
+                if (request.result == UnityWebRequest.Result.ConnectionError || status <= 0)
+                    return new HttpOutcome(HttpErrorKind.Connection, "The HTTP connection failed.", status, headers);
+                if (request.result == UnityWebRequest.Result.DataProcessingError)
+                    return request.downloadHandler is DownloadHandlerFile
+                        ? new HttpOutcome(HttpErrorKind.FileIO, "Unable to write the response to the download file.", status, headers)
+                        : new HttpOutcome(HttpErrorKind.Connection, "Unable to receive the HTTP response.", status, headers);
+                return new HttpOutcome(HttpErrorKind.None, statusCode: status, headers: headers);
+            }
+            finally
+            {
+                _active.Remove(active);
+            }
+        }
+
+        private HttpOutcome Prepare(HttpMethod method, string url, string contentType, string accept,
+            HttpRequestOptions options, CancellationToken cancellationToken, out RequestSettings request)
+        {
+            request = default;
+            if (!PlayerLoopHelper.IsMainThread)
+                return new HttpOutcome(HttpErrorKind.InvalidRequest, "HTTP requests must start on the Unity main thread.");
+            if (_shutdown)
+                return Stopped(HttpErrorKind.ManagerShutdown);
+            if (cancellationToken.IsCancellationRequested)
+                return Stopped(HttpErrorKind.Cancelled);
+
+            string verb = method switch
+            {
+                HttpMethod.Get => UnityWebRequest.kHttpVerbGET,
+                HttpMethod.Post => UnityWebRequest.kHttpVerbPOST,
+                HttpMethod.Put => UnityWebRequest.kHttpVerbPUT,
+                HttpMethod.Delete => UnityWebRequest.kHttpVerbDELETE,
+                _ => null
+            };
+            if (verb == null || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                return new HttpOutcome(HttpErrorKind.InvalidRequest, "An absolute HTTP(S) URL and a supported method are required.");
+
+            options ??= new HttpRequestOptions();
+            int timeout = options.TimeoutSeconds;
+            int requestLimit = options.MaxRequestBytes;
+            int responseLimit = options.MaxResponseBytes;
+            if (timeout < 0 || timeout > 300 || requestLimit < 0 || requestLimit > HttpRequestOptions.InMemoryByteLimit ||
+                responseLimit < 0 || responseLimit > HttpRequestOptions.InMemoryByteLimit)
+                return new HttpOutcome(HttpErrorKind.InvalidRequest, "Timeout or byte limits are outside the supported range.");
+
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (options.Headers != null)
+            {
+                foreach (var header in options.Headers)
+                {
+                    if (!IsValidHeader(header.Key, header.Value))
+                        return new HttpOutcome(HttpErrorKind.InvalidRequest, "A request header is invalid or controlled by Unity.");
+                    headers[header.Key] = header.Value;
+                }
+            }
+            if (contentType != null && !headers.ContainsKey("Content-Type"))
+            {
+                if (!IsValidHeader("Content-Type", contentType))
+                    return new HttpOutcome(HttpErrorKind.InvalidRequest, "The request content type is invalid.");
+                headers.Add("Content-Type", contentType);
+            }
+            if (accept != null)
+                headers.TryAdd("Accept", accept);
+
+            request = new RequestSettings(uri, verb, headers, timeout, requestLimit, responseLimit);
+            return new HttpOutcome(HttpErrorKind.None);
+        }
+
+        private static bool IsValidHeader(string name, string value)
+        {
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(value))
+                return false;
+
+            const string punctuation = "!#$%&'*+-.^_`|~";
+            foreach (char c in name)
+            {
+                if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') &&
+                    punctuation.IndexOf(c) < 0)
+                    return false;
+            }
+            foreach (char c in value)
+            {
+                if ((c < ' ' && c != '\t') || c == '\u007f')
+                    return false;
+            }
+
+            return !name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase) &&
+                   !name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase) &&
+                   !name.Equals("Host", StringComparison.OrdinalIgnoreCase) &&
+                   !name.Equals("Accept-Encoding", StringComparison.OrdinalIgnoreCase) &&
+                   !name.Equals("X-Unity-Version", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static HttpOutcome RequestTooLarge() =>
+            new HttpOutcome(HttpErrorKind.InvalidRequest, "The request body exceeds the configured byte limit.");
+
+        private static HttpOutcome Stopped(HttpErrorKind reason) => new HttpOutcome(reason, reason switch
+        {
+            HttpErrorKind.ManagerShutdown => "The HTTP manager has shut down.",
+            HttpErrorKind.Timeout => "The HTTP request timed out.",
+            _ => "The HTTP request was cancelled."
+        });
+
+        private readonly struct RequestSettings
+        {
+            internal RequestSettings(Uri url, string verb, Dictionary<string, string> headers, int timeoutSeconds,
+                int maxRequestBytes, int maxResponseBytes)
+            {
+                Url = url;
+                Verb = verb;
+                Headers = headers;
+                TimeoutSeconds = timeoutSeconds;
+                MaxRequestBytes = maxRequestBytes;
+                MaxResponseBytes = maxResponseBytes;
+            }
+
+            internal Uri Url { get; }
+            internal string Verb { get; }
+            internal Dictionary<string, string> Headers { get; }
+            internal int TimeoutSeconds { get; }
+            internal int MaxRequestBytes { get; }
+            internal int MaxResponseBytes { get; }
+        }
+
+        private sealed class ActiveRequest
+        {
+            private readonly UnityWebRequest _request;
+
+            internal ActiveRequest(UnityWebRequest request, UnityWebRequestAsyncOperation operation)
+            {
+                _request = request;
+                Operation = operation;
+            }
+
+            internal UnityWebRequestAsyncOperation Operation { get; }
+            internal HttpErrorKind StopReason { get; private set; }
+
+            internal void Abort(HttpErrorKind reason)
+            {
+                if (StopReason != HttpErrorKind.None)
+                    return;
+                StopReason = reason;
+                _request.Abort();
+            }
+        }
+    }
+}
+````
+
+## File: Core/Http/Runtime/HttpRequestOptions.cs
+````csharp
+using System.Collections.Generic;
+
+namespace FRFrame
+{
+    /// <summary>HTTP 请求支持的方法。GET 和 DELETE 不发送请求体。</summary>
+    public enum HttpMethod
+    {
+        Get,
+        Post,
+        Put,
+        Delete
+    }
+
+    /// <summary>单次请求的设置。调用时读取快照，之后可为下一次请求修改。</summary>
+    public sealed class HttpRequestOptions
+    {
+        public const int InMemoryByteLimit = 4 * 1024 * 1024;
+
+        /// <summary>允许 0–300 秒。0 禁用超时。</summary>
+        public int TimeoutSeconds { get; set; } = 15;
+
+        public int MaxRequestBytes { get; set; } = InMemoryByteLimit;
+
+        /// <summary>接收后校验的内存响应上限，不适用于流式文件下载。</summary>
+        public int MaxResponseBytes { get; set; } = InMemoryByteLimit;
+
+        public IReadOnlyDictionary<string, string> Headers { get; set; }
+    }
+}
+````
+
+## File: Core/Http/Runtime/HttpResult.cs
+````csharp
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+
+namespace FRFrame
+{
+    public enum HttpErrorKind
+    {
+        None,
+        InvalidRequest,
+        HttpStatus,
+        Connection,
+        Timeout,
+        Cancelled,
+        ResponseTooLarge,
+        Serialization,
+        FileIO,
+        DestinationExists,
+        ManagerShutdown
+    }
+
+    /// <summary>JSON 或原始字节响应。ErrorBody 仅保留有界的 HTTP 错误或 JSON 解析失败响应。</summary>
+    public sealed class HttpResult<T>
+    {
+        private readonly HttpOutcome _outcome;
+
+        internal HttpResult(HttpOutcome outcome, T data = default, byte[] errorBody = null)
+        {
+            _outcome = outcome;
+            Data = data;
+            ErrorBody = errorBody ?? Array.Empty<byte>();
+        }
+
+        public bool IsSuccess => ErrorKind == HttpErrorKind.None;
+        public long StatusCode => _outcome.StatusCode;
+        public T Data { get; }
+        public HttpErrorKind ErrorKind => _outcome.ErrorKind;
+        public string ErrorMessage => _outcome.ErrorMessage;
+        public IReadOnlyDictionary<string, string> ResponseHeaders => _outcome.Headers;
+        public byte[] ErrorBody { get; }
+    }
+
+    /// <summary>文件下载结果。仅在最终文件落盘后提供 FilePath 和 BytesDownloaded。</summary>
+    public sealed class HttpDownloadResult
+    {
+        private readonly HttpOutcome _outcome;
+
+        internal HttpDownloadResult(HttpOutcome outcome, string filePath = null, ulong bytesDownloaded = 0)
+        {
+            _outcome = outcome;
+            FilePath = filePath;
+            BytesDownloaded = bytesDownloaded;
+        }
+
+        public bool IsSuccess => ErrorKind == HttpErrorKind.None;
+        public long StatusCode => _outcome.StatusCode;
+        public string FilePath { get; }
+        public ulong BytesDownloaded { get; }
+        public HttpErrorKind ErrorKind => _outcome.ErrorKind;
+        public string ErrorMessage => _outcome.ErrorMessage;
+        public IReadOnlyDictionary<string, string> ResponseHeaders => _outcome.Headers;
+    }
+
+    internal readonly struct HttpOutcome
+    {
+        private static readonly IReadOnlyDictionary<string, string> EmptyHeaders =
+            new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+
+        internal HttpOutcome(HttpErrorKind errorKind, string errorMessage = null, long statusCode = 0,
+            IReadOnlyDictionary<string, string> headers = null)
+        {
+            ErrorKind = errorKind;
+            ErrorMessage = errorMessage;
+            StatusCode = statusCode;
+            Headers = headers ?? EmptyHeaders;
+        }
+
+        internal HttpErrorKind ErrorKind { get; }
+        internal string ErrorMessage { get; }
+        internal long StatusCode { get; }
+        internal IReadOnlyDictionary<string, string> Headers { get; }
+
+        internal HttpOutcome WithError(HttpErrorKind errorKind, string message) =>
+            new HttpOutcome(errorKind, message, StatusCode, Headers);
+    }
+}
+````
+
+## File: Core/Http/HttpModule_Guide.md
+````markdown
+# FRFrame HTTP 使用指南
+
+引用 `FRFrame.Core`，在 Unity 主线程等待 `FRFM.WaitReady<HttpManager>()` 后，通过 `FRFM.Http` 发起请求。以下示例使用 F2 本机 fixture。
+
+```csharp
+using System.Threading;
+using Cysharp.Threading.Tasks;
+using FRFrame;
+using UnityEngine;
+
+public sealed class ExamplePayload
+{
+    public int value;
+}
+
+public static class HttpExample
+{
+    public static async UniTask RunAsync(string newFilePath, CancellationToken cancellationToken)
+    {
+        const string url = "http://127.0.0.1:18952";
+        await FRFM.WaitReady<HttpManager>();
+        var http = FRFM.Http;
+        var response = await http.GetJsonAsync<ExamplePayload>(url + "/json", cancellationToken: cancellationToken);
+        if (response.IsSuccess)
+            Debug.Log(response.Data.value);
+        else
+            Debug.LogWarning($"HTTP {response.StatusCode} ({response.ErrorKind})");
+
+        var missing = await http.GetBytesAsync(url + "/missing", cancellationToken: cancellationToken);
+        if (missing.ErrorKind == HttpErrorKind.HttpStatus)
+            Debug.Log($"HTTP {missing.StatusCode}, {missing.ErrorBody.Length} error bytes");
+
+        var file = await http.DownloadFileAsync(url + "/file", newFilePath,
+            onProgress: value => Debug.Log($"Download {value:P0}"), cancellationToken: cancellationToken);
+        if (file.IsSuccess)
+            Debug.Log($"Downloaded {file.BytesDownloaded} bytes");
+    }
+}
+```
+
+- JSON 提供 GET／POST／PUT／DELETE。`204` 和空响应成功时 `Data` 为 `default`。原始 bytes 使用 `GetBytesAsync` 或 `SendBytesAsync`。只有 POST／PUT 可发送请求体。
+- `HttpRequestOptions.Headers` 只作用于当前请求。JSON 默认 `Accept: application/json`，有请求体时默认 `Content-Type: application/json; charset=utf-8`。bytes 请求体默认 `application/octet-stream`。调用者可按请求覆盖这些 Header。Unity 管理 `Content-Length`、`Transfer-Encoding`、`Host`、`Accept-Encoding` 和 `X-Unity-Version`，传入这些 Header 会返回 `InvalidRequest`。
+- `TimeoutSeconds` 默认 15 秒，允许 0–300，0 表示禁用。`MaxRequestBytes` 与 `MaxResponseBytes` 默认 4 MiB，可降低到 0。响应在接收完成后检查。超限的 2xx 返回 `ResponseTooLarge`，非 2xx 保留 `HttpStatus` 与上限以内的错误体前缀。`ResponseHeaders` 按大小写不敏感的名称读取。JSON 解析失败时 `ErrorBody` 包含有界的原始响应，业务按需要处理其中的数据。
+- `CancellationTokenSource.Cancel()` 可以从任意线程调用。`Cancelled`、`Timeout` 和 `ManagerShutdown` 是独立结果。框架所有者在 Unity 主线程调用 `FRFM.Shutdown()`，停止旧实例接收新请求并终止在途请求。
+- `DownloadFileAsync` 将内容写入目标同目录的临时文件，成功后移动到新路径。可用 `Application.persistentDataPath` 构建目标路径。进度在主线程报告，达到 `1` 时最终文件已落盘。磁盘写入与提交失败时检查 `ErrorKind`，已有目标文件会返回 `DestinationExists`。
+- HTTP(S) 使用 Unity 的 TLS、重定向及平台 HTTP 策略。用于实际服务时使用适合目标平台的 HTTPS 地址。Unity Player 的设置和平台验收见 [F2 设计](../../../../Docs/FRFrameNetwork/Design/Network-Http-Client-Design.md)。
+
+## 在现有 Unity Editor 复核
+
+1. 从仓库根目录运行 `python Docs/FRFrameNetwork/Validation/F2HttpLoopback.py`，看到 `127.0.0.1:18952` 后保持它运行。
+2. 将 [F2 Editor 检查脚本](../../../../Docs/FRFrameNetwork/Validation/F2HttpEditorChecks.cs) 临时复制到 `Assets/FRFrame/Core/Http/F2HttpEditorChecks.cs`。编译完成后打开 `Assets/FRFrame/Network/Unity/NetworkMultiplayerDemo.unity`，进入 Play Mode。选择 `FRFrame > Validation > Run F2 HTTP Checks`，每次 Play 运行一次。最后一组检查会关闭 FRFrame，停在 Play Mode 内查看结果。
+3. Console 过滤 `[F2 HTTP]`，确认 `PASS all loopback checks`。检查 JSON 值、404／500 结果、取消和超时的区分、文件进度与覆盖保护，以及 Shutdown 后活动请求数为 0、临时文件已清理。进度回调抛错是有意触发的一次 Warning。
+4. 退出 Play Mode，删除步骤 2 复制的脚本和它的 `.meta`，用 `Ctrl+C` 关闭 fixture。结果范围与证据见 [Master Task](../../../../Docs/FRFrameNetwork/Tasks/Network-POC-Master-Task.md#836-f2-lightweight-http-client-实施交付2026-11-26)。
 ````
 
 ## File: Core/Log/AsyncFileFRLogHandler.cs
@@ -45844,6 +46465,7 @@ namespace FRFrame
     public static class FRFM
     {
         public static FRLogManager Log => ManagerCenter.Instance.GetModule<FRLogManager>();
+        public static HttpManager Http => ManagerCenter.Instance.GetModule<HttpManager>();
         public static EventManager Event => ManagerCenter.Instance.GetModule<EventManager>();
         public static PoolManager Pool => ManagerCenter.Instance.GetModule<PoolManager>();
         public static FsmManager Fsm => ManagerCenter.Instance.GetModule<FsmManager>();
@@ -45859,6 +46481,7 @@ namespace FRFrame
         public static void RegisterAllManagers()
         {
             ManagerCenter.Instance.Register(new FRLogManager());
+            ManagerCenter.Instance.Register(new HttpManager());
             ManagerCenter.Instance.Register(new EventManager());
             ManagerCenter.Instance.Register(new PoolManager());
             ManagerCenter.Instance.Register(new FsmManager());

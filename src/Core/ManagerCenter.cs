@@ -12,6 +12,7 @@ namespace FRFrame
     public static class FRFM
     {
         public static FRLogManager Log => ManagerCenter.Instance.GetModule<FRLogManager>();
+        public static HttpManager Http => ManagerCenter.Instance.GetModule<HttpManager>();
         public static EventManager Event => ManagerCenter.Instance.GetModule<EventManager>();
         public static PoolManager Pool => ManagerCenter.Instance.GetModule<PoolManager>();
         public static FsmManager Fsm => ManagerCenter.Instance.GetModule<FsmManager>();
@@ -27,6 +28,7 @@ namespace FRFrame
         public static void RegisterAllManagers()
         {
             ManagerCenter.Instance.Register(new FRLogManager());
+            ManagerCenter.Instance.Register(new HttpManager());
             ManagerCenter.Instance.Register(new EventManager());
             ManagerCenter.Instance.Register(new PoolManager());
             ManagerCenter.Instance.Register(new FsmManager());
