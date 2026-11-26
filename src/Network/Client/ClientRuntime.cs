@@ -12,6 +12,24 @@ namespace FRFrame.Network.Client
 {
     public enum ClientConnectionState { Idle, Connecting, Connected, Authenticating, Bound, Recoverable, Replaced, Disposed }
 
+    /// <summary>A server event for a current room. Observers only receive a read-only view of its owned payload.</summary>
+    public sealed class ClientGameEvent
+    {
+        private readonly byte[] _payload;
+        internal ClientGameEvent(int room, int player, uint id, byte[] payload)
+        {
+            Room = room;
+            Player = player;
+            Id = id;
+            _payload = payload;
+        }
+
+        public int Room { get; }
+        public int Player { get; }
+        public uint Id { get; }
+        public ReadOnlySpan<byte> Payload => _payload;
+    }
+
     /// <summary>The server binding is separate from the local transport attempt.</summary>
     public readonly struct ClientSession
     {
@@ -97,6 +115,7 @@ namespace FRFrame.Network.Client
         public event Action<ClientRequestResult>? RequestFinished;
         public event Action<int>? RoomChanged;
         public event Action<(int Room, int Player, string Text)>? RoomMessageReceived;
+        public event Action<ClientGameEvent>? GameEventReceived;
 
         internal IClientTransport Transport => _transport!;
         internal TransportConnectionHandle Handle => _handle;
@@ -116,6 +135,13 @@ namespace FRFrame.Network.Client
         public uint CloseRoom(int room) => SendCompatible(OpCode.CloseRoom, new SliceMessage { Room = room });
         public uint SendRoomMessage(int room, string text) =>
             SendCompatible(OpCode.RoomMessage, new SliceMessage { Room = room, Text = text });
+
+        public uint SendGameCommand(int room, uint id, ReadOnlySpan<byte> payload)
+        {
+            if (room <= 0 || id == 0 || payload.Length > GameWire.MaxBodyBytes)
+                return RejectSend(ErrorCode.Invalid);
+            return SendCompatible(OpCode.GameCommand, new SliceMessage { Room = room, GameMessageId = id, GamePayload = payload.ToArray() });
+        }
 
         /// <summary>Restarts a local wait for an uncertain or transient result, using the original bytes.</summary>
         public uint Retry(uint requestId) => SendIntent(_requests.Find(requestId), _clock(), false);
@@ -373,6 +399,10 @@ namespace FRFrame.Network.Client
                         return;
                     Notify(RoomMessageReceived, (message.Room, message.Player, message.Text));
                     break;
+                case OpCode.GameEvent:
+                    if (_rooms.TryGetValue(message.Room, out var gameRoom) && gameRoom.IsCurrent)
+                        Notify(GameEventReceived, new ClientGameEvent(message.Room, message.Player, message.GameMessageId, message.GamePayload));
+                    return;
                 default:
                     // The POC compatibility bridge consumes its own pushes for current rooms.
                     if (!_rooms.TryGetValue(message.Room, out var current) || !current.IsCurrent)
@@ -470,6 +500,7 @@ namespace FRFrame.Network.Client
             StateChanged = null;
             RoomChanged = null;
             RoomMessageReceived = null;
+            GameEventReceived = null;
             WireReceived = null;
             RawReceived = null;
         }

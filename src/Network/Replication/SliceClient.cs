@@ -13,6 +13,27 @@ namespace FRFrame.Network.Replication
 {
     public enum SliceStreamState { Idle, Pending, Ready, Failed, Closed }
 
+    internal delegate bool LesPacketValidator(ReadOnlySpan<byte> packet, int mtu);
+
+    internal sealed class ClientLesRegistration
+    {
+        internal ClientLesRegistration(int version, Func<EntityTypesMap> types, LesPacketValidator baseline,
+            LesPacketValidator diff, Action<ClientEntityManager, int, sbyte, sbyte, Func<PawnSample, bool>> step)
+        {
+            Version = version;
+            Types = types;
+            Baseline = baseline;
+            Diff = diff;
+            Step = step;
+        }
+
+        internal int Version { get; }
+        internal Func<EntityTypesMap> Types { get; }
+        internal LesPacketValidator Baseline { get; }
+        internal LesPacketValidator Diff { get; }
+        internal Action<ClientEntityManager, int, sbyte, sbyte, Func<PawnSample, bool>> Step { get; }
+    }
+
     public readonly struct PawnSample
     {
         public readonly int Room, Player, Entity;
@@ -49,20 +70,30 @@ namespace FRFrame.Network.Replication
         public uint Generation => Route?.Generation ?? 0;
         public int WireHeader => Route?.WireHeader ?? 0;
         internal ClientEntityManager? Manager;
+        internal ClientLesRegistration? Replication { get; }
         internal LesStreamRoutes.Route? Route;
         internal uint OpenRequest, ReadyRequest;
         internal float Remaining;
 
-        internal SliceClientRoom(ClientRoomSnapshot snapshot)
+        internal SliceClientRoom(ClientRoomSnapshot snapshot, ClientLesRegistration? replication)
         {
             Id = snapshot.Id;
             Snapshot = snapshot;
+            Replication = replication;
         }
     }
 
     /// <summary>Maintains one transport connection and pumps all negotiated managers on the caller's thread.</summary>
     public sealed class SliceClient : IDisposable
     {
+        private static readonly ClientLesRegistration Movement = new(SliceMessage.SchemaVersion, PocPlayerPawn.CreateTypes,
+            MovementLesClient.Baseline, MovementLesClient.Diff, MovementLesClient.Step);
+        private static readonly Dictionary<string, ClientLesRegistration> ReplicationRegistrations = new(StringComparer.Ordinal)
+        {
+            [SliceMessage.DefinitionId] = Movement,
+            [SliceMessage.SharedDefinitionId] = Movement
+        };
+
         private readonly ClientRuntime _runtime;
         private readonly LesStreamRoutes _routes = new();
         private readonly Dictionary<int, SliceClientRoom> _rooms = new();
@@ -98,6 +129,11 @@ namespace FRFrame.Network.Replication
         public int Baselines => Selected?.Baselines ?? 0;
         public int Diffs => Selected?.Diffs ?? 0;
         public event Action<OpCode, SliceMessage>? Received;
+        public event Action<ClientGameEvent>? GameEventReceived
+        {
+            add => _runtime.GameEventReceived += value;
+            remove => _runtime.GameEventReceived -= value;
+        }
         public event Action<ClientRequestResult>? RequestFinished
         {
             add => _runtime.RequestFinished += value;
@@ -133,6 +169,7 @@ namespace FRFrame.Network.Replication
 
         public bool Reconnect(bool recover) => recover ? _runtime.Resume(_host, _port) : _runtime.Login(_host, _port, _identity);
         public uint Retry(uint requestId) => _runtime.Retry(requestId);
+        public uint SendGameCommand(int room, uint id, ReadOnlySpan<byte> payload) => _runtime.SendGameCommand(room, id, payload);
 
         internal SliceClient StartOnlineReplacement(int port) => new(_host, port == 0 ? _port : port, _identity, _log);
 
@@ -164,6 +201,11 @@ namespace FRFrame.Network.Replication
             _runtime.Tick(elapsedMilliseconds, () =>
             {
                 var attempt = _runtime.Attempt;
+                bool Sample(PawnSample pawn)
+                {
+                    sample(pawn);
+                    return _runtime.Attempt == attempt;
+                }
                 foreach (var room in _rooms.Values)
                 {
                     if (room.State == SliceStreamState.Pending && (room.Remaining -= elapsedMilliseconds) <= 0)
@@ -172,14 +214,9 @@ namespace FRFrame.Network.Replication
                         return;
                     if (room.State != SliceStreamState.Ready || room.Baselines == 0 || room.Manager == null)
                         continue;
-                    room.Manager.GetPlayerController<PocPlayerController>()?.SetInput(room.Id == Room ? x : (sbyte)0, room.Id == Room ? y : (sbyte)0);
-                    room.Manager.Update();
-                    foreach (var pawn in room.Manager.GetEntities<PocPlayerPawn>())
-                    {
-                        sample(new PawnSample(room.Id, pawn.Player, pawn.Id, pawn.VisualX, pawn.VisualY, pawn.IsLocalControlled));
-                        if (_runtime.Attempt != attempt)
-                            return;
-                    }
+                    room.Replication!.Step(room.Manager, room.Id, room.Id == Room ? x : (sbyte)0, room.Id == Room ? y : (sbyte)0, Sample);
+                    if (_runtime.Attempt != attempt)
+                        return;
                 }
             });
         }
@@ -227,7 +264,7 @@ namespace FRFrame.Network.Replication
             if (_rooms.TryGetValue(id, out var room))
                 room.Snapshot = snapshot;
             else
-                _rooms.Add(id, new SliceClientRoom(snapshot));
+                _rooms.Add(id, new SliceClientRoom(snapshot, ReplicationRegistrations.TryGetValue(snapshot.Definition, out var schema) ? schema : null));
             if (Room == 0)
                 Room = id;
         }
@@ -276,7 +313,7 @@ namespace FRFrame.Network.Replication
                 if (message.Error != ErrorCode.None)
                     EndStream(current, SliceStreamState.Failed, message.Error, cancel: false);
                 else if (message.Text == current.Definition && message.Stream != 0 &&
-                         message.Schema == SliceMessage.SchemaVersion && message.Header is > 0 and <= byte.MaxValue)
+                         message.Schema == current.Replication!.Version && message.Header is > 0 and <= byte.MaxValue)
                     AcceptOffer(current, message);
                 else
                     EndStream(current, SliceStreamState.Failed, ErrorCode.SchemaMismatch, cancel: false);
@@ -307,7 +344,7 @@ namespace FRFrame.Network.Replication
 
         private void Open(SliceClientRoom room)
         {
-            if (room.Definition == SliceMessage.PlainRoom)
+            if (room.Replication == null)
                 return;
             room.State = SliceStreamState.Pending;
             room.Error = ErrorCode.None;
@@ -327,7 +364,7 @@ namespace FRFrame.Network.Replication
             }
             room.StreamId = offer.Stream;
             var peer = new LesProbePeer(_runtime.Transport, _runtime.Handle, room.Route);
-            room.Manager = new ClientEntityManager(PocPlayerPawn.CreateTypes(), peer, room.Route.ManagerHeader);
+            room.Manager = new ClientEntityManager(room.Replication!.Types(), peer, room.Route.ManagerHeader);
             if (room.Manager.ClassDataHash != offer.Hash)
             {
                 _log($"POC-2 rejected stream hash. server={offer.Hash} local={room.Manager.ClassDataHash}; {DescribeLayout()}");
@@ -356,12 +393,10 @@ namespace FRFrame.Network.Replication
             if (room?.Manager == null)
                 return;
 
-            if (received.Delivery == PacketDelivery.ReliableOrdered && packet.Length >= 17 && packet[1] == 3)
+            var schema = room.Replication!;
+            if (received.Delivery == PacketDelivery.ReliableOrdered)
             {
-                var originalLength = BinaryPrimitives.ReadInt32LittleEndian(packet.Slice(8));
-                var events = BinaryPrimitives.ReadInt32LittleEndian(packet.Slice(12));
-                if (packet[2] == 0 || packet[3] != 1 || packet[6] != 20 || originalLength is < 1 or > 4096 ||
-                    events < 0 || events > originalLength)
+                if (!schema.Baseline(packet, 0))
                     return;
                 if (room.State == SliceStreamState.Pending)
                 {
@@ -373,12 +408,7 @@ namespace FRFrame.Network.Replication
                 return;
             }
             if (room.Baselines == 0 || received.Delivery != PacketDelivery.Unreliable ||
-                packet.Length < 18 || packet[1] != 4 || packet[2] != 0)
-                return;
-            var bodyLength = packet.Length - 18;
-            var mtu = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(packet.Length - 12));
-            var eventBytes = BinaryPrimitives.ReadInt32LittleEndian(packet.Slice(packet.Length - 4));
-            if (mtu < 6 + bodyLength || mtu > _runtime.Transport.GetUnreliableLimit(_runtime.Handle) || eventBytes < 0 || eventBytes > bodyLength)
+                !schema.Diff(packet, _runtime.Transport.GetUnreliableLimit(_runtime.Handle)))
                 return;
             if (room.Manager.Deserialize(packet) == DeserializeResult.Done && ++room.Diffs == 1)
                 _log($"POC-2 diff Unreliable accepted room={room.Id}");
@@ -428,6 +458,37 @@ namespace FRFrame.Network.Replication
 
             if (request != null && Authenticated && _runtime.Attempt == attempt && _runtime.Binding.Equals(binding))
                 Send(OpCode.StreamCancel, request);
+        }
+    }
+
+    internal static class MovementLesClient
+    {
+        internal static void Step(ClientEntityManager manager, int room, sbyte x, sbyte y, Func<PawnSample, bool> sample)
+        {
+            manager.GetPlayerController<PocPlayerController>()?.SetInput(x, y);
+            manager.Update();
+            foreach (var pawn in manager.GetEntities<PocPlayerPawn>())
+                if (!sample(new PawnSample(room, pawn.Player, pawn.Id, pawn.VisualX, pawn.VisualY, pawn.IsLocalControlled)))
+                    return;
+        }
+
+        internal static bool Baseline(ReadOnlySpan<byte> packet, int _)
+        {
+            if (packet.Length < 17 || packet[1] != 3 || packet[2] == 0 || packet[3] != 1 || packet[6] != 20)
+                return false;
+            var originalLength = BinaryPrimitives.ReadInt32LittleEndian(packet.Slice(8));
+            var events = BinaryPrimitives.ReadInt32LittleEndian(packet.Slice(12));
+            return originalLength is >= 1 and <= 4096 && events >= 0 && events <= originalLength;
+        }
+
+        internal static bool Diff(ReadOnlySpan<byte> packet, int limit)
+        {
+            if (packet.Length < 18 || packet[1] != 4 || packet[2] != 0)
+                return false;
+            var bodyLength = packet.Length - 18;
+            var mtu = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(packet.Length - 12));
+            var eventBytes = BinaryPrimitives.ReadInt32LittleEndian(packet.Slice(packet.Length - 4));
+            return mtu >= 6 + bodyLength && mtu <= limit && eventBytes >= 0 && eventBytes <= bodyLength;
         }
     }
 

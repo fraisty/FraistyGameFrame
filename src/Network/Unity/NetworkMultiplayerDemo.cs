@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FRFrame.Network.Client;
+using FRFrame.Network.Protocol;
 using FRFrame.Network.Replication;
 using FRFrame.Network.Shared;
 using UnityEngine;
@@ -31,6 +32,8 @@ namespace FRFrame.Network.Unity
         private bool _typing;
         private bool _reportedTimeout;
         private bool _createOnLogin;
+        private bool _counterProbe;
+        private bool _counterProbeSent;
         private int _joinOnLogin;
         private int _viewRoom;
         private string _target = "2";
@@ -60,6 +63,7 @@ namespace FRFrame.Network.Unity
 
             var arguments = Environment.GetCommandLineArgs();
             _observe = Array.IndexOf(arguments, "-frNetworkObserve") >= 0;
+            _counterProbe = Array.IndexOf(arguments, "-frNetworkCounter") >= 0;
             if (Array.IndexOf(arguments, "-frNetworkLayoutCheck") >= 0)
             {
                 SliceLayoutCheck.Run(Debug.Log);
@@ -165,6 +169,7 @@ namespace FRFrame.Network.Unity
             {
                 _client = new SliceClient(_host, port, _identity, Log);
                 _client.Received += OnMessage;
+                _client.GameEventReceived += OnGameEvent;
                 _client.RequestFinished += OnRequestFinished;
             }
             catch (InvalidOperationException error)
@@ -181,7 +186,7 @@ namespace FRFrame.Network.Unity
                 if (message.ReplyTo == OpCode.Login && message.Error == ErrorCode.None)
                 {
                     if (_createOnLogin)
-                        _client.CreateRoom();
+                        _client.CreateRoom(_counterProbe ? CounterProtocol.DefinitionId : SliceMessage.DefinitionId);
                     else if (_joinOnLogin > 0)
                         _client.JoinRoom(_joinOnLogin);
                     _createOnLogin = false;
@@ -193,7 +198,26 @@ namespace FRFrame.Network.Unity
             else if (op == OpCode.MarkerChanged)
                 Log($"POC-2 marker={message.Marker} from={message.Player}");
             else if (op == OpCode.Members)
+            {
                 Log($"POC-2 members={string.Join(",", message.MemberIds)} online-mask={message.Online} owner={message.Player} room={message.Room}");
+                if (_counterProbe && !_counterProbeSent && message.Text == CounterProtocol.DefinitionId)
+                {
+                    _counterProbeSent = true;
+                    AddCounter(message.Room);
+                }
+            }
+        }
+
+        private void AddCounter(int room) => _client.SendGameCommand(room, CounterProtocol.Add, CounterProtocol.EncodeAdd(1));
+
+        private void OnGameEvent(ClientGameEvent message)
+        {
+            if (message.Id != CounterProtocol.Changed || !_client.Rooms.TryGetValue(message.Room, out var room) ||
+                room.Definition != CounterProtocol.DefinitionId || !CounterProtocol.TryReadChanged(message.Payload, out var value))
+                return;
+            Log($"Counter room {message.Room}: {value}");
+            if (_counterProbe && value == 1 && room.StreamId == 0 && room.Baselines == 0 && room.State == SliceStreamState.Idle)
+                Log($"P5 counter PASS room={message.Room} value={value} no LES stream");
         }
 
         private void UpdateView(PawnSample sample)
@@ -264,6 +288,7 @@ namespace FRFrame.Network.Unity
                     if (GUILayout.Button("Per-room")) client.CreateRoom();
                     if (GUILayout.Button("Chat room")) client.CreateRoom(SliceMessage.PlainRoom);
                     GUILayout.EndHorizontal();
+                    if (GUILayout.Button("Counter room")) client.CreateRoom(CounterProtocol.DefinitionId);
                     GUILayout.BeginHorizontal();
                     _room = GUILayout.TextField(_room, 6);
                     if (GUILayout.Button("Join room") && int.TryParse(_room, out var room))
@@ -275,12 +300,16 @@ namespace FRFrame.Network.Unity
                         client.SelectRoom(entry.Id);
                 if (client.Room != 0 && client.Authenticated)
                 {
+                    var definition = client.Rooms[client.Room].Definition;
+                    var counter = definition == CounterProtocol.DefinitionId;
+                    var hasMovement = definition is SliceMessage.DefinitionId or SliceMessage.SharedDefinitionId;
                     var members = "";
                     var roomMembers = client.Members;
                     for (var i = 0; i < roomMembers.Length; i++)
                         members += $"  P{roomMembers[i]}:{((client.OnlineMask & (1 << i)) != 0 ? "online" : "offline")}";
                     GUILayout.Label(members);
-                    GUILayout.Label(client.StreamState switch
+                    if (hasMovement)
+                        GUILayout.Label(client.StreamState switch
                     {
                         SliceStreamState.Ready => "LES ready. Click Move, then use WASD.",
                         SliceStreamState.Pending => "Negotiating LES stream…",
@@ -293,10 +322,11 @@ namespace FRFrame.Network.Unity
                         client.SendText(_message);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("Move"))
+                    if (hasMovement && GUILayout.Button("Move"))
                         GUI.FocusControl(null);
-                    if (GUILayout.Button($"Advance marker ({client.Marker})"))
+                    if (hasMovement && GUILayout.Button($"Advance marker ({client.Marker})"))
                         client.SetMarker((client.Marker + 1) % 10);
+                    if (counter && GUILayout.Button("Add 1")) AddCounter(client.Room);
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
                     _target = GUILayout.TextField(_target, 1, GUILayout.Width(24));
@@ -345,6 +375,7 @@ namespace FRFrame.Network.Unity
             if (_client != null)
             {
                 _client.Received -= OnMessage;
+                _client.GameEventReceived -= OnGameEvent;
                 _client.RequestFinished -= OnRequestFinished;
                 _client.Dispose();
             }
@@ -353,6 +384,7 @@ namespace FRFrame.Network.Unity
             _lifecycle = null;
             _reportedTimeout = false;
             _createOnLogin = false;
+            _counterProbeSent = false;
             _joinOnLogin = 0;
             _requestStatus = "";
             _retryRequest = 0;

@@ -26,6 +26,10 @@ namespace FRFrame.Network.Protocol
                 Capacity = message.Capacity, Epoch = message.Epoch, ConnectionGeneration = message.ConnectionGeneration,
                 Token = message.Token, Target = message.Target, DelayMs = message.DelayMs
             };
+            if (message.GameMessageId != 0)
+                wire.GameMessageId = message.GameMessageId;
+            if (message.GamePayload.Length != 0)
+                wire.GamePayload = ByteString.CopyFrom(message.GamePayload);
             wire.MemberIds.AddRange(message.MemberIds);
             return Envelope.Write(op, wire.ToByteArray(), new RequestId(message.RequestId));
         }
@@ -51,14 +55,20 @@ namespace FRFrame.Network.Protocol
                 return false;
             if (wire.MemberIds.Count > SliceMessage.MembershipCapacity || wire.Text.Length > 80 ||
                 Encoding.UTF8.GetByteCount(wire.Text) > MaxTextBytes ||
-                Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes)
+                Encoding.UTF8.GetByteCount(wire.Token) > MaxTicketBytes || wire.GamePayload.Length > GameWire.MaxBodyBytes)
             {
                 error = ErrorCode.PayloadTooLarge;
                 return false;
             }
             if (wire.Error > (uint)ErrorCode.InternalError ||
                 (wire.ReplyTo != 0 && (wire.ReplyTo > byte.MaxValue || !SliceMessage.IsClientRequest((OpCode)wire.ReplyTo))) ||
-                (header.Descriptor.Kind == MessageKind.Response && wire.ReplyTo == 0))
+                (header.Descriptor.Kind == MessageKind.Response && wire.ReplyTo == 0) ||
+                (header.Op is not (OpCode.GameCommand or OpCode.GameEvent) && (wire.HasGameMessageId || wire.HasGamePayload)) ||
+                (header.Op == OpCode.GameEvent && (wire.Room <= 0 || wire.Player <= 0 || wire.GameMessageId == 0 ||
+                    wire.Error != 0 || wire.ReplyTo != 0 || wire.Session != 0 || wire.Text.Length != 0 || wire.Stream != 0 ||
+                    wire.Generation != 0 || wire.Header != 0 || wire.Schema != 0 || wire.Hash != 0 || wire.Marker != 0 ||
+                    wire.MemberIds.Count != 0 || wire.Online != 0 || wire.Capacity != 0 || wire.Epoch != 0 ||
+                    wire.ConnectionGeneration != 0 || wire.Token.Length != 0 || wire.Target != 0 || wire.DelayMs != 0)))
             {
                 error = ErrorCode.MalformedMessage;
                 return false;
@@ -71,7 +81,8 @@ namespace FRFrame.Network.Protocol
                 Stream = wire.Stream, Generation = wire.Generation, Header = wire.Header, Schema = wire.Schema,
                 Hash = wire.Hash, Marker = wire.Marker, MemberIds = wire.MemberIds.ToArray(), Online = wire.Online,
                 Capacity = wire.Capacity, Epoch = wire.Epoch, ConnectionGeneration = wire.ConnectionGeneration,
-                Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs
+                Token = wire.Token, Target = wire.Target, DelayMs = wire.DelayMs,
+                GameMessageId = wire.GameMessageId, GamePayload = wire.GamePayload.IsEmpty ? Array.Empty<byte>() : wire.GamePayload.ToByteArray()
             };
             return true;
         }

@@ -27,4 +27,16 @@ message SliceWire {
   string token = 20;
   int32 target = 21;
   int32 delay_ms = 22;
+  optional uint32 game_message_id = 23;
+  optional bytes game_payload = 24;
+}
+
+message CounterAdd {
+  uint32 version = 1;
+  sint32 amount = 2;
+}
+
+message CounterChanged {
+  uint32 version = 1;
+  uint32 value = 2;
 }

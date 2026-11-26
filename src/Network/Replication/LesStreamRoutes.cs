@@ -93,13 +93,13 @@ namespace FRFrame.Network.Replication
 
         public override void TriggerSend() => transport.RequestFlush();
 
-        public override void SendReliableOrdered(ReadOnlySpan<byte> data) => Send(PacketDelivery.ReliableOrdered, data);
-        public override void SendUnreliable(ReadOnlySpan<byte> data) => Send(PacketDelivery.Unreliable, data);
+        public override void SendReliableOrdered(ReadOnlySpan<byte> data) => TrySend(PacketDelivery.ReliableOrdered, data);
+        public override void SendUnreliable(ReadOnlySpan<byte> data) => TrySend(PacketDelivery.Unreliable, data);
 
-        private void Send(PacketDelivery delivery, ReadOnlySpan<byte> data)
+        internal bool TrySend(PacketDelivery delivery, ReadOnlySpan<byte> data)
         {
             if (!route.Active)
-                return;
+                return false;
 
             if (data.Length >= 2 && data[0] == route.ManagerHeader && data.Length <= GetMaxUnreliablePacketSize())
             {
@@ -108,11 +108,12 @@ namespace FRFrame.Network.Replication
                 BinaryPrimitives.WriteUInt32LittleEndian(wire.Slice(1), route.Generation);
                 data.Slice(1).CopyTo(wire.Slice(1 + LesStreamRoutes.WireOverhead));
                 if (transport.TrySend(connection, delivery, wire))
-                    return;
+                    return true;
             }
 
             if (delivery == PacketDelivery.ReliableOrdered)
                 transport.Disconnect(connection);
+            return false;
         }
     }
 }

@@ -69,6 +69,8 @@ namespace FRFrame.Network.Shared
         public string Token = string.Empty;
         public int Target;
         public int DelayMs;
+        public uint GameMessageId;
+        public byte[] GamePayload = Array.Empty<byte>();
 
         public static bool IsClientRequest(OpCode op) =>
             ProtocolMessages.TryGet(op, out var descriptor) && descriptor.Kind == MessageKind.Request;
@@ -85,17 +87,19 @@ namespace FRFrame.Network.Shared
             (op == OpCode.Kick || op == OpCode.TransferOwner || op == OpCode.LeaveRoom || Target == 0) &&
             (op == OpCode.SetMarker || DelayMs == 0) &&
             (op == OpCode.SetMarker || Marker == 0) &&
+            (op == OpCode.GameCommand || (GameMessageId == 0 && GamePayload.Length == 0)) &&
             (op switch
             {
                 OpCode.Login => Room == 0 && Text.Length == 1 && Text[0] >= 'A' && Text[0] <= 'H',
                 OpCode.Recover => Room == 0 && Text.Length == 0 && Token.Length == 44,
-                OpCode.CreateRoom => Room == 0 && IsDefinition(Text),
+                OpCode.CreateRoom => Room == 0 && GameWire.IsDefinitionId(Text),
                 OpCode.JoinRoom => Room > 0 && Text.Length == 0,
                 OpCode.StreamOpen => Room > 0 && Text.Length == 0,
                 OpCode.RoomMessage => Room > 0 && !string.IsNullOrWhiteSpace(Text) && Text.Length <= 80,
                 OpCode.SetMarker => Room > 0 && Text.Length == 0 && Marker >= 0 && Marker <= 9 &&
                     DelayMs >= 0 && DelayMs <= 12_000,
-                OpCode.StreamReady => Room > 0 && IsDefinition(Text) && Stream != 0 && Generation != 0,
+                OpCode.StreamReady => Room > 0 && GameWire.IsDefinitionId(Text) && Stream != 0 && Generation != 0,
+                OpCode.GameCommand => Room > 0 && Text.Length == 0 && GameMessageId != 0 && GamePayload.Length <= GameWire.MaxBodyBytes,
                 OpCode.StreamCancel => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
                 OpCode.StreamConfirm => Room > 0 && Text.Length == 0 && Stream != 0 && Generation != 0,
                 OpCode.LeaveRoom => Room > 0 && Text.Length == 0 && Target >= 0 && Target <= 8,
@@ -105,7 +109,21 @@ namespace FRFrame.Network.Shared
                 _ => false
             });
 
-        private static bool IsDefinition(string text) =>
-            text == DefinitionId || text == SharedDefinitionId || text == PlainRoom;
+    }
+
+    /// <summary>Bounds and identifiers shared by game registrations and the compatible protocol.</summary>
+    public static class GameWire
+    {
+        public const int MaxBodyBytes = 192;
+
+        public static bool IsDefinitionId(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length > 48)
+                return false;
+            foreach (var c in text)
+                if (c is not (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '.' or '_' or '-'))
+                    return false;
+            return true;
+        }
     }
 }
