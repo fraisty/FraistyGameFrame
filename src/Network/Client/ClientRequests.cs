@@ -7,7 +7,7 @@ namespace FRFrame.Network.Client
 {
     public enum ClientRequestStatus { Response, TimedOut, Cancelled, Disconnected, SendFailed, Replaced }
 
-    /// <summary>A single wait attempt. A lost or cancelled wait may already have executed on the server.</summary>
+    /// <summary>A single wait attempt. A lost wait or failed business callback may have applied changes on the server.</summary>
     public readonly struct ClientRequestResult
     {
         internal ClientRequestResult(uint id, long attempt, ClientRequestStatus status, ErrorCode error, bool uncertain,
@@ -89,8 +89,10 @@ namespace FRFrame.Network.Client
             _pending--;
             if (status == ClientRequestStatus.Response && error != ErrorCode.Overloaded)
                 intent.Final = true;
+            var uncertain = intent.Sent && (status != ClientRequestStatus.Response ||
+                (intent.Op == OpCode.BusinessRequest && error is ErrorCode.InternalError or ErrorCode.CallbackTimeout or ErrorCode.Cancelled));
             return new ClientRequestResult(intent.Id, intent.Attempt, status, error,
-                intent.Sent && status != ClientRequestStatus.Response, businessMessageId, businessPayload);
+                uncertain, businessMessageId, businessPayload);
         }
 
         public void ForgetUnsent(Intent intent)
