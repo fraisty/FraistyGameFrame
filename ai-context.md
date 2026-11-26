@@ -790,6 +790,7 @@ Network/
     FRFrame.Network.Shared.asmdef
     PacketTransport.cs
     ProtocolVersion.cs
+    RequestReplayWindow.cs
     SliceMessage.cs
   Transport/
     LiteNetLib/
@@ -93525,7 +93526,6 @@ namespace FRFrame.Network.Client
     internal sealed class ClientRequests
     {
         internal const int EntryLimit = 64, PendingLimit = 16, ByteLimit = EntryLimit * Envelope.MaxPacket;
-        internal const int RetryMilliseconds = 60_000;
 
         internal sealed class Intent
         {
@@ -93556,7 +93556,7 @@ namespace FRFrame.Network.Client
         {
             if (Next == 0 || _intents.Count >= EntryLimit || _bytes + bytes.Length > ByteLimit || !HasWaitSlot)
                 return null;
-            var intent = new Intent(++_last, op, bytes, now + RetryMilliseconds);
+            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds);
             _intents.Add(intent.Id, intent);
             _bytes += bytes.Length;
             return intent;
@@ -96822,13 +96822,16 @@ namespace FRFrame.Network.Replication
             LiteEntitySystem.Logger.LoggerImpl = new SliceLesLog(info, warning, error);
 
         public SliceClient(string host, int port, string identity, Action<string> log)
+            : this(host, port, identity, log, () => new LiteNetDatagrams()) { }
+
+        internal SliceClient(string host, int port, string identity, Action<string> log, Func<IClientTransport> createTransport)
         {
             _host = host;
             _port = port;
             _identity = identity;
             _log = log;
             Rooms = new ReadOnlyDictionary<int, SliceClientRoom>(_rooms);
-            _runtime = new ClientRuntime(() => new LiteNetDatagrams(), log);
+            _runtime = new ClientRuntime(createTransport, log);
             _runtime.StateChanged += OnStateChanged;
             _runtime.RoomChanged += OnRoomChanged;
             _runtime.WireReceived += ReadControl;
@@ -97114,23 +97117,31 @@ namespace FRFrame.Network.Replication
 
         private void EndStream(SliceClientRoom room, SliceStreamState state, ErrorCode reason, bool cancel)
         {
-            if (room.Route != null)
-            {
-                if (cancel)
-                    Send(OpCode.StreamCancel, new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = room.Generation });
-                _routes.Close(room.Route);
-            }
+            var route = room.Route;
+            var manager = room.Manager;
+            var attempt = _runtime.Attempt;
+            var binding = _runtime.Binding;
+            var request = cancel && route != null
+                ? new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = route.Generation }
+                : null;
+
+            // Sending can synchronously disconnect and reenter cleanup. Revoke ownership first.
             room.Route = null;
             room.EarlyBaseline = null;
-            var manager = room.Manager;
             room.Manager = null;
             room.StreamId = room.OpenRequest = room.ReadyRequest = 0;
             room.Baselines = room.Diffs = 0;
+            room.Remaining = 0;
             room.State = state;
             room.Error = reason;
+            if (route != null)
+                _routes.Close(route);
             manager?.Reset();
             if (reason != ErrorCode.None)
                 _log($"POC-2 stream {state} reason={reason} room={room.Id}");
+
+            if (request != null && Authenticated && _runtime.Attempt == attempt && _runtime.Binding.Equals(binding))
+                Send(OpCode.StreamCancel, request);
         }
     }
 
@@ -98025,6 +98036,21 @@ namespace FRFrame.Network.Shared
 
         /// <summary>Gets the protocol revision implemented by this build.</summary>
         public static ProtocolVersion Current => new ProtocolVersion(2);
+    }
+}
+````
+
+## File: Network/Shared/RequestReplayWindow.cs
+````csharp
+namespace FRFrame.Network.Shared
+{
+    /// <summary>Local configuration contract for the multiplayer Host and client. It is independent of the wire format.</summary>
+    public static class RequestReplayWindow
+    {
+        public const int MinimumHostMilliseconds = 60_000;
+
+        // Reserve nominal transport margin. Deduplication only holds while the server retains the result.
+        public const int ClientRetryMilliseconds = MinimumHostMilliseconds - 5_000;
     }
 }
 ````

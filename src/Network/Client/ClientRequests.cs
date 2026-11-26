@@ -30,7 +30,6 @@ namespace FRFrame.Network.Client
     internal sealed class ClientRequests
     {
         internal const int EntryLimit = 64, PendingLimit = 16, ByteLimit = EntryLimit * Envelope.MaxPacket;
-        internal const int RetryMilliseconds = 60_000;
 
         internal sealed class Intent
         {
@@ -61,7 +60,7 @@ namespace FRFrame.Network.Client
         {
             if (Next == 0 || _intents.Count >= EntryLimit || _bytes + bytes.Length > ByteLimit || !HasWaitSlot)
                 return null;
-            var intent = new Intent(++_last, op, bytes, now + RetryMilliseconds);
+            var intent = new Intent(++_last, op, bytes, now + RequestReplayWindow.ClientRetryMilliseconds);
             _intents.Add(intent.Id, intent);
             _bytes += bytes.Length;
             return intent;

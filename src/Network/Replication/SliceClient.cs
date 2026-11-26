@@ -108,13 +108,16 @@ namespace FRFrame.Network.Replication
             LiteEntitySystem.Logger.LoggerImpl = new SliceLesLog(info, warning, error);
 
         public SliceClient(string host, int port, string identity, Action<string> log)
+            : this(host, port, identity, log, () => new LiteNetDatagrams()) { }
+
+        internal SliceClient(string host, int port, string identity, Action<string> log, Func<IClientTransport> createTransport)
         {
             _host = host;
             _port = port;
             _identity = identity;
             _log = log;
             Rooms = new ReadOnlyDictionary<int, SliceClientRoom>(_rooms);
-            _runtime = new ClientRuntime(() => new LiteNetDatagrams(), log);
+            _runtime = new ClientRuntime(createTransport, log);
             _runtime.StateChanged += OnStateChanged;
             _runtime.RoomChanged += OnRoomChanged;
             _runtime.WireReceived += ReadControl;
@@ -400,23 +403,31 @@ namespace FRFrame.Network.Replication
 
         private void EndStream(SliceClientRoom room, SliceStreamState state, ErrorCode reason, bool cancel)
         {
-            if (room.Route != null)
-            {
-                if (cancel)
-                    Send(OpCode.StreamCancel, new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = room.Generation });
-                _routes.Close(room.Route);
-            }
+            var route = room.Route;
+            var manager = room.Manager;
+            var attempt = _runtime.Attempt;
+            var binding = _runtime.Binding;
+            var request = cancel && route != null
+                ? new SliceMessage { Room = room.Id, Stream = room.StreamId, Generation = route.Generation }
+                : null;
+
+            // Sending can synchronously disconnect and reenter cleanup. Revoke ownership first.
             room.Route = null;
             room.EarlyBaseline = null;
-            var manager = room.Manager;
             room.Manager = null;
             room.StreamId = room.OpenRequest = room.ReadyRequest = 0;
             room.Baselines = room.Diffs = 0;
+            room.Remaining = 0;
             room.State = state;
             room.Error = reason;
+            if (route != null)
+                _routes.Close(route);
             manager?.Reset();
             if (reason != ErrorCode.None)
                 _log($"POC-2 stream {state} reason={reason} room={room.Id}");
+
+            if (request != null && Authenticated && _runtime.Attempt == attempt && _runtime.Binding.Equals(binding))
+                Send(OpCode.StreamCancel, request);
         }
     }
 
