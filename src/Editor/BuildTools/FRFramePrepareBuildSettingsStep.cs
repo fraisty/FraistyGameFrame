@@ -46,6 +46,10 @@ namespace FRFrame.Editor
                 return FRFrameBuildStepResult.Failed($"Active build target is {EditorUserBuildSettings.activeBuildTarget}, but profile target is {profile.buildTarget}. Enable auto switch target or switch platform manually.");
             }
 
+            // HybridCLR generates AOT metadata and method bridges from this Editor flag.
+            if (profile.buildMode is FRFrameBuildMode.DevelopmentBuild or FRFrameBuildMode.ReleaseBuild)
+                EditorUserBuildSettings.development = profile.buildMode == FRFrameBuildMode.DevelopmentBuild;
+
             if (!string.IsNullOrWhiteSpace(profile.scriptingDefineSymbols))
             {
                 PlayerSettings.SetScriptingDefineSymbols(NamedBuildTarget.FromBuildTargetGroup(targetGroup), profile.scriptingDefineSymbols);

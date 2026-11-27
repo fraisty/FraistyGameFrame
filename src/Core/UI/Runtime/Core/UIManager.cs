@@ -5,6 +5,7 @@ using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.UI;
 using UnityEngine.SceneManagement;
 #if FRFRAME_URP_AVAILABLE
 using UnityEngine.Rendering.Universal;
@@ -165,7 +166,7 @@ namespace FRFrame
 
             if (EventSystem.current == null)
             {
-                GameObject eventSystem = new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
+                GameObject eventSystem = new GameObject("EventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule));
                 Object.DontDestroyOnLoad(eventSystem);
             }
         }

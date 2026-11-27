@@ -10,13 +10,15 @@ namespace FRFrame.Network.Unity
         private NetworkProbeClient _probe;
         private float _seconds;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        private static void FromCommandLine()
+        internal static bool FromCommandLine()
         {
             var args = Environment.GetCommandLineArgs();
             var index = Array.IndexOf(args, "-frNetworkProbe");
-            if (index >= 0 && index + 2 < args.Length && int.TryParse(args[index + 2], out var port))
-                Run(args[index + 1], port);
+            if (index < 0 || index + 2 >= args.Length || !int.TryParse(args[index + 2], out var port))
+                return false;
+
+            Run(args[index + 1], port);
+            return true;
         }
 
 #if UNITY_EDITOR

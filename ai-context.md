@@ -853,6 +853,7 @@ Network/
       LiteNetDatagrams.cs
   Unity/
     FRFrame.Network.Unity.asmdef
+    NetworkDemoView.mat
     NetworkLocalProbe.cs
     NetworkMultiplayerDemo.Capabilities.cs
     NetworkMultiplayerDemo.Check.cs
@@ -19386,22 +19387,32 @@ namespace FRFrame
         public static string LegacyPersistentRoot => Path.Combine(PathExtension.GetPersistentDataPath(), BootstrapFileNames.DirectoryName);
         public static string PersistentManifestPath => Path.Combine(PersistentRoot, BootstrapFileNames.ManifestFile);
 
-        public static async UniTask<string> LoadTextAsync(string fileName)
+        public static UniTask<string> LoadTextAsync(string fileName)
         {
             string persistentPath = Path.Combine(PersistentRoot, fileName);
             if (File.Exists(persistentPath))
             {
-                return await UniTask.RunOnThreadPool(() => File.ReadAllText(persistentPath));
+                return UniTask.FromResult(File.ReadAllText(persistentPath));
             }
 
             string legacyBootstrapPath = Path.Combine(LegacyPersistentRoot, fileName);
             if (File.Exists(legacyBootstrapPath))
             {
-                return await UniTask.RunOnThreadPool(() => File.ReadAllText(legacyBootstrapPath));
+                return UniTask.FromResult(File.ReadAllText(legacyBootstrapPath));
             }
 
             string streamingPath = Path.Combine(Application.streamingAssetsPath, BootstrapFileNames.DirectoryName, fileName);
-            return await ReadStreamingAssetsTextAsync(streamingPath, true);
+#if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_WEBGL)
+            return ReadStreamingAssetsTextAsync(streamingPath);
+#else
+            if (!File.Exists(streamingPath))
+            {
+                FRLog.Error($"StreamingAssets file not found : {streamingPath}");
+                return UniTask.FromResult<string>(null);
+            }
+
+            return UniTask.FromResult(File.ReadAllText(streamingPath));
+#endif
         }
 
         public static void SaveText(string fileName, string json)
@@ -19421,49 +19432,21 @@ namespace FRFrame
             return JsonUtility.FromJson<UIBootstrapConfig>(json);
         }
 
-        private static async UniTask<string> ReadStreamingAssetsTextAsync(string path, bool logMissing)
+#if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_WEBGL)
+        private static async UniTask<string> ReadStreamingAssetsTextAsync(string path)
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
             using UnityWebRequest request = UnityWebRequest.Get(path);
             await request.SendWebRequest().ToUniTask();
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                if (logMissing)
-                {
-                    FRLog.Error($"Read StreamingAssets failed : {path}, error : {request.error}");
-                }
+                FRLog.Error($"Read StreamingAssets failed : {path}, error : {request.error}");
                 return null;
             }
 
             return request.downloadHandler.text;
-#elif UNITY_WEBGL && !UNITY_EDITOR
-            using UnityWebRequest request = UnityWebRequest.Get(path);
-            await request.SendWebRequest().ToUniTask();
-
-            if (request.result != UnityWebRequest.Result.Success)
-            {
-                if (logMissing)
-                {
-                    FRLog.Error($"Read StreamingAssets failed : {path}, error : {request.error}");
-                }
-                return null;
-            }
-
-            return request.downloadHandler.text;
-#else
-            if (!File.Exists(path))
-            {
-                if (logMissing)
-                {
-                    FRLog.Error($"StreamingAssets file not found : {path}");
-                }
-                return null;
-            }
-
-            return await UniTask.RunOnThreadPool(() => File.ReadAllText(path));
-#endif
         }
+#endif
     }
 }
 ````
@@ -34243,6 +34226,7 @@ using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.UI;
 using UnityEngine.SceneManagement;
 #if FRFRAME_URP_AVAILABLE
 using UnityEngine.Rendering.Universal;
@@ -34403,7 +34387,7 @@ namespace FRFrame
 
             if (EventSystem.current == null)
             {
-                GameObject eventSystem = new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
+                GameObject eventSystem = new GameObject("EventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule));
                 Object.DontDestroyOnLoad(eventSystem);
             }
         }
@@ -49780,6 +49764,10 @@ namespace FRFrame.Editor
                 return FRFrameBuildStepResult.Failed($"Active build target is {EditorUserBuildSettings.activeBuildTarget}, but profile target is {profile.buildTarget}. Enable auto switch target or switch platform manually.");
             }
 
+            // HybridCLR generates AOT metadata and method bridges from this Editor flag.
+            if (profile.buildMode is FRFrameBuildMode.DevelopmentBuild or FRFrameBuildMode.ReleaseBuild)
+                EditorUserBuildSettings.development = profile.buildMode == FRFrameBuildMode.DevelopmentBuild;
+
             if (!string.IsNullOrWhiteSpace(profile.scriptingDefineSymbols))
             {
                 PlayerSettings.SetScriptingDefineSymbols(NamedBuildTarget.FromBuildTargetGroup(targetGroup), profile.scriptingDefineSymbols);
@@ -50969,6 +50957,7 @@ public static class HybridCLRBuildHelper
         List<string> aotAssemblyNames = new List<string>
         {
             "DOTween",
+            "LiteEntitySystem", // Movement controllers are instantiated with hot-update input types.
             "System.Core",
             "UniTask",
             "Unity.InputSystem",
@@ -117039,6 +117028,54 @@ namespace FRFrame.Network.Transport
 }
 ````
 
+## File: Network/Unity/NetworkDemoView.mat
+````
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: NetworkDemoView
+  m_Shader: {fileID: 4800000, guid: 650dd9526735d5b46b79224bc6e94025, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs: []
+    m_Ints: []
+    m_Floats: []
+    m_Colors:
+    - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1
+--- !u!114 &482114843974295866
+MonoBehaviour:
+  m_ObjectHideFlags: 11
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d0353a89b1f911e48b9e16bdc9f2e058, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Editor::UnityEditor.Rendering.Universal.AssetVersion
+  version: 10
+````
+
 ## File: Network/Unity/NetworkLocalProbe.cs
 ````csharp
 using System;
@@ -117053,13 +117090,15 @@ namespace FRFrame.Network.Unity
         private NetworkProbeClient _probe;
         private float _seconds;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        private static void FromCommandLine()
+        internal static bool FromCommandLine()
         {
             var args = Environment.GetCommandLineArgs();
             var index = Array.IndexOf(args, "-frNetworkProbe");
-            if (index >= 0 && index + 2 < args.Length && int.TryParse(args[index + 2], out var port))
-                Run(args[index + 1], port);
+            if (index < 0 || index + 2 >= args.Length || !int.TryParse(args[index + 2], out var port))
+                return false;
+
+            Run(args[index + 1], port);
+            return true;
         }
 
 #if UNITY_EDITOR
@@ -117124,7 +117163,6 @@ namespace FRFrame.Network.Unity
     public sealed partial class NetworkMultiplayerDemo
     {
         private readonly Dictionary<uint, ClientRequestResult> _capabilityResults = new();
-        private readonly HttpManager _http = new();
         private CounterRoomState _counterView;
         private RoomDirectoryPage _directory;
         private bool _listingInvitations;
@@ -117308,10 +117346,12 @@ namespace FRFrame.Network.Unity
         private async UniTask CheckHttp(string url, CancellationToken cancellation)
         {
             url = url.TrimEnd('/');
-            await _http.InitializeAsync();
-            var json = await _http.GetJsonAsync<FixturePayload>(url + "/json", cancellationToken: cancellation);
-            var bytes = await _http.SendBytesAsync(FRFrame.HttpMethod.Post, url + "/bytes", new byte[] { 0, 42, 255 }, cancellationToken: cancellation);
-            var missing = await _http.GetBytesAsync(url + "/missing", cancellationToken: cancellation);
+            FRFrameRoot.Get();
+            await FRFM.WaitReady<HttpManager>();
+            var http = FRFM.Http;
+            var json = await http.GetJsonAsync<FixturePayload>(url + "/json", cancellationToken: cancellation);
+            var bytes = await http.SendBytesAsync(FRFrame.HttpMethod.Post, url + "/bytes", new byte[] { 0, 42, 255 }, cancellationToken: cancellation);
+            var missing = await http.GetBytesAsync(url + "/missing", cancellationToken: cancellation);
             _httpStatus = $"HTTP JSON={json.StatusCode}/{json.ErrorKind}, bytes={bytes.StatusCode}/{bytes.ErrorKind}, missing={missing.StatusCode}/{missing.ErrorKind}";
             if (!json.IsSuccess || json.Data?.value != 42 || !bytes.IsSuccess || bytes.Data.Length != 3 ||
                 bytes.Data[0] != 0 || bytes.Data[1] != 42 || bytes.Data[2] != 255 || missing.StatusCode != 404 || missing.ErrorKind != HttpErrorKind.HttpStatus)
@@ -117594,6 +117634,7 @@ namespace FRFrame.Network.Unity
     public sealed partial class NetworkMultiplayerDemo : MonoBehaviour
     {
         private static readonly Color[] PawnColors = { Color.cyan, new Color(1, 0.65f, 0.25f), new Color(0.83f, 0.60f, 1) };
+        [SerializeField] private Material _viewMaterial;
         private readonly Dictionary<int, (GameObject Object, Material Material)> _views = new();
         private readonly HashSet<int> _seenViews = new();
         private readonly List<int> _missingViews = new();
@@ -117627,6 +117668,9 @@ namespace FRFrame.Network.Unity
         {
             Application.runInBackground = true;
             Application.targetFrameRate = 60;
+            NetworkStartupDiagnostics.LogProtocolVersion();
+            if (NetworkLocalProbe.FromCommandLine())
+                return;
             SliceClient.SetReplicationLog(Debug.Log, Debug.LogWarning, Debug.LogError);
             _camera = Camera.main;
 
@@ -117638,7 +117682,8 @@ namespace FRFrame.Network.Unity
                 floor.transform.SetParent(transform);
                 floor.transform.SetPositionAndRotation(new Vector3(0, -0.2f, 0), Quaternion.identity);
                 floor.transform.localScale = new Vector3(24, 0.1f, 16);
-                _floorMaterial = floor.GetComponent<Renderer>().material;
+                _floorMaterial = new Material(_viewMaterial);
+                floor.GetComponent<Renderer>().sharedMaterial = _floorMaterial;
                 _floorMaterial.color = new Color(0.22f, 0.28f, 0.33f);
             }
 
@@ -117829,7 +117874,8 @@ namespace FRFrame.Network.Unity
                 pawn.name = $"Network player {sample.Player}";
                 pawn.transform.SetParent(transform);
                 pawn.transform.localScale = Vector3.one * 0.8f;
-                var material = pawn.GetComponent<Renderer>().material;
+                var material = new Material(_viewMaterial);
+                pawn.GetComponent<Renderer>().sharedMaterial = material;
                 material.color = PawnColors[(sample.Player - 1) % PawnColors.Length];
                 view = (pawn, material);
                 _views.Add(sample.Player, view);
@@ -118026,7 +118072,6 @@ namespace FRFrame.Network.Unity
         private void OnDestroy()
         {
             Disconnect();
-            _http.Destroy();
             Destroy(_floorMaterial);
         }
     }
@@ -118037,17 +118082,12 @@ namespace FRFrame.Network.Unity
 ````csharp
 using FRFrame.Network.Client;
 using UnityEngine;
-using UnityEngine.Scripting;
-
-// The startup callback has no scene references.
-[assembly: AlwaysLinkAssembly]
 
 namespace FRFrame.Network.Unity
 {
     internal static class NetworkStartupDiagnostics
     {
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
-        private static void LogProtocolVersion()
+        internal static void LogProtocolVersion()
         {
             Debug.Log($"[FRFrame.Network] Client protocol version {ClientProtocol.Version.Value}.");
         }

@@ -14,7 +14,6 @@ namespace FRFrame.Network.Unity
     public sealed partial class NetworkMultiplayerDemo
     {
         private readonly Dictionary<uint, ClientRequestResult> _capabilityResults = new();
-        private readonly HttpManager _http = new();
         private CounterRoomState _counterView;
         private RoomDirectoryPage _directory;
         private bool _listingInvitations;
@@ -198,10 +197,12 @@ namespace FRFrame.Network.Unity
         private async UniTask CheckHttp(string url, CancellationToken cancellation)
         {
             url = url.TrimEnd('/');
-            await _http.InitializeAsync();
-            var json = await _http.GetJsonAsync<FixturePayload>(url + "/json", cancellationToken: cancellation);
-            var bytes = await _http.SendBytesAsync(FRFrame.HttpMethod.Post, url + "/bytes", new byte[] { 0, 42, 255 }, cancellationToken: cancellation);
-            var missing = await _http.GetBytesAsync(url + "/missing", cancellationToken: cancellation);
+            FRFrameRoot.Get();
+            await FRFM.WaitReady<HttpManager>();
+            var http = FRFM.Http;
+            var json = await http.GetJsonAsync<FixturePayload>(url + "/json", cancellationToken: cancellation);
+            var bytes = await http.SendBytesAsync(FRFrame.HttpMethod.Post, url + "/bytes", new byte[] { 0, 42, 255 }, cancellationToken: cancellation);
+            var missing = await http.GetBytesAsync(url + "/missing", cancellationToken: cancellation);
             _httpStatus = $"HTTP JSON={json.StatusCode}/{json.ErrorKind}, bytes={bytes.StatusCode}/{bytes.ErrorKind}, missing={missing.StatusCode}/{missing.ErrorKind}";
             if (!json.IsSuccess || json.Data?.value != 42 || !bytes.IsSuccess || bytes.Data.Length != 3 ||
                 bytes.Data[0] != 0 || bytes.Data[1] != 42 || bytes.Data[2] != 255 || missing.StatusCode != 404 || missing.ErrorKind != HttpErrorKind.HttpStatus)

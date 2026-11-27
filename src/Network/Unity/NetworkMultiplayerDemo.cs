@@ -13,6 +13,7 @@ namespace FRFrame.Network.Unity
     public sealed partial class NetworkMultiplayerDemo : MonoBehaviour
     {
         private static readonly Color[] PawnColors = { Color.cyan, new Color(1, 0.65f, 0.25f), new Color(0.83f, 0.60f, 1) };
+        [SerializeField] private Material _viewMaterial;
         private readonly Dictionary<int, (GameObject Object, Material Material)> _views = new();
         private readonly HashSet<int> _seenViews = new();
         private readonly List<int> _missingViews = new();
@@ -46,6 +47,9 @@ namespace FRFrame.Network.Unity
         {
             Application.runInBackground = true;
             Application.targetFrameRate = 60;
+            NetworkStartupDiagnostics.LogProtocolVersion();
+            if (NetworkLocalProbe.FromCommandLine())
+                return;
             SliceClient.SetReplicationLog(Debug.Log, Debug.LogWarning, Debug.LogError);
             _camera = Camera.main;
 
@@ -57,7 +61,8 @@ namespace FRFrame.Network.Unity
                 floor.transform.SetParent(transform);
                 floor.transform.SetPositionAndRotation(new Vector3(0, -0.2f, 0), Quaternion.identity);
                 floor.transform.localScale = new Vector3(24, 0.1f, 16);
-                _floorMaterial = floor.GetComponent<Renderer>().material;
+                _floorMaterial = new Material(_viewMaterial);
+                floor.GetComponent<Renderer>().sharedMaterial = _floorMaterial;
                 _floorMaterial.color = new Color(0.22f, 0.28f, 0.33f);
             }
 
@@ -248,7 +253,8 @@ namespace FRFrame.Network.Unity
                 pawn.name = $"Network player {sample.Player}";
                 pawn.transform.SetParent(transform);
                 pawn.transform.localScale = Vector3.one * 0.8f;
-                var material = pawn.GetComponent<Renderer>().material;
+                var material = new Material(_viewMaterial);
+                pawn.GetComponent<Renderer>().sharedMaterial = material;
                 material.color = PawnColors[(sample.Player - 1) % PawnColors.Length];
                 view = (pawn, material);
                 _views.Add(sample.Player, view);
@@ -445,7 +451,6 @@ namespace FRFrame.Network.Unity
         private void OnDestroy()
         {
             Disconnect();
-            _http.Destroy();
             Destroy(_floorMaterial);
         }
     }

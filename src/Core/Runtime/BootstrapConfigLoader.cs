@@ -11,22 +11,32 @@ namespace FRFrame
         public static string LegacyPersistentRoot => Path.Combine(PathExtension.GetPersistentDataPath(), BootstrapFileNames.DirectoryName);
         public static string PersistentManifestPath => Path.Combine(PersistentRoot, BootstrapFileNames.ManifestFile);
 
-        public static async UniTask<string> LoadTextAsync(string fileName)
+        public static UniTask<string> LoadTextAsync(string fileName)
         {
             string persistentPath = Path.Combine(PersistentRoot, fileName);
             if (File.Exists(persistentPath))
             {
-                return await UniTask.RunOnThreadPool(() => File.ReadAllText(persistentPath));
+                return UniTask.FromResult(File.ReadAllText(persistentPath));
             }
 
             string legacyBootstrapPath = Path.Combine(LegacyPersistentRoot, fileName);
             if (File.Exists(legacyBootstrapPath))
             {
-                return await UniTask.RunOnThreadPool(() => File.ReadAllText(legacyBootstrapPath));
+                return UniTask.FromResult(File.ReadAllText(legacyBootstrapPath));
             }
 
             string streamingPath = Path.Combine(Application.streamingAssetsPath, BootstrapFileNames.DirectoryName, fileName);
-            return await ReadStreamingAssetsTextAsync(streamingPath, true);
+#if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_WEBGL)
+            return ReadStreamingAssetsTextAsync(streamingPath);
+#else
+            if (!File.Exists(streamingPath))
+            {
+                FRLog.Error($"StreamingAssets file not found : {streamingPath}");
+                return UniTask.FromResult<string>(null);
+            }
+
+            return UniTask.FromResult(File.ReadAllText(streamingPath));
+#endif
         }
 
         public static void SaveText(string fileName, string json)
@@ -46,48 +56,20 @@ namespace FRFrame
             return JsonUtility.FromJson<UIBootstrapConfig>(json);
         }
 
-        private static async UniTask<string> ReadStreamingAssetsTextAsync(string path, bool logMissing)
+#if !UNITY_EDITOR && (UNITY_ANDROID || UNITY_WEBGL)
+        private static async UniTask<string> ReadStreamingAssetsTextAsync(string path)
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
             using UnityWebRequest request = UnityWebRequest.Get(path);
             await request.SendWebRequest().ToUniTask();
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                if (logMissing)
-                {
-                    FRLog.Error($"Read StreamingAssets failed : {path}, error : {request.error}");
-                }
+                FRLog.Error($"Read StreamingAssets failed : {path}, error : {request.error}");
                 return null;
             }
 
             return request.downloadHandler.text;
-#elif UNITY_WEBGL && !UNITY_EDITOR
-            using UnityWebRequest request = UnityWebRequest.Get(path);
-            await request.SendWebRequest().ToUniTask();
-
-            if (request.result != UnityWebRequest.Result.Success)
-            {
-                if (logMissing)
-                {
-                    FRLog.Error($"Read StreamingAssets failed : {path}, error : {request.error}");
-                }
-                return null;
-            }
-
-            return request.downloadHandler.text;
-#else
-            if (!File.Exists(path))
-            {
-                if (logMissing)
-                {
-                    FRLog.Error($"StreamingAssets file not found : {path}");
-                }
-                return null;
-            }
-
-            return await UniTask.RunOnThreadPool(() => File.ReadAllText(path));
-#endif
         }
+#endif
     }
 }

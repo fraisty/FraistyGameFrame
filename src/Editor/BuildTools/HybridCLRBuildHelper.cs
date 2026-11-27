@@ -284,6 +284,7 @@ public static class HybridCLRBuildHelper
         List<string> aotAssemblyNames = new List<string>
         {
             "DOTween",
+            "LiteEntitySystem", // Movement controllers are instantiated with hot-update input types.
             "System.Core",
             "UniTask",
             "Unity.InputSystem",
