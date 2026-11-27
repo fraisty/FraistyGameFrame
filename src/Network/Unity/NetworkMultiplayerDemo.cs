@@ -183,6 +183,7 @@ namespace FRFrame.Network.Unity
                 _client.Received += OnMessage;
                 _client.GameEventReceived += OnGameEvent;
                 _client.RequestFinished += OnRequestFinished;
+                _client.Runtime.StateChanged += OnConnectionStateChanged;
                 _client.Runtime.BusinessPushReceived += OnProfilePush;
                 _client.Runtime.RoomInvitationReceived += OnRoomInvitation;
             }
@@ -317,8 +318,15 @@ namespace FRFrame.Network.Unity
                 foreach (var entry in client.Rooms.Values)
                     if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {(entry.IsCurrent ? entry.State.ToString() : "stale")}"))
                         client.SelectRoom(entry.Id);
-                if (_counterView?.Snapshot is { } counterState)
-                    GUILayout.Label($"Counter {counterState.Value}/{counterState.Limit} · revision {counterState.Revision} · {(_counterView.IsCurrent ? "current" : "stale")}");
+                if (_counterView?.RoomId == client.Room)
+                {
+                    if (_counterView.Snapshot is { } counterState)
+                        GUILayout.Label($"Counter {counterState.Value}/{counterState.Limit} · revision {counterState.Revision} · {(_counterView.IsCurrent ? "current" : "stale")}");
+                    else
+                        GUILayout.Label("Counter · no snapshot");
+                    if (client.Authenticated && client.Rooms[client.Room].IsCurrent && GUILayout.Button("Refresh Counter"))
+                        _counterView.Refresh();
+                }
                 if (client.Room != 0 && client.Authenticated)
                 {
                     var definition = client.Rooms[client.Room].Definition;
@@ -399,8 +407,7 @@ namespace FRFrame.Network.Unity
             _lifecycle?.Dispose();
             if (_client != null)
             {
-                _counterView?.Dispose();
-                _counterView = null;
+                _client.Runtime.StateChanged -= OnConnectionStateChanged;
                 _client.Runtime.BusinessPushReceived -= OnProfilePush;
                 _client.Runtime.RoomInvitationReceived -= OnRoomInvitation;
                 _client.Received -= OnMessage;
@@ -409,24 +416,20 @@ namespace FRFrame.Network.Unity
                 _client.Dispose();
             }
             _client = null;
-            _directory = null;
-            _detail = null;
-            _invitation = default;
-            _profilePushes = 0;
+            ClearSessionView();
             _smoke = null;
             _lifecycle = null;
             _reportedTimeout = false;
             _createOnLogin = false;
             _counterProbeSent = false;
             _joinOnLogin = 0;
-            _requestStatus = "";
-            _retryRequest = 0;
-            _retrySession = 0;
             ClearViews();
         }
 
         private void OnRequestFinished(ClientRequestResult result)
         {
+            if (_client.Session == 0)
+                return;
             OnCapabilityResult(result);
             _requestStatus = $"Request {result.RequestId} · {result.Status} · {result.Error}";
             if (result.MayHaveExecuted || (result.Status == ClientRequestStatus.Response && result.Error == ErrorCode.Overloaded))

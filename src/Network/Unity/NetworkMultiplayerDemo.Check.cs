@@ -132,6 +132,7 @@ namespace FRFrame.Network.Unity
                     }
                     else
                     {
+                        await Reply(runtime.GetRoomInfo(counter));
                         Signal("oak-saw-invite");
                         await AwaitFile("oak-revoked");
                         await Reply(runtime.JoinRoom(counter), ErrorCode.Forbidden);
@@ -143,7 +144,22 @@ namespace FRFrame.Network.Unity
 
                 if (owner || returning)
                 {
+                    uint beforeInitialRead = owner ? runtime.GetRoomInfo(counter) : 0;
                     client.SelectRoom(counter);
+                    if (owner)
+                    {
+                        // Select and cancel the first read in one frame, before the next network pump.
+                        UpdateCapabilityView();
+                        uint initialRead = beforeInitialRead + 1;
+                        Require(beforeInitialRead != 0 && _counterView is { IsCurrent: false, Snapshot: null } &&
+                            runtime.Cancel(initialRead), "cancel first Counter snapshot wait");
+                        await Reply(beforeInitialRead);
+                        Require(_capabilityResults[initialRead] is { Operation: OpCode.GameQuery, Status: ClientRequestStatus.Cancelled } &&
+                            _counterView is { IsCurrent: false, Snapshot: null }, "cancelled query leaves no Counter snapshot");
+                        await Reply(_counterView.Refresh());
+                        Require(_counterView is { IsCurrent: true, Snapshot: { Revision: 1 } }, "explicit Counter Refresh restores current state");
+                        Log("F5 CR COUNTER PASS first read cancelled, explicit Refresh restored revision=1");
+                    }
                     await Wait(() => _counterView is { IsCurrent: true } && _counterView.Snapshot is { Value: 3, Limit: 17, Revision: 1 }, "Counter initial view");
                     if (owner)
                     {
@@ -235,6 +251,18 @@ namespace FRFrame.Network.Unity
                 }
                 await AwaitFile("finish");
                 Require(_profilePushes == 1, "no Profile push for either other player");
+                if (role == "oak")
+                {
+                    Require(_directory != null && _detail?.Summary.RoomId == counter && _invitation.Room == counter,
+                        "old Session has directory, hidden detail and invite notice");
+                    int oldSession = client.Session;
+                    client.Disconnect();
+                    Require(client.Reconnect(false), "explicit New login");
+                    await Wait(() => client.Authenticated && client.Session != oldSession, "new Session bound");
+                    Require(_directory == null && _detail == null && _invitation.Room == 0,
+                        "new Session cleared directory, hidden detail and invite notice");
+                    Log($"F5 CR SESSION PASS old={oldSession} new={client.Session}");
+                }
                 Disconnect();
                 Signal("pass-" + role);
                 Log($"F5 PASS role={role}");

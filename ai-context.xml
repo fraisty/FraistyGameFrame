@@ -116509,6 +116509,30 @@ namespace FRFrame.Network.Unity
                 Log($"Profile result #{result.RequestId} P{profile.Player}: {profile.Count}");
         }
 
+        private void OnConnectionStateChanged(ClientConnectionState state)
+        {
+            if (state is ClientConnectionState.Idle or ClientConnectionState.Replaced or ClientConnectionState.Disposed)
+                ClearSessionView();
+        }
+
+        private void ClearSessionView()
+        {
+            _counterView?.Dispose();
+            _counterView = null;
+            _directory = null;
+            _listingInvitations = false;
+            _detail = null;
+            _invitation = default;
+            _room = "1";
+            _profileNotice = default;
+            _profilePushes = 0;
+            _capabilityResults.Clear();
+            _requestStatus = "";
+            _retryRequest = 0;
+            _retrySession = 0;
+            _events.Clear();
+        }
+
         private void UpdateCapabilityView()
         {
             _client.Rooms.TryGetValue(_client.Room, out var room);
@@ -116580,6 +116604,7 @@ namespace FRFrame.Network.Unity
             GUILayout.EndHorizontal();
             if (_directory != null)
             {
+                GUILayout.Label(_listingInvitations ? "Invitations · last query" : "Room directory · last query");
                 foreach (var item in _directory.Rooms)
                     if (GUILayout.Button($"#{item.RoomId} {item.Name} ({item.Definition}) {item.MemberCount}/{item.Capacity}"))
                         _room = item.RoomId.ToString();
@@ -116595,8 +116620,8 @@ namespace FRFrame.Network.Unity
             if (GUILayout.Button("Revoke") && int.TryParse(_target, out int revoke)) runtime.RevokeInvitation(client.Room, revoke);
             GUILayout.EndHorizontal();
             if (_detail != null)
-                GUILayout.Label($"Query: #{_detail.Summary.RoomId} {_detail.Summary.Name}, owner P{_detail.Owner}, {_detail.Visibility}");
-            if (_invitation.Room > 0 && GUILayout.Button($"Use invite room #{_invitation.Room} from P{_invitation.Owner}"))
+                GUILayout.Label($"Last detail query: #{_detail.Summary.RoomId} {_detail.Summary.Name}, owner P{_detail.Owner}, {_detail.Visibility}");
+            if (_invitation.Room > 0 && GUILayout.Button($"Last invite notice: #{_invitation.Room} from P{_invitation.Owner}"))
                 _room = _invitation.Room.ToString();
         }
 
@@ -116798,6 +116823,7 @@ namespace FRFrame.Network.Unity
                     }
                     else
                     {
+                        await Reply(runtime.GetRoomInfo(counter));
                         Signal("oak-saw-invite");
                         await AwaitFile("oak-revoked");
                         await Reply(runtime.JoinRoom(counter), ErrorCode.Forbidden);
@@ -116809,7 +116835,22 @@ namespace FRFrame.Network.Unity
 
                 if (owner || returning)
                 {
+                    uint beforeInitialRead = owner ? runtime.GetRoomInfo(counter) : 0;
                     client.SelectRoom(counter);
+                    if (owner)
+                    {
+                        // Select and cancel the first read in one frame, before the next network pump.
+                        UpdateCapabilityView();
+                        uint initialRead = beforeInitialRead + 1;
+                        Require(beforeInitialRead != 0 && _counterView is { IsCurrent: false, Snapshot: null } &&
+                            runtime.Cancel(initialRead), "cancel first Counter snapshot wait");
+                        await Reply(beforeInitialRead);
+                        Require(_capabilityResults[initialRead] is { Operation: OpCode.GameQuery, Status: ClientRequestStatus.Cancelled } &&
+                            _counterView is { IsCurrent: false, Snapshot: null }, "cancelled query leaves no Counter snapshot");
+                        await Reply(_counterView.Refresh());
+                        Require(_counterView is { IsCurrent: true, Snapshot: { Revision: 1 } }, "explicit Counter Refresh restores current state");
+                        Log("F5 CR COUNTER PASS first read cancelled, explicit Refresh restored revision=1");
+                    }
                     await Wait(() => _counterView is { IsCurrent: true } && _counterView.Snapshot is { Value: 3, Limit: 17, Revision: 1 }, "Counter initial view");
                     if (owner)
                     {
@@ -116901,6 +116942,18 @@ namespace FRFrame.Network.Unity
                 }
                 await AwaitFile("finish");
                 Require(_profilePushes == 1, "no Profile push for either other player");
+                if (role == "oak")
+                {
+                    Require(_directory != null && _detail?.Summary.RoomId == counter && _invitation.Room == counter,
+                        "old Session has directory, hidden detail and invite notice");
+                    int oldSession = client.Session;
+                    client.Disconnect();
+                    Require(client.Reconnect(false), "explicit New login");
+                    await Wait(() => client.Authenticated && client.Session != oldSession, "new Session bound");
+                    Require(_directory == null && _detail == null && _invitation.Room == 0,
+                        "new Session cleared directory, hidden detail and invite notice");
+                    Log($"F5 CR SESSION PASS old={oldSession} new={client.Session}");
+                }
                 Disconnect();
                 Signal("pass-" + role);
                 Log($"F5 PASS role={role}");
@@ -117103,6 +117156,7 @@ namespace FRFrame.Network.Unity
                 _client.Received += OnMessage;
                 _client.GameEventReceived += OnGameEvent;
                 _client.RequestFinished += OnRequestFinished;
+                _client.Runtime.StateChanged += OnConnectionStateChanged;
                 _client.Runtime.BusinessPushReceived += OnProfilePush;
                 _client.Runtime.RoomInvitationReceived += OnRoomInvitation;
             }
@@ -117237,8 +117291,15 @@ namespace FRFrame.Network.Unity
                 foreach (var entry in client.Rooms.Values)
                     if (GUILayout.Button($"{(entry.Id == client.Room ? "Selected" : "Open")} room {entry.Id} · owner P{entry.Owner} · {(entry.IsCurrent ? entry.State.ToString() : "stale")}"))
                         client.SelectRoom(entry.Id);
-                if (_counterView?.Snapshot is { } counterState)
-                    GUILayout.Label($"Counter {counterState.Value}/{counterState.Limit} · revision {counterState.Revision} · {(_counterView.IsCurrent ? "current" : "stale")}");
+                if (_counterView?.RoomId == client.Room)
+                {
+                    if (_counterView.Snapshot is { } counterState)
+                        GUILayout.Label($"Counter {counterState.Value}/{counterState.Limit} · revision {counterState.Revision} · {(_counterView.IsCurrent ? "current" : "stale")}");
+                    else
+                        GUILayout.Label("Counter · no snapshot");
+                    if (client.Authenticated && client.Rooms[client.Room].IsCurrent && GUILayout.Button("Refresh Counter"))
+                        _counterView.Refresh();
+                }
                 if (client.Room != 0 && client.Authenticated)
                 {
                     var definition = client.Rooms[client.Room].Definition;
@@ -117319,8 +117380,7 @@ namespace FRFrame.Network.Unity
             _lifecycle?.Dispose();
             if (_client != null)
             {
-                _counterView?.Dispose();
-                _counterView = null;
+                _client.Runtime.StateChanged -= OnConnectionStateChanged;
                 _client.Runtime.BusinessPushReceived -= OnProfilePush;
                 _client.Runtime.RoomInvitationReceived -= OnRoomInvitation;
                 _client.Received -= OnMessage;
@@ -117329,24 +117389,20 @@ namespace FRFrame.Network.Unity
                 _client.Dispose();
             }
             _client = null;
-            _directory = null;
-            _detail = null;
-            _invitation = default;
-            _profilePushes = 0;
+            ClearSessionView();
             _smoke = null;
             _lifecycle = null;
             _reportedTimeout = false;
             _createOnLogin = false;
             _counterProbeSent = false;
             _joinOnLogin = 0;
-            _requestStatus = "";
-            _retryRequest = 0;
-            _retrySession = 0;
             ClearViews();
         }
 
         private void OnRequestFinished(ClientRequestResult result)
         {
+            if (_client.Session == 0)
+                return;
             OnCapabilityResult(result);
             _requestStatus = $"Request {result.RequestId} · {result.Status} · {result.Error}";
             if (result.MayHaveExecuted || (result.Status == ClientRequestStatus.Response && result.Error == ErrorCode.Overloaded))

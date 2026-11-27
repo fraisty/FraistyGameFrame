@@ -59,6 +59,30 @@ namespace FRFrame.Network.Unity
                 Log($"Profile result #{result.RequestId} P{profile.Player}: {profile.Count}");
         }
 
+        private void OnConnectionStateChanged(ClientConnectionState state)
+        {
+            if (state is ClientConnectionState.Idle or ClientConnectionState.Replaced or ClientConnectionState.Disposed)
+                ClearSessionView();
+        }
+
+        private void ClearSessionView()
+        {
+            _counterView?.Dispose();
+            _counterView = null;
+            _directory = null;
+            _listingInvitations = false;
+            _detail = null;
+            _invitation = default;
+            _room = "1";
+            _profileNotice = default;
+            _profilePushes = 0;
+            _capabilityResults.Clear();
+            _requestStatus = "";
+            _retryRequest = 0;
+            _retrySession = 0;
+            _events.Clear();
+        }
+
         private void UpdateCapabilityView()
         {
             _client.Rooms.TryGetValue(_client.Room, out var room);
@@ -130,6 +154,7 @@ namespace FRFrame.Network.Unity
             GUILayout.EndHorizontal();
             if (_directory != null)
             {
+                GUILayout.Label(_listingInvitations ? "Invitations · last query" : "Room directory · last query");
                 foreach (var item in _directory.Rooms)
                     if (GUILayout.Button($"#{item.RoomId} {item.Name} ({item.Definition}) {item.MemberCount}/{item.Capacity}"))
                         _room = item.RoomId.ToString();
@@ -145,8 +170,8 @@ namespace FRFrame.Network.Unity
             if (GUILayout.Button("Revoke") && int.TryParse(_target, out int revoke)) runtime.RevokeInvitation(client.Room, revoke);
             GUILayout.EndHorizontal();
             if (_detail != null)
-                GUILayout.Label($"Query: #{_detail.Summary.RoomId} {_detail.Summary.Name}, owner P{_detail.Owner}, {_detail.Visibility}");
-            if (_invitation.Room > 0 && GUILayout.Button($"Use invite room #{_invitation.Room} from P{_invitation.Owner}"))
+                GUILayout.Label($"Last detail query: #{_detail.Summary.RoomId} {_detail.Summary.Name}, owner P{_detail.Owner}, {_detail.Visibility}");
+            if (_invitation.Room > 0 && GUILayout.Button($"Last invite notice: #{_invitation.Room} from P{_invitation.Owner}"))
                 _room = _invitation.Room.ToString();
         }
 
