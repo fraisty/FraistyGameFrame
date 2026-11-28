@@ -102101,6 +102101,9 @@ namespace FRFrame.Network.Replication
         internal ClientRoomSnapshot Snapshot { get; set; }
         public string Definition => Snapshot.Definition;
         public int Owner => Snapshot.Owner;
+        public int Capacity => Snapshot.Capacity;
+        public string Name => Snapshot.Name;
+        public RoomJoinPolicy JoinPolicy => Snapshot.JoinPolicy;
         public int[] Members => Snapshot.Members.ToArray();
         public int OnlineMask => Snapshot.OnlineMask;
         public bool IsCurrent => Snapshot.IsCurrent;
@@ -102248,6 +102251,17 @@ namespace FRFrame.Network.Replication
 
         public uint CreateRoom(string definition = SliceMessage.DefinitionId) =>
             Send(OpCode.CreateRoom, new SliceMessage { Text = definition });
+        public uint CreateRoom(string definition, RoomConfiguration configuration) =>
+            _runtime.CreateRoom(definition, configuration);
+        public uint ListRooms(int afterRoomId, string definition) => _runtime.ListRooms(afterRoomId, definition);
+        public uint ListInvitations(int afterRoomId) => _runtime.ListInvitations(afterRoomId);
+        public uint GetRoomInfo(int room) => _runtime.GetRoomInfo(room);
+        public uint InvitePlayer(int room, int player) => _runtime.InvitePlayer(room, player);
+        public event Action<(int Room, int Owner, int RemainingMilliseconds)>? RoomInvitationReceived
+        {
+            add => _runtime.RoomInvitationReceived += value;
+            remove => _runtime.RoomInvitationReceived -= value;
+        }
         public uint JoinRoom(int room) => _runtime.JoinRoom(room);
         public uint LeaveRoom(int room, int successor = 0) =>
             _runtime.LeaveRoom(room, successor);
